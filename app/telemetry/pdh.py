@@ -145,12 +145,43 @@ happens in `__init__` and in `watch()` - the setup path - and **never** per read
 4 Hz sampling path cannot afford a multi-second prime per sample. A counter added after
 construction is not primed until the next `prime()`; reads on it return `None` with that
 reason, so an unprimed counter can never be mistaken for an idle device.
+
+### 6. The refusal log is bounded. Fixed 2026-10-01 after a scoped re-review.
+
+`value_read_refusals` was a `list` that grew forever, and the 4 Hz path appends to it once
+per instance per tick. Measured on this machine, 60 s of `collect()` + `read_many(40)`:
+
+```
+9600 refusals, 8,841,600 characters, 160 refusals/s, ~1012 MiB/hour of character count
+and 9600 still held after close()
+```
+
+Two things about those numbers, both measured:
+
+- The retained cost is **smaller** than the character count suggests. All 9600 entries are
+  the *same* `VALUE_READS_REFUSED_REASON` string object - `len({id(s) for s in log}) == 1` -
+  so the heap holds 9600 references (8 bytes each, ~75 KiB) plus one 921-character string.
+  The character count overstates the real allocation by ~100x in this specific case. It is
+  not always one shared string: with value reads enabled and several distinct refusal
+  reasons in play the strings do differ, and then the character count is the real cost. The
+  bound is required either way, because an unbounded list fails M6's "no continuing memory
+  growth" gate on the direction alone.
+- `close()` did **not** clear it, so the growth outlived the query.
+
+The log is now a `collections.deque` with `maxlen=MAX_VALUE_READ_REFUSALS` (512), which
+drops the **oldest** entry - the useful direction, since a diagnostic arriving at a booth
+needs the current symptom. `PdhQuery.refusal_count` carries the unbounded total as an `int`,
+so "are refusals still happening?" survives the bound. Every refusal path goes through one
+`_refuse` helper, so the bound cannot be bypassed by a path that forgets it. `close()` leaves
+the log alone on purpose: it is already bounded, and the post-mortem is exactly when someone
+goes looking for the reason.
 """
 
 from __future__ import annotations
 
 import ctypes
 import time
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
@@ -163,6 +194,7 @@ __all__ = [
     "GPU_ENGINE_COUNTER_PATH",
     "GPU_ENGINE_COUNTER_SET",
     "INSTANCE_TTL_SECONDS",
+    "MAX_VALUE_READ_REFUSALS",
     "PDH_DLL",
     "PDH_MORE_DATA",
     "PDH_MORE_DATA_UNPRIMED",
@@ -253,6 +285,21 @@ VALUE_READS_REFUSED_REASON: Final[str] = (
 #: `enable_value_reads=True` - only on a build where the value read has been observed to
 #: return a value rather than fault.
 VALUE_READS_ENABLED_BY_DEFAULT: Final[bool] = False
+
+#: **How many refusal reasons are retained, newest kept.** Measured 2026-10-01: the 4 Hz
+#: path (`collect()` + `read_many`) over 40 owned instances appends **160 refusals a
+#: second**, one per instance per tick, and each one is `VALUE_READS_REFUSED_REASON` in
+#: full. Unbounded, that is a list that grows for as long as the application runs, and M6's
+#: gate is a four-hour soak with no continuing memory growth. 60 s of it measured 9600
+#: entries; four hours at that rate is 2.3 million.
+#:
+#: 512 is chosen so that the *current* symptom is always in hand - which is what a
+#: diagnostic arriving at a booth needs - while the retained cost is bounded by a few tens
+#: of kilobytes whatever the refusal text is. At the measured 160/s that is ~3 s of
+#: history; the trade is deliberate, and `PdhQuery.refusal_count` carries the unbounded
+#: total as an `int` so "are refusals still happening?" survives the bound even though the
+#: individual strings do not.
+MAX_VALUE_READ_REFUSALS: Final[int] = 512
 
 
 class PdhUnavailableError(RuntimeError):
@@ -624,7 +671,17 @@ class PdhQuery:
         self._prime_seconds = max(float(prime_seconds), 0.0)
         self._instance_ttl = max(float(instance_ttl), 0.0)
         #: Observable, so a caller and the M0 report can tell a refusal from a zero.
-        self.value_read_refusals: list[str] = []
+        #: **Bounded** to `MAX_VALUE_READ_REFUSALS` entries, oldest dropped: the 4 Hz path
+        #: appends one of these per instance per tick, so an unbounded list here is a
+        #: process-lifetime leak. See `MAX_VALUE_READ_REFUSALS` for the measured rate and
+        #: `refusal_count` for the unbounded total, which costs one `int` per query.
+        self.value_read_refusals: deque[str] = deque(
+            maxlen=max(1, int(MAX_VALUE_READ_REFUSALS))
+        )
+        #: Every refusal ever appended, including the ones the bound has dropped. An `int`,
+        #: so it cannot leak, and it is the number to watch for "refusals are still
+        #: happening" once the reason strings have rolled over.
+        self._refusal_count = 0
         #: The PDH status of the most recent call, kept so a refusal can name the real code.
         self.last_status: int = 0
         self._closed = False
@@ -716,6 +773,16 @@ class PdhQuery:
         return self._value_reads
 
     @property
+    def refusal_count(self) -> int:
+        """How many refusals this query has recorded, including those the bound dropped.
+
+        An `int`, so it cannot leak and it never loses information: this is the number to
+        watch for "refusals are still happening" once the retained reason strings in
+        `value_read_refusals` have rolled over at `MAX_VALUE_READ_REFUSALS`.
+        """
+        return self._refusal_count
+
+    @property
     def primed(self) -> bool:
         """Whether a rate counter here has two samples to compute from."""
         return self._primed
@@ -750,7 +817,7 @@ class PdhQuery:
         self.last_status = status
         found: list[str] = []
         if status != 0:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"PdhExpandWildCardPathW for {self._category!r} returned "
                 f"{format_pdh_status(status)}; the instance set is unknown, which is not "
                 f"the same as empty and is certainly not zero"
@@ -833,9 +900,7 @@ class PdhQuery:
                     f"instance:{instance}",
                 )
             except PdhUnavailableError as exc:
-                self.value_read_refusals.append(
-                    f"instance {instance!r}: {exc}"
-                )
+                self._refuse(f"instance {instance!r}: {exc}")
                 continue
             opened.append(instance)
         if self._prime_seconds and opened:
@@ -852,7 +917,10 @@ class PdhQuery:
         """The utilisation percentage for one instance, or `None` when there is none.
 
         `None` is returned, never `0.0`, in every one of these cases, and each is recorded
-        in `value_read_refusals`:
+        in `value_read_refusals` - a log **bounded** to `MAX_VALUE_READ_REFUSALS` entries,
+        oldest dropped, because this method is called once per instance per tick and an
+        unbounded log here is a process-lifetime leak. `refusal_count` carries the
+        unbounded total.
 
         - the path's category is not this query's category;
         - the query is closed;
@@ -867,7 +935,9 @@ class PdhQuery:
         - value reads are disabled on this machine (the default here) - see the module
           docstring. This check comes **before** the enumeration on purpose: with reads
           off there is nothing an enumeration could contribute, and skipping it keeps the
-          4 Hz path off `pdh.dll` entirely;
+          4 Hz path off `pdh.dll` entirely. **This is the refusal that fires 160 times a
+          second at 4 Hz over 40 owned instances**, which is why `value_read_refusals` is
+          bounded and `refusal_count` exists;
         - the native call returns a non-zero status, or `dwCStatus != 0`. A rate counter
           that has not been primed reports `PDH_INVALID_DATA` here, and that is "not yet
           available", not zero;
@@ -885,13 +955,13 @@ class PdhQuery:
         if str(path.category) != self._category:
             reason = (f"path category {path.category!r} is not this query's category "
                       f"{self._category!r}")
-            self.value_read_refusals.append(reason)
+            self._refuse(reason)
             return None
         if self._closed:
-            self.value_read_refusals.append("query is closed")
+            self._refuse("query is closed")
             return None
         if len(self._counters) > 1:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"this query holds {len(self._counters)} counters "
                 f"({sorted(self._counters.values())}) and PdhCounterPath names no "
                 f"counter, so an instance of several of them cannot be attributed to one "
@@ -899,12 +969,12 @@ class PdhQuery:
             )
             return None
         if not self._value_reads:
-            self.value_read_refusals.append(VALUE_READS_REFUSED_REASON)
+            self._refuse(VALUE_READS_REFUSED_REASON)
             return None
         if str(path.instance) not in self.instances():
             # Not a failure to read: the instance is not there. This is the single most
             # important return in the module.
-            self.value_read_refusals.append(
+            self._refuse(
                 f"instance {path.instance!r} is not in the enumerated set of "
                 f"{self._category!r}; it has no utilisation, which is not zero"
             )
@@ -920,18 +990,29 @@ class PdhQuery:
         self._check_open()
         return {str(n): self.read(PdhCounterPath(self._category, str(n))) for n in names}
 
+    def _refuse(self, reason: str) -> None:
+        """Record one refusal: bump the unbounded count, append to the bounded log.
+
+        Every refusal path in this module goes through here, so the bound cannot be
+        bypassed by a path that forgets it. `deque(maxlen=...)` drops the **oldest** entry,
+        which is the useful direction: a diagnostic arriving at a booth needs the current
+        symptom, not the one from four hours ago.
+        """
+        self._refusal_count += 1
+        self.value_read_refusals.append(reason)
+
     def _read_value(self, instance: str) -> float | None:
         """The native value read, isolated so its refusal is recorded, not raised."""
         handle = self._instance_handles.get(instance)
         if not handle:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"instance {instance!r} has no concrete counter open; call watch() with it "
                 f"first. A wildcard counter cannot be read for one instance, and reading "
                 f"one anyway would be a number attributed by guesswork"
             )
             return None
         if not self._primed:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"instance {instance!r}: {self.counter_name!r} is a rate counter and this "
                 f"query has not been primed with two PdhCollectQueryData samples separated "
                 f"in time, so no rate exists yet. That is not zero."
@@ -940,34 +1021,34 @@ class PdhQuery:
         try:
             status, cstatus, ctype, reading = self._api.formatted_value(handle)
         except OSError as exc:  # pragma: no cover - needs the native fault to be catchable
-            self.value_read_refusals.append(
+            self._refuse(
                 f"the native value read for {instance!r} faulted: {exc}. A native fault is "
                 f"normally not catchable at all, which is why this call is off by default."
             )
             return None
         self.last_status = status
         if status != 0:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"PdhGetFormattedCounterValue for {instance!r} returned "
                 f"{format_pdh_status(status)}"
             )
             return None
         if cstatus != 0:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"{self.counter_name!r} for {instance!r} came back with dwCStatus "
                 f"{format_pdh_status(cstatus)}: no data for this sample. Unavailable, "
                 f"never zero."
             )
             return None
         if ctype != _PERF_DOUBLE:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"{self.counter_name!r} for {instance!r} came back as CType {ctype}, not "
                 f"the double this provider reads; refusing to reinterpret an unknown "
                 f"counter type as a percentage"
             )
             return None
         if reading != reading or not (PERCENT_MIN <= reading <= PERCENT_MAX):
-            self.value_read_refusals.append(
+            self._refuse(
                 f"{self.counter_name!r} for {instance!r} read {reading!r}, outside "
                 f"[{PERCENT_MIN}, {PERCENT_MAX}]; refused rather than clamped, because a "
                 f"clamped value is a number the counter never reported"
@@ -1010,7 +1091,7 @@ class PdhQuery:
         second = self.collect()
         self._primed = first == 0 and second == 0
         if not self._primed:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"priming {self._category!r} failed: first collect "
                 f"{format_pdh_status(first)}, second {format_pdh_status(second)}"
             )
@@ -1044,11 +1125,11 @@ class PdhQuery:
         )
         self.last_status = status
         if status not in _BUFFER_NOT_FILLED:
-            self.value_read_refusals.append(
+            self._refuse(
                 f"PdhGetFormattedCounterArrayW size probe returned {format_pdh_status(status)}"
             )
         elif status == PDH_MORE_DATA_UNPRIMED:
-            self.value_read_refusals.append(
+            self._refuse(
                 "the array size probe returned "
                 f"{format_pdh_status(PDH_MORE_DATA_UNPRIMED)} and 0 bytes: the counter has "
                 "no sample yet. Call prime() before asking how large the array is."
@@ -1101,6 +1182,13 @@ class PdhQuery:
         counters with the query, so they are not removed individually - measured `rc = 0`
         for both, and removing them first would add one native call per owned instance to
         teardown for no benefit.
+
+        **The refusal log survives this, deliberately.** It is already bounded to
+        `MAX_VALUE_READ_REFUSALS`, so it cannot leak past close, and keeping it means a
+        caller can still read the reason a reading was refused *after* the query is gone -
+        which is the post-mortem case, and the only time anyone actually goes looking.
+        Dropping it here would trade a bounded few kilobytes for losing the diagnostic
+        exactly when it is wanted.
         """
         if self._closed:
             return

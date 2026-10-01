@@ -34,6 +34,7 @@ from app.telemetry.pdh import (
     GPU_ENGINE_COUNTER,
     GPU_ENGINE_COUNTER_PATH,
     GPU_ENGINE_COUNTER_SET,
+    MAX_VALUE_READ_REFUSALS,
     PdhApi,
     PdhCounterPath,
     PdhQuery,
@@ -472,6 +473,161 @@ class ValueReadDecisionLogic(unittest.TestCase):
                        {"category": "  ", "counters": {"u": "x"}}):
             with self.assertRaises(PdhUnavailableError):
                 PdhQuery(api=_StubApi(), prime_seconds=0.0, **kwargs)
+
+
+class RefusalLogIsBounded(unittest.TestCase):
+    """The refusal log must not be a process-lifetime leak.
+
+    Measured on this machine: the 4 Hz path (`collect()` + `read_many`) over 40 owned
+    instances appends 160 refusals a second, so 60 s produced 9600 entries holding
+    8,841,600 characters, and they survived `close()`. M6's gate is a four-hour soak with no
+    continuing memory growth, so the log is now bounded to `MAX_VALUE_READ_REFUSALS` and
+    keeps the **most recent** refusal, which is the one a diagnostic actually needs.
+
+    Every assertion here goes through the public surface - the module constant,
+    `len(query.value_read_refusals)`, indexing it, and `query.refusal_count` - so none of it
+    depends on how the log is stored.
+    """
+
+    def _hammer(self, query, instance, ticks):
+        """Drive `ticks` reads through the public `read` surface, like the 4 Hz path does."""
+        for _ in range(ticks):
+            query.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, instance))
+        return query
+
+    def test_the_bound_is_named_and_positive(self):
+        self.assertIsInstance(MAX_VALUE_READ_REFUSALS, int)
+        self.assertGreater(MAX_VALUE_READ_REFUSALS, 0)
+        # A bound that still holds a useful current symptom, not a token one.
+        self.assertGreaterEqual(MAX_VALUE_READ_REFUSALS, 64)
+        # Exported, so a caller can size a diagnostic buffer against it without importing
+        # the private name off the class.
+        self.assertIn("MAX_VALUE_READ_REFUSALS", pdh.__all__)
+
+    def test_many_more_refusals_than_the_bound_still_hold_only_the_bound(self):
+        q, api = stubbed_query(enable_value_reads=None, instances=[LIVE])
+        try:
+            attempts = MAX_VALUE_READ_REFUSALS * 50  # 50x the bound
+            self._hammer(q, LIVE, attempts)
+            self.assertEqual(q.refusal_count, attempts,
+                             "every refusal must be counted, bound or not")
+            self.assertEqual(len(q.value_read_refusals), MAX_VALUE_READ_REFUSALS,
+                             f"the log must never exceed the bound; "
+                             f"{attempts} refusals were appended")
+        finally:
+            q.close()
+
+    def test_the_most_recent_refusal_survives_and_the_oldest_is_dropped(self):
+        """Dropping the *oldest* is the useful direction: a current symptom is the diagnosis.
+
+        Driven entirely through the public `read` surface. The absent-instance refusal
+        names the instance, so distinct instances give distinct strings and the log's two
+        ends can be told apart by reading them rather than by counting.
+        """
+        def absent(pid):
+            return f"pid_{pid}_luid_0x00000000_0x000112A0_phys_0_eng_0_engtype_Neural"
+
+        # Value reads are ON here so the refusal is the per-instance one, which names the
+        # instance. With reads off - this machine's default - every refusal is the same
+        # constant string and the log's two ends could not be told apart by content.
+        q, api = stubbed_query(enable_value_reads=True, instances=[LIVE])
+        try:
+            q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, absent(1)))
+            first = list(q.value_read_refusals)
+            self.assertEqual(len(first), 1)
+            self.assertIn("pid_1_", first[0])
+
+            # Far past the bound, all still through the public surface.
+            for i in range(MAX_VALUE_READ_REFUSALS * 4):
+                q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, absent(i + 1000)))
+            final = q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, absent(99999)))
+            self.assertIsNone(final)
+
+            self.assertEqual(len(q.value_read_refusals), MAX_VALUE_READ_REFUSALS)
+            self.assertNotIn(first[0], list(q.value_read_refusals),
+                             "the oldest refusal must be dropped once the bound is hit")
+            self.assertIn("pid_99999_", q.value_read_refusals[-1],
+                          "the newest refusal must be the one just recorded; got "
+                          f"{q.value_read_refusals[-1][:80]!r}")
+        finally:
+            q.close()
+
+    def test_the_bound_holds_with_the_4hz_read_many_shape(self):
+        """The shape that actually leaked: `read_many` over N instances, repeatedly."""
+        owned = [f"pid_{100 + i}_luid_0x00000000_0x000112A0_phys_0_eng_0_engtype_Neural"
+                 for i in range(40)]
+        q, api = stubbed_query(enable_value_reads=None, instances=owned)
+        try:
+            ticks = MAX_VALUE_READ_REFUSALS // len(owned) + 5
+            for _ in range(ticks):
+                out = q.read_many(owned)
+            self.assertTrue(all(v is None for v in out.values()))
+            self.assertEqual(q.refusal_count, ticks * len(owned))
+            self.assertEqual(len(q.value_read_refusals), MAX_VALUE_READ_REFUSALS,
+                             f"{ticks * len(owned)} refusals from read_many must be bounded")
+        finally:
+            q.close()
+
+    def test_close_leaves_a_bounded_log_and_keeps_the_post_mortem(self):
+        """`close()` must not clear the log: the post-mortem is when it is read.
+
+        The log is already bounded, so keeping it past `close()` costs a few kilobytes and
+        is the only way a caller can still find out *why* a reading was refused after the
+        query is gone. Pinned here so a future "tidy up on close" does not quietly take it.
+        """
+        q, api = stubbed_query(enable_value_reads=None, instances=[LIVE])
+        self._hammer(q, LIVE, MAX_VALUE_READ_REFUSALS * 3)
+        before = len(q.value_read_refusals)
+        newest = q.value_read_refusals[-1]
+        q.close()
+        self.assertEqual(len(q.value_read_refusals), before,
+                         "close() must not truncate the log; it is already bounded")
+        self.assertLessEqual(len(q.value_read_refusals), MAX_VALUE_READ_REFUSALS)
+        self.assertEqual(q.value_read_refusals[-1], newest)
+        self.assertEqual(q.refusal_count, MAX_VALUE_READ_REFUSALS * 3,
+                         "the count must survive close() too")
+
+    def test_refusals_from_every_path_are_counted_and_bounded_together(self):
+        """One log, one bound: a path that bypassed `_refuse` would show up here.
+
+        Each read must take a *different* refusal path, and each must be recorded, so this
+        also pins that the paths are distinguishable - four identical reasons would mean a
+        caller is being told "unavailable" for four indistinguishable reasons.
+        """
+        # Enumerated but deliberately not watched, so it reaches the "no concrete counter"
+        # refusal rather than the earlier "not in the enumerated set" one.
+        unwatched = "pid_9_luid_0x00000000_0x00010E9E_phys_0_eng_5_engtype_Compute"
+        q, api = stubbed_query(
+            value=(0, PDH_INVALID_DATA, PERF_DOUBLE, 0.0), instances=[LIVE, unwatched]
+        )
+        try:
+            q.prime()
+            q.watch([LIVE])
+            present = q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, LIVE))       # dwCStatus
+            absent = q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, "pid_0_absent"))
+            not_watched = q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, unwatched))
+            other = q.read(PdhCounterPath("Other", LIVE))
+            for value, label in ((present, "dwCStatus"), (absent, "absent"),
+                                 (not_watched, "unwatched"), (other, "category")):
+                self.assertIsNone(value, f"{label} must read None")
+            self.assertEqual(q.refusal_count, 4)
+            self.assertEqual(len(q.value_read_refusals), 4)
+            self.assertIn("dwCStatus", q.value_read_refusals[0])
+            self.assertIn("not in the enumerated set", q.value_read_refusals[1])
+            self.assertIn("no concrete counter open", q.value_read_refusals[2])
+            self.assertIn("is not this query's category", q.value_read_refusals[3])
+            self.assertEqual(len(set(q.value_read_refusals)), 4,
+                             "four different paths must give four distinguishable reasons")
+        finally:
+            q.close()
+
+    def test_a_fresh_query_starts_with_no_refusals_and_a_zero_count(self):
+        q, api = stubbed_query(enable_value_reads=None, instances=[LIVE])
+        try:
+            self.assertEqual(len(q.value_read_refusals), 0)
+            self.assertEqual(q.refusal_count, 0)
+        finally:
+            q.close()
 
 
 class FormatHelpers(unittest.TestCase):
