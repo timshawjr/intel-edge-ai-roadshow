@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "probed_on": "2026-10-01",
+  "windows_build": "Microsoft Windows 11 Pro 10.0.26200 26200",
+  "counter_source": {
+    "category": "GPU Engine",
+    "counter": "Utilization Percentage",
+    "read_via": "CIM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
+    "instances_observed": 456,
+    "adapters_observed": 3,
+    "note": "The runtime does not use this path. It reads config/telemetry_map.json and matches instance names by LUID; see app/telemetry/pdh.py for why the ctypes value read is not usable on this machine."
+  },
+  "direct_luid_link": {
+    "available": false,
+    "reason": "Measured on this machine: no CIM or Win32 source exposes a LUID together with a PCI device id. Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory carries only Name and memory counters; Win32_VideoController carries PNPDeviceID but no LUID; EnumDisplayDevicesW returns PCI\\VEN_8086&DEV_64A0&SUBSYS_88F21043&REV_04 for all three display adapter entries and no LUID; Win32_LUID exposes no instances and MSFT_ComputeAccelerator is not a registered CIM class on this build. The mapping is therefore resolved from the engine taxonomy, with the evidence recorded per LUID."
+  },
+  "display_adapters": [
+    {
+      "name": "Intel(R) Arc(TM) 140V GPU (16GB)",
+      "pnp_device_id": "PCI\\VEN_8086&DEV_64A0&SUBSYS_88F21043&REV_04\\3&11583659&0&10"
+    }
+  ],
+  "pnp_drivers": {
+    "rows_total": 28,
+    "demo_devices": [
+      {
+        "device_id": "PCI\\VEN_8086&DEV_643E&SUBSYS_88F21043&REV_04\\3&11583659&0&58",
+        "name": "Intel(R) AI Boost",
+        "pci_device_id": "643E",
+        "driver_version": "32.0.100.5540"
+      },
+      {
+        "device_id": "PCI\\VEN_8086&DEV_64A0&SUBSYS_88F21043&REV_04\\3&11583659&0&10",
+        "name": "Intel(R) Arc(TM) 140V GPU (16GB)",
+        "pci_device_id": "64A0",
+        "driver_version": "32.0.101.6737"
+      }
+    ]
+  },
+  "luids": [
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU"
+    },
+    {
+      "luid": "0x000112A0",
+      "device": "NPU"
+    }
+  ],
+  "engines": [
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "3D"
+    },
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "Compute"
+    },
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "Copy"
+    },
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "GSC"
+    },
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "VideoDecode"
+    },
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "engtype": "VideoProcessing"
+    },
+    {
+      "luid": "0x000112A0",
+      "device": "NPU",
+      "engtype": "Neural"
+    }
+  ],
+  "unattributed_luids": [
+    {
+      "luid": "0x00011232",
+      "engine_types": [
+        "3D"
+      ],
+      "instance_count": 81,
+      "reason": "exposes only ['3D'], which identifies neither the NPU nor the GPU; left unattributed rather than assigned to the nearest device"
+    }
+  ],
+  "engine_types_by_device": {
+    "NPU": [
+      "Neural"
+    ],
+    "GPU": [
+      "3D",
+      "Compute",
+      "Copy",
+      "GSC",
+      "VideoDecode",
+      "VideoProcessing"
+    ]
+  },
+  "npu_neural_counter": true,
+  "npu_neural_engine_types": [
+    "Neural"
+  ],
+  "adapters_without_engine_instances": [],
+  "attributions": [
+    {
+      "luid": "0x00010E9E",
+      "device": "GPU",
+      "method": "engine_taxonomy",
+      "reason": "exposes GPU engine(s) ['Compute', 'Copy', 'GSC', 'VideoDecode', 'VideoProcessing']; '3D' is not in this set because a third adapter on this machine exposes '3D' and nothing else",
+      "engine_types": [
+        "3D",
+        "Compute",
+        "Copy",
+        "GSC",
+        "VideoDecode",
+        "VideoProcessing"
+      ],
+      "instance_count": 364,
+      "max_observed_utilization_percent": 64.0
+    },
+    {
+      "luid": "0x00011232",
+      "device": null,
+      "method": "unattributed",
+      "reason": "exposes only ['3D'], which identifies neither the NPU nor the GPU; left unattributed rather than assigned to the nearest device",
+      "engine_types": [
+        "3D"
+      ],
+      "instance_count": 81,
+      "max_observed_utilization_percent": 0.0
+    },
+    {
+      "luid": "0x000112A0",
+      "device": "NPU",
+      "method": "engine_taxonomy",
+      "reason": "exposes NPU engine(s) ['Neural']; the neural engine is the NPU's engine and no other device on this machine has one",
+      "engine_types": [
+        "Neural"
+      ],
+      "instance_count": 11,
+      "max_observed_utilization_percent": 47.0
+    }
+  ]
+}
