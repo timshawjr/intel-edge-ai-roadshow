@@ -16,7 +16,9 @@ the file copied into this tree.
 
 ### Pinned environment
 
-`pip freeze` from the provisioned `.venv`, 2026-10-01:
+`pip freeze` from the provisioned `.venv`, 2026-10-01 (pip is not in the freeze; the pip
+that ships with the venv is not recorded because no pip upgrade is performed — see
+`tools/provision_venv.py`):
 
 ```
 numpy==2.5.3
@@ -44,12 +46,18 @@ STATUS  ID                    KIND      DETAIL
 ----------------------------------------------
 PASS    yolo11n-fp16          xml       xml+OpenVINO-IR, 412503 bytes, sha256 4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95
 PASS    yolo11n-fp16:weights  binary    binary, 5283218 bytes, sha256 f14632518ebb4e312a89c26faa4cd2f95d4264b6f5f22aa6e0d5707b4667863e
+PASS    yolo11n-fp16:labels   text      text+utf-8, 80 lines, 701 bytes, sha256 82bf6a434f132c4d78534c0f2e0f991fc22c73cd911f6d5fc74a418c39c339ec
 PASS    retail_checkout       mp4       mp4+ftyp, 64996307 bytes, sha256 e107db69155af4774f907abe8ddbf24493dfcf9d81d51f3e71ff25300e4f5906
 PASS    store_aisle_alt       mp4       mp4+ftyp, 9214573 bytes, sha256 3526fee39cac70d6366471e4324a6d63b337c8f8ab99c015521bee0d60ed6e04
 PASS    queue_alt             mp4       mp4+ftyp, 3291918 bytes, sha256 a5964aa259099a482a8b360ffc2c57b5a30f84d5919236a4dad01f8e929ac07c
 
-Source verification: 5 PASS, 0 FAIL
+Source verification: 6 PASS, 0 FAIL
 ```
+
+Six rows: the IR, the weights, the 80-line label file, and the three clips. The
+`text` row is a later addition — a recorded hash with no verification row is a hash
+nobody checks. The SHA-256 is the gate; the shape checks above it are necessary but
+cannot tell one valid IR from another.
 
 ### Recorded artifacts
 
@@ -70,12 +78,13 @@ Media figures are `cv2.VideoCapture` measurements on the copied files. `duration
 | id | licence | distribution_status |
 |---|---|---|
 | yolo11n-fp16 | AGPL-3.0 (model card, read 2026-10-01) | recorded as-is; AGPL-3.0 is copyleft and is an open distribution question for the booth package |
-| retail_checkout | Pexels License - free for commercial use, no attribution required | cleared for commercial use without attribution (as recorded) |
+| retail_checkout | Pexels License - free for commercial use, no attribution required | licence text carried over from the source manifest as recorded; **NOT re-read at M0** and not claimed as booth redistribution clearance |
 | store_aisle_alt | Open Model Zoo sample media | recorded as-is; not claimed as booth redistribution clearance |
 | queue_alt | Open Model Zoo sample media | recorded as-is; not claimed as booth redistribution clearance |
 
-The two Open Model Zoo clips are **not** upgraded to "cleared". Their status is recorded
-exactly as found.
+No clip is upgraded to "cleared". All three licence strings were carried over from the
+source manifest rather than re-read from the provider at M0, so all three distribution
+statuses are recorded as-is.
 
 ### Unmet content gate (carried to Task 9)
 

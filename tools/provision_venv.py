@@ -76,13 +76,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"venv interpreter not found at {python}", file=sys.stderr)
         return 1
 
-    print(f"upgrading pip in {VENV_DIR}")
-    upgrade = run(str(python), "-m", "pip", "install", "--upgrade", "pip")
-    if upgrade.returncode != 0:
-        print(upgrade.stdout)
-        print(upgrade.stderr, file=sys.stderr)
-        print("pip upgrade failed; the venv is incomplete", file=sys.stderr)
-        return upgrade.returncode
+    # No pip self-upgrade: the brief did not ask for one, and an unpinned pip
+    # upgrade is an unrequested variable in a reproducible environment. The pip
+    # that ships with the venv is recorded below instead.
+    pip_version = run(str(python), "-m", "pip", "--version")
+    print(f"pip in the new venv: {pip_version.stdout.strip() or pip_version.stderr.strip()}")
 
     print(f"installing pinned dependencies from {REQUIREMENTS.name} (needs network)")
     install = run(str(python), "-m", "pip", "install", "-r", str(REQUIREMENTS))

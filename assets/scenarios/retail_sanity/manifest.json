@@ -17,7 +17,7 @@
       "measured_frames": 3387,
       "measured_duration_s": 113.0129,
       "license": "Pexels License - free for commercial use, no attribution required",
-      "distribution_status": "cleared for commercial use without attribution (Pexels License, as recorded)",
+      "distribution_status": "licence text carried over from the source manifest as recorded; NOT re-read at M0 and not claimed as booth redistribution clearance",
       "role": "primary",
       "notes": "Overhead self-checkout counter. Carried from the local content-verified cache; not re-downloaded."
     },
@@ -53,7 +53,7 @@
     }
   ],
   "roi": [],
-  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead; see tests/fixtures/retail_sanity/retail_sanity.json in Task 6.",
+  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead, in tests/fixtures/retail_sanity/retail_sanity.json - that file does NOT exist yet; it is created in Task 6. This is a forward reference to planned work, not a record of an existing artifact.",
   "event_annotations": [],
   "content_gate": {
     "spec_requirement": "three 45-90 second clips per scenario pack",
