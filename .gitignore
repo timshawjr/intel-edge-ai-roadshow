@@ -1,0 +1,18 @@
+# Provisioned artifacts and runtime data, not source.
+.venv/
+cache/
+logs/
+run/
+dist/
+build/
+*.egg-info/
+
+# Large local binaries: provisioned once by tools/provision.py, recorded by hash in
+# config/models.json and assets/scenarios/*.json rather than committed.
+assets/models/
+assets/media/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
