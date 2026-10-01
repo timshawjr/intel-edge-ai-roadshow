@@ -107,8 +107,11 @@ _SURVEY_SCRIPT: Final[str] = (
     "| Select-Object Name,PNPDeviceID;"
     "$os = Get-CimInstance -ClassName Win32_OperatingSystem "
     "| Select-Object Caption,Version,BuildNumber;"
+    "$cs = Get-CimInstance -ClassName Win32_ComputerSystem "
+    "| Select-Object Manufacturer,Model,SystemFamily;"
     "[pscustomobject]@{"
-    "engines = $engines; adapters = $adapters; video = $video; os = $os} "
+    "engines = $engines; adapters = $adapters; video = $video; os = $os; "
+    "computer_system = $cs; hostname = $env:COMPUTERNAME} "
     "| ConvertTo-Json -Depth 4 -Compress"
 )
 
@@ -376,6 +379,56 @@ def _windows_build(payload: dict[str, Any]) -> str:
     ) or "unknown"
 
 
+#: What the M0 plan states this machine is. Recorded next to the measured identity so a
+#: later reader sees both and can reconcile them; the probe does **not** decide between
+#: them, because deciding would mean preferring a document to a measurement.
+PLAN_STATED_MACHINE: Final[str] = "ASUS NUC14LNK"
+
+
+def _machine_identity(payload: dict[str, Any], drivers: dict[str, Any]) -> dict[str, Any]:
+    """Who this machine says it is, as measured - and the plan's claim beside it.
+
+    Both are recorded and neither is reconciled here. Measured on 2026-10-01: the hostname
+    is `nuc14proai` and the PCI subsystem id is `SUBSYS_88F21043`, which is consistent with
+    a NUC14 Pro AI rather than the NUC14LNK the plan names; the plan's name came from
+    `Win32_ComputerSystem.Model`. Neither is wrong about what it measured, so the map keeps
+    both and the M0 report reconciles them.
+    """
+    rows = _as_rows(payload.get("computer_system"))
+    row = rows[0] if rows else {}
+    parts: list[str] = []
+    for key in ("Manufacturer", "Model", "SystemFamily"):
+        part = str(row.get(key) or "").strip()
+        if part and part not in parts:  # Model and SystemFamily are often the same string
+            parts.append(part)
+    measured = " ".join(parts) or "unknown"
+    hostname = str(payload.get("hostname") or "").strip() or "unknown"
+    subsys: list[str] = []
+    for device in drivers.get("demo_devices") or ():
+        device_id = str(device.get("device_id") or "").upper()
+        if "SUBSYS_" in device_id:
+            token = "SUBSYS_" + device_id.split("SUBSYS_", 1)[1][:8]
+            if token not in subsys:
+                subsys.append(token)
+    return {
+        "hostname": hostname,
+        "computer_system_measured": measured,
+        "pci_subsystem_ids_measured": sorted(subsys),
+        "plan_stated_machine": PLAN_STATED_MACHINE,
+        "reconciled": False,
+        "note": (
+            "The plan states this machine is an ASUS NUC14LNK, taken from "
+            "Win32_ComputerSystem.Model. Measured on the probe run: the hostname is "
+            f"{hostname!r}, Win32_ComputerSystem reports {measured!r}, and the PCI "
+            f"subsystem id(s) are {sorted(subsys) or ['none seen']}. The hostname and the "
+            "subsystem id are consistent with a NUC14 Pro AI rather than an NUC14LNK. Both "
+            "records are kept and neither is treated as the winner here; the M0 report "
+            "reconciles them. Nothing in this map depends on which is right - the LUID "
+            "table, the engine inventory and the counter path are all measured per LUID."
+        ),
+    }
+
+
 def _engine_rules(
     engines: Sequence[EngineObservation],
     attributions: Sequence[LuidAttribution],
@@ -463,10 +516,12 @@ def build_map(
             f"would put a real but misattributed number on a device card."
         )
 
+    drivers = _relevant_driver_rows()
     return {
         "schema_version": 1,
         "probed_on": date.today().isoformat(),
         "windows_build": _windows_build(payload),
+        "machine": _machine_identity(payload, drivers),
         "counter_source": {
             "category": CATEGORY,
             "counter": COUNTER,
@@ -495,7 +550,7 @@ def build_map(
             ),
         },
         "display_adapters": [dict(row) for row in video],
-        "pnp_drivers": _relevant_driver_rows(),
+        "pnp_drivers": drivers,
         "luids": [
             {"luid": attribution.luid, "device": attribution.device}
             for attribution in attributions if attribution.device

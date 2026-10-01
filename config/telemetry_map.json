@@ -2,11 +2,21 @@
   "schema_version": 1,
   "probed_on": "2026-10-01",
   "windows_build": "Microsoft Windows 11 Pro 10.0.26200 26200",
+  "machine": {
+    "hostname": "NUC14PROAI",
+    "computer_system_measured": "ASUSTeK COMPUTER INC. NUC14LNK LN",
+    "pci_subsystem_ids_measured": [
+      "SUBSYS_88F21043"
+    ],
+    "plan_stated_machine": "ASUS NUC14LNK",
+    "reconciled": false,
+    "note": "The plan states this machine is an ASUS NUC14LNK, taken from Win32_ComputerSystem.Model. Measured on the probe run: the hostname is 'NUC14PROAI', Win32_ComputerSystem reports 'ASUSTeK COMPUTER INC. NUC14LNK LN', and the PCI subsystem id(s) are ['SUBSYS_88F21043']. The hostname and the subsystem id are consistent with a NUC14 Pro AI rather than an NUC14LNK. Both records are kept and neither is treated as the winner here; the M0 report reconciles them. Nothing in this map depends on which is right - the LUID table, the engine inventory and the counter path are all measured per LUID."
+  },
   "counter_source": {
     "category": "GPU Engine",
     "counter": "Utilization Percentage",
     "read_via": "CIM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
-    "instances_observed": 456,
+    "instances_observed": 497,
     "adapters_observed": 3,
     "note": "The runtime does not use this path. It reads config/telemetry_map.json and matches instance names by LUID; see app/telemetry/pdh.py for why the ctypes value read is not usable on this machine."
   },
@@ -126,8 +136,8 @@
         "VideoDecode",
         "VideoProcessing"
       ],
-      "instance_count": 364,
-      "max_observed_utilization_percent": 64.0
+      "instance_count": 403,
+      "max_observed_utilization_percent": 52.0
     },
     {
       "luid": "0x00011232",
@@ -148,8 +158,8 @@
       "engine_types": [
         "Neural"
       ],
-      "instance_count": 11,
-      "max_observed_utilization_percent": 47.0
+      "instance_count": 13,
+      "max_observed_utilization_percent": 48.0
     }
   ]
 }
