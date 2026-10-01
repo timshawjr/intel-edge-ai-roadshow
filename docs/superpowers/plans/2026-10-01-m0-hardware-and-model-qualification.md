@@ -328,7 +328,9 @@ Expected: `ok`.
 ```python
 import unittest
 from app.inference.devices import DeviceRegistry, DEVICE_IDS
-import openvino.runtime as ov
+# CORRECTED 2026-10-01: openvino==2026.4.0 has no `openvino.runtime` submodule.
+# The top-level module exposes Core, Model and InferRequest directly.
+import openvino as ov
 
 class DeviceDiscovery(unittest.TestCase):
     @classmethod
@@ -626,6 +628,10 @@ Written against **observed** tensors, never an assumed layout. The specification
   - `app.inference.decode.ModelOutputSpec` — frozen dataclass: `names: tuple[str, ...]`, `shapes: dict[str, tuple[int, ...]]`, `layout: str` (one of `"yolo_v8_transposed"`, `"yolo_v8_passthrough"`, `"ssd"`, `"unknown"`), `num_classes: int`, `has_embedded_nms: bool`
   - `app.inference.decode.Detection` — frozen dataclass: `class_id: int`, `score: float`, `box: tuple[float, float, float, float]` in **source** pixels
   - `describe_outputs(model: ov.Model, num_classes: int) -> ModelOutputSpec`
+  - **CORRECTED 2026-10-01 after first-hand measurement on this machine.** The pinned export's output port is **unnamed**: `p.get_names()` returns `set()` and `p.get_any_name()` raises `RuntimeError: Check '!get_names().empty()' failed`. Two consequences for this task:
+    1. `names` may legitimately be the empty tuple. `describe_outputs` must **not** call `get_any_name()` unguarded, and an unnamed port is a normal IR state that must never raise.
+    2. Layout is classified from the port's `get_partial_shape()` and `get_element_type()`, not from a name.
+    3. `decode_detections` receives its tensor keyed by **port index**, not by name. Measured first-hand: input port name `'x'`, shape `[1,3,640,640]`, `float32`; output port shape `[1,84,8400]`, `float32`, unnamed. There is no name-based fetch fallback.
   - `decode_detections(spec: ModelOutputSpec, outputs: Mapping[str, np.ndarray], letterbox: Letterbox, conf_threshold: float, iou_threshold: float) -> list[Detection]`
   - `nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int]`
 
