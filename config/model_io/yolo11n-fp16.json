@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "model_id": "yolo11n-fp16",
+  "ir_path": "assets/models/yolo11n-fp16/yolo11n.xml",
+  "ir_sha256": "4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95",
+  "openvino_version": "2026.4.0-22959-99c81491cc3-releases/2026/4",
+  "num_classes": 80,
+  "input_shape": [
+    1,
+    3,
+    640,
+    640
+  ],
+  "inputs": [
+    {
+      "port_index": 0,
+      "port_key": "0",
+      "names": [
+        "x"
+      ],
+      "get_any_name": "'x'",
+      "rank": 4,
+      "shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "axes": [
+        {
+          "axis": 0,
+          "length": 1,
+          "is_dynamic": false
+        },
+        {
+          "axis": 1,
+          "length": 3,
+          "is_dynamic": false
+        },
+        {
+          "axis": 2,
+          "length": 640,
+          "is_dynamic": false
+        },
+        {
+          "axis": 3,
+          "length": 640,
+          "is_dynamic": false
+        }
+      ],
+      "is_static": true,
+      "element_type": "f32",
+      "element_type_str_form": "<Type: 'float32'>",
+      "rank_error": null
+    }
+  ],
+  "outputs": [
+    {
+      "port_index": 0,
+      "port_key": "0",
+      "names": [],
+      "get_any_name": "RAISES RuntimeError: Check '!get_names().empty()' failed at src\\core\\src\\descriptor\\tensor.cpp:102:\nAttempt to get a name for a Tensor without names",
+      "rank": 3,
+      "shape": [
+        1,
+        84,
+        8400
+      ],
+      "axes": [
+        {
+          "axis": 0,
+          "length": 1,
+          "is_dynamic": false
+        },
+        {
+          "axis": 1,
+          "length": 84,
+          "is_dynamic": false
+        },
+        {
+          "axis": 2,
+          "length": 8400,
+          "is_dynamic": false
+        }
+      ],
+      "is_static": true,
+      "element_type": "f32",
+      "element_type_str_form": "<Type: 'float32'>",
+      "rank_error": null
+    }
+  ],
+  "output_names": [],
+  "shapes": {
+    "0": [
+      1,
+      84,
+      8400
+    ]
+  },
+  "shapes_keyed_by": "port index as a string; the output port of this export is unnamed, so there is no name to key by",
+  "layout": "yolo_v8_transposed",
+  "box_encoding": "cxcywh",
+  "has_embedded_nms": false,
+  "port_keys": [
+    "0"
+  ],
+  "unnamed_ports": [
+    0
+  ],
+  "op_census": {
+    "total_ops": 734,
+    "distinct_op_types": 24,
+    "op_type_counts": {
+      "Constant": 219,
+      "Convert": 179,
+      "Add": 104,
+      "Convolution": 81,
+      "Swish": 77,
+      "Concat": 22,
+      "Reshape": 11,
+      "VariadicSplit": 11,
+      "GroupConvolution": 7,
+      "MaxPool": 3,
+      "Divide": 2,
+      "Interpolate": 2,
+      "MatMul": 2,
+      "Multiply": 2,
+      "Softmax": 2,
+      "Subtract": 2,
+      "Gather": 1,
+      "Greater": 1,
+      "Mod": 1,
+      "Parameter": 1,
+      "Result": 1,
+      "ShapeOf": 1,
+      "Sigmoid": 1,
+      "Transpose": 1
+    }
+  },
+  "fetch_note": "ov.InferRequest.get_tensor accepts a port name or a port object but not an int, so the port index here is a key this project assigns to the array after fetching by the port object",
+  "layout_cross_check": {
+    "independent_verdict": "yolo_v8_transposed",
+    "from_describe_outputs": "yolo_v8_transposed",
+    "agrees": true,
+    "note": "derived by separate code from the same observation; a match is evidence, a mismatch is a bug in one of the two"
+  },
+  "feature_count_check": {
+    "expected_4_plus_num_classes": 84,
+    "observed_on_axis_1": 84,
+    "agrees": true
+  },
+  "anchor_count_check": {
+    "trailing_extent": 8400,
+    "yolo_anchors_for_640_at_strides_8_16_32": 8400,
+    "agrees": true,
+    "note": "a post-NMS output would carry a small frame-dependent count, not the raw anchor count, so this is evidence independent of the op census that the export does not suppress"
+  },
+  "activation_ops_in_graph": {
+    "counts": {
+      "Softmax": 2,
+      "Sigmoid": 1
+    },
+    "note": "the export carries activation ops, which is consistent with the measured value ranges of the class block (rows 4..83 all within [0,1], max 0.909073 over a real frame) and is why app.inference.decode does not apply a second one. Which op is responsible for which block is NOT claimed here - the value range is the measurement, this is only corroboration."
+  },
+  "has_embedded_nms_evidence": "walked all 734 ops (24 distinct types) and found no NonMaxSuppression of any version; the output is static [1, 84, 8400] whose trailing extent is the raw anchor count 80^2+40^2+20^2 = 8400 for a 640 input, not a post-NMS detection count. Suppression is therefore the host's job and app.inference.decode.nms does it."
+}
