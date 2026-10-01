@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "retail_sanity",
+  "title": "Retail / Shelf Monitoring - sanity pack",
+  "built_on": "2026-10-01",
+  "purpose": "M0 sanity scenario. One real retail clip, one pinned detector, the annotated detection fixture, and the clips a presenter can switch between. ROI geometry and event state machines land in M1+; this pack records only what is measured.",
+  "model_ids": ["yolo11n-fp16"],
+  "clips": [
+    {
+      "id": "retail_checkout",
+      "path": "assets/media/retail-checkout.mp4",
+      "sha256": "e107db69155af4774f907abe8ddbf24493dfcf9d81d51f3e71ff25300e4f5906",
+      "bytes": 64996307,
+      "measured_width": 1920,
+      "measured_height": 1080,
+      "measured_fps": 29.97002997002997,
+      "measured_frames": 3387,
+      "measured_duration_s": 113.0129,
+      "license": "Pexels License - free for commercial use, no attribution required",
+      "distribution_status": "cleared for commercial use without attribution (Pexels License, as recorded)",
+      "role": "primary",
+      "notes": "Overhead self-checkout counter. Carried from the local content-verified cache; not re-downloaded."
+    },
+    {
+      "id": "store_aisle_alt",
+      "path": "assets/media/store-aisle-detection.mp4",
+      "sha256": "3526fee39cac70d6366471e4324a6d63b337c8f8ab99c015521bee0d60ed6e04",
+      "bytes": 9214573,
+      "measured_width": 720,
+      "measured_height": 404,
+      "measured_fps": 59.94005994005994,
+      "measured_frames": 3921,
+      "measured_duration_s": 65.41535,
+      "license": "Open Model Zoo sample media",
+      "distribution_status": "recorded as-is; not claimed as booth redistribution clearance",
+      "role": "alternate",
+      "notes": "An aisle of people walking; few packaged goods to name. Alternate clip, not a second camera."
+    },
+    {
+      "id": "queue_alt",
+      "path": "assets/media/one-by-one-person-detection.mp4",
+      "sha256": "a5964aa259099a482a8b360ffc2c57b5a30f84d5919236a4dad01f8e929ac07c",
+      "bytes": 3291918,
+      "measured_width": 768,
+      "measured_height": 432,
+      "measured_fps": 10.0,
+      "measured_frames": 1394,
+      "measured_duration_s": 139.4,
+      "license": "Open Model Zoo sample media",
+      "distribution_status": "recorded as-is; not claimed as booth redistribution clearance",
+      "role": "alternate",
+      "notes": "Single-file walking queue. Alternate clip, not a second camera."
+    }
+  ],
+  "roi": [],
+  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead; see tests/fixtures/retail_sanity/retail_sanity.json in Task 6.",
+  "event_annotations": [],
+  "content_gate": {
+    "spec_requirement": "three 45-90 second clips per scenario pack",
+    "measured_durations_s": [65.41535, 113.0129, 139.4],
+    "status": "unmet M5 content gate",
+    "note": "Clip count for this pack is met at three; the duration band is not. Only store_aisle_alt (65.41535 s) lies inside 45-90 s. retail_checkout (113.0129 s) and queue_alt (139.4 s) are longer than the band. Durations are cv2.VideoCapture measurements of the copied files, not rounded or trimmed. Carried to Task 9 as a declared unmet gate."
+  }
+}
