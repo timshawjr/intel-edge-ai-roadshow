@@ -31,10 +31,13 @@ complete is worse than no record.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -95,6 +98,17 @@ def _port_report(port: Any, index: int) -> dict[str, Any]:
     }
 
 
+def _ir_sha256(ir_path: Path) -> str:
+    """SHA-256 of the IR file in this tree, computed here.
+
+    Deliberately not `entry["sha256"]` from the manifest: the record has to say which
+    bytes were read, and copying the manifest's claim would make the record agree with
+    the manifest even if the file on disk were something else. The two are cross-checked
+    in `tests/test_decode.py`.
+    """
+    return hashlib.sha256(ir_path.read_bytes()).hexdigest()
+
+
 def _element_type_str(port: Any) -> str:
     """The element type as a comparable short name, e.g. `'f32'`.
 
@@ -112,6 +126,74 @@ def _element_type_str(port: Any) -> str:
     return str(element_type)
 
 
+def _probe_fetch_api(model: Any, compiled: Any) -> dict[str, Any]:
+    """MEASURE which key types each fetch call accepts, and record the answer.
+
+    This is measured, not asserted from memory, because the answer is genuinely
+    surprising and version-specific. Measured on `openvino==2026.4.0` on this machine:
+
+    | call                              | int index | port name | `Output` port object | `ConstOutput` |
+    |---|---|---|---|---|
+    | `infer({key: blob})`              | OK        | OK (`'x'`) | **TypeError**        | OK            |
+    | `get_tensor(key)`                 | TypeError | n/a (no name) | **OK**            | OK            |
+    | `get_output_tensor(0)`            | OK        | n/a       | n/a                 | n/a           |
+
+    So the two sides want **different** key types, and neither accepts the obvious one:
+    `infer` rejects the `Output` port object it is handed, while `get_tensor` rejects the
+    int. `get_output_tensor(0)` accepts the int and is the simpler route for outputs.
+    A caller that fetches the input one way and the output another will find this out at
+    runtime, on a booth, which is why both rows are recorded.
+
+    A `TypeError` is recorded as rejected. Any other exception is recorded as `"error:
+    <text>"` rather than being folded into "rejected", so a genuine failure cannot be
+    reported as a clean answer.
+    """
+    result: dict[str, Any] = {}
+    try:
+        probe = np.zeros((1, 3, 640, 640), dtype=np.float32)
+        cases: list[tuple[str, str, Any]] = [
+            ("input", "int_index", 0),
+            ("input", "port_name", next(iter(model.inputs[0].get_names()), "")),
+            ("input", "output_port_object", model.inputs[0]),
+            ("input", "const_output", compiled.input(0)),
+        ]
+        for side, kind, key in cases:
+            try:
+                compiled.create_infer_request().infer({key: probe})
+                result[f"infer_{side}_{kind}"] = "accepted"
+            except TypeError:
+                result[f"infer_{side}_{kind}"] = "rejected: TypeError"
+            except Exception as exc:  # noqa: BLE001 - recorded, not folded in
+                result[f"infer_{side}_{kind}"] = f"error: {type(exc).__name__}: {exc}"
+        out_cases: list[tuple[str, Any]] = [
+            ("int_index", 0),
+            ("output_port_object", model.outputs[0]),
+            ("const_output", compiled.output(0)),
+        ]
+        for kind, key in out_cases:
+            try:
+                request = compiled.create_infer_request()
+                request.infer({0: probe})
+                shape = tuple(request.get_tensor(key).shape)
+                result[f"get_tensor_output_{kind}"] = f"accepted: {list(shape)}"
+            except TypeError:
+                result[f"get_tensor_output_{kind}"] = "rejected: TypeError"
+            except Exception as exc:  # noqa: BLE001
+                result[f"get_tensor_output_{kind}"] = f"error: {type(exc).__name__}: {exc}"
+        try:
+            request = compiled.create_infer_request()
+            request.infer({0: probe})
+            shape = tuple(request.get_output_tensor(0).shape)
+            result["get_output_tensor_int_index"] = f"accepted: {list(shape)}"
+        except TypeError:
+            result["get_output_tensor_int_index"] = "rejected: TypeError"
+        except Exception as exc:  # noqa: BLE001
+            result["get_output_tensor_int_index"] = f"error: {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return {"probe_error": f"{type(exc).__name__}: {exc}"}
+    return result
+
+
 def _op_census(model: Any) -> dict[str, Any]:
     """Every op type in the graph, with the suppression search result beside it."""
     counts: dict[str, int] = {}
@@ -125,7 +207,8 @@ def _op_census(model: Any) -> dict[str, Any]:
     }
 
 
-def describe_model(model: Any, entry: dict[str, Any]) -> dict[str, Any]:
+def describe_model(model: Any, entry: dict[str, Any],
+                   compiled: Any | None = None) -> dict[str, Any]:
     """The full record for one pinned model, observed end to end."""
     num_classes = int(entry["num_classes"])
     spec: ModelOutputSpec = describe_outputs(model, num_classes=num_classes)
@@ -138,26 +221,43 @@ def describe_model(model: Any, entry: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1,
         "model_id": entry["id"],
         "ir_path": entry["ir_path"],
-        "ir_sha256": entry["sha256"],
+        # Computed from the artifact in this tree, NOT copied from the manifest. The
+        # manifest's hash is cross-checked separately, so a disagreement between the
+        # recorded record and the file it describes is visible rather than inherited.
+        "ir_sha256": _ir_sha256(REPO_ROOT / entry["ir_path"]),
         "openvino_version": str(ov.__version__),
         "num_classes": num_classes,
         "input_shape": list(entry["input_shape"]),
         "inputs": inputs,
         "outputs": outputs,
         "output_names": list(spec.names),
+        "named_port_keys": list(spec.named_port_keys),
         "shapes": {k: list(v) for k, v in spec.shapes.items()},
         "shapes_keyed_by": "port index as a string; the output port of this export is "
                            "unnamed, so there is no name to key by",
+        "named_port_keys_note": "the port key of each entry of output_names, in order; "
+                               "output_names is compacted, so a name alone cannot say "
+                               "which port it belongs to",
         "layout": spec.layout,
         "box_encoding": BOX_ENCODING,
         "has_embedded_nms": spec.has_embedded_nms,
         "port_keys": list(spec.port_keys),
         "unnamed_ports": list(spec.unnamed_ports),
         "op_census": census,
-        "fetch_note": "ov.InferRequest.get_tensor accepts a port name or a port object "
-                      "but not an int, so the port index here is a key this project "
-                      "assigns to the array after fetching by the port object",
     }
+    if compiled is not None:
+        record["fetch_api"] = _probe_fetch_api(model, compiled)
+    record["fetch_note"] = (
+        "MEASURED on the installed runtime by this tool; see fetch_api for the per-call "
+        "results. The two sides want DIFFERENT key types and neither accepts the obvious "
+        "one: InferRequest.infer accepts an int index, a port NAME, or a ConstOutput, "
+        "and REJECTS the Output port object; InferRequest.get_tensor accepts the Output "
+        "port object or a ConstOutput and REJECTS an int index, while "
+        "get_output_tensor(0) accepts the int. So the input for infer and the output for "
+        "get_tensor cannot both be keyed the same way, and a caller that assumes they "
+        "can finds out at runtime, on a booth. The port index app.inference.decode keys "
+        "on is a key this project assigns, not one OpenVINO accepts for either call."
+    )
 
     # An INDEPENDENT second derivation of the layout, written out here rather than
     # calling classify_layout a second time. Calling the same function twice and
@@ -245,7 +345,8 @@ def dump(model_id: str | None = None, write: bool = True) -> list[dict[str, Any]
                 f"copy are prerequisites; nothing here is downloaded at build time."
             )
         model = core.read_model(str(ir_path))
-        record = describe_model(model, entry)
+        compiled = core.compile_model(model, "CPU")
+        record = describe_model(model, entry, compiled=compiled)
         records.append(record)
         _print_report(record)
         if write:
@@ -286,6 +387,10 @@ def _print_report(record: dict[str, Any]) -> None:
         print(f"\n  cross-check: {record['layout_cross_check']}")
         print(f"  feature count: {record['feature_count_check']}")
         print(f"  anchor count:  {record['anchor_count_check']}")
+    if "fetch_api" in record:
+        print("\n  fetch API (measured, not assumed):")
+        for key, value in record["fetch_api"].items():
+            print(f"    {key:<38} {value}")
 
 
 def main(argv: list[str] | None = None) -> int:

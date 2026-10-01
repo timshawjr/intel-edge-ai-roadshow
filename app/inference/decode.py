@@ -56,6 +56,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Final
 
 import numpy as np
@@ -147,10 +148,15 @@ class Detection:
     def __post_init__(self) -> None:
         if not isinstance(self.class_id, int) or isinstance(self.class_id, bool):
             raise ValueError(f"class_id must be an int; got {self.class_id!r}")
-        object.__setattr__(self, "score", float(self.score))
-        object.__setattr__(self, "box", tuple(float(v) for v in self.box))  # type: ignore[arg-type]
-        if len(self.box) != 4:
+        score = float(self.score)
+        box = tuple(float(v) for v in self.box)
+        # Arity is checked BEFORE anything is stored, so a bad box leaves no half-built
+        # record behind. Setting first and validating after would have meant a 2-tuple
+        # was already installed on `self` when the refusal was raised.
+        if len(box) != 4:
             raise ValueError(f"box must be (x1, y1, x2, y2); got {self.box!r}")
+        object.__setattr__(self, "score", score)
+        object.__setattr__(self, "box", box)
 
 
 @dataclass(frozen=True)
@@ -169,9 +175,21 @@ class ModelOutputSpec:
         pinned model, so `decode_detections` runs its own NMS; if a re-export embedded
         NMS this becomes `True` and running suppression again would be a second,
         wrong, suppression pass over an already-suppressed list.
+    `named_port_keys` - the port key of each entry of `names`, in the same order. This
+        exists because `names` is **compacted** (a port with no name contributes
+        nothing), so `names[j]` is NOT port `j` and the two cannot be indexed together.
+        A two-output model with port 0 unnamed and port 1 named `b` has
+        `names == ("b",)`, and without this field `unnamed_ports` would report port 1 -
+        the named one - as the unnamed one. `describe_outputs` always fills it, and a
+        hand-built spec whose `names` and `named_port_keys` disagree in length is
+        refused rather than silently mis-aligned.
 
-    Not hashable, because `shapes` is a dict. That is a deliberate consequence of
-    keying by a mapping, and it is why the record is compared, not used as a key.
+    **Immutable, and unhashable.** `shapes` is wrapped in a read-only
+    `MappingProxyType`, so `spec.shapes["0"] = ...` raises instead of silently changing
+    what `decode_detections` will read: the record is built by `describe_outputs` and
+    read later by the decoder, and a mutation in between would change the decode with no
+    trace. The `frozen=True` dataclass alone did not give this, because a dict is
+    mutable however frozen the holder is. Being unhashable follows from the mapping.
     """
 
     names: tuple[str, ...]
@@ -179,6 +197,7 @@ class ModelOutputSpec:
     layout: str = LAYOUT_UNKNOWN
     num_classes: int = 0
     has_embedded_nms: bool = False
+    named_port_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.layout not in KNOWN_LAYOUTS:
@@ -219,8 +238,29 @@ class ModelOutputSpec:
                 raise ValueError(
                     f"shapes[{key!r}] must be a tuple of ints; got {shape!r}"
                 ) from exc
-        object.__setattr__(self, "shapes", normalised)
-        object.__setattr__(self, "names", tuple(str(n) for n in self.names))
+        names = tuple(str(n) for n in self.names)
+        named_port_keys = tuple(str(k) for k in self.named_port_keys)
+        if len(names) != len(named_port_keys):
+            raise ValueError(
+                f"names has {len(names)} entr(ies) but named_port_keys has "
+                f"{len(named_port_keys)}: {names!r} against {named_port_keys!r}. names is "
+                f"compacted - a port with no name contributes nothing - so the two must be "
+                f"built together, and unnamed_ports cannot be derived without this pairing. "
+                f"Use describe_outputs, which fills both."
+            )
+        for key in named_port_keys:
+            if key not in normalised:
+                raise ValueError(
+                    f"named_port_keys names port {key!r}, which is not in shapes "
+                    f"({sorted(normalised)}); a name for a port with no recorded shape "
+                    f"cannot be lined up with one that has a shape."
+                )
+        # Read-only, so a caller cannot change the decode after the describe. The
+        # `frozen=True` dataclass does not do this: the attribute is frozen, the dict it
+        # points at is not.
+        object.__setattr__(self, "shapes", MappingProxyType(normalised))
+        object.__setattr__(self, "names", names)
+        object.__setattr__(self, "named_port_keys", named_port_keys)
 
     @property
     def port_keys(self) -> tuple[str, ...]:
@@ -230,9 +270,15 @@ class ModelOutputSpec:
 
     @property
     def unnamed_ports(self) -> tuple[int, ...]:
-        """Ports the IR gives no name, by index. Distinguishes `()` from "no outputs"."""
-        return tuple(i for i, key in enumerate(self.port_keys) if not self.names
-                     or i >= len(self.names))
+        """Ports the IR gives no name, by index. Distinguishes `()` from "no outputs".
+
+        Derived from `named_port_keys`, never from the position of an entry in `names`:
+        `names` is compacted, so a two-output model with port 0 unnamed and port 1 named
+        has `names == ("b",)` and would otherwise report port **1** - the named one - as
+        unnamed. Measured, and the reason `named_port_keys` exists.
+        """
+        named = set(self.named_port_keys)
+        return tuple(i for i, key in enumerate(self.port_keys) if key not in named)
 
 
 def _as_index(key: Any) -> int:
@@ -415,26 +461,36 @@ def _is_suppression_op_type(type_name: str) -> bool:
 def describe_outputs(model: Any, num_classes: int) -> ModelOutputSpec:
     """Read the model's output ports and record what they are.
 
-    `model` is anything with `.outputs` and `.get_ordered_ops()`: a read
-    `ov.Model` or a compiled one. Ports are a property of the IR, so compiling proves
-    nothing extra here and costs seconds; the test suite runs it on both to show they
-    agree.
+    `model` is anything with `.outputs` and `.get_ordered_ops()`: a read `ov.Model` or a
+    runtime model. **Not** a `CompiledModel`, which cannot be walked - see
+    `_has_embedded_nms`. Ports are a property of the IR, so compiling proves nothing
+    extra here and costs seconds.
 
     Every value is observed. `get_any_name()` is not called, because on an unnamed port
     it raises and the port is not at fault. The layout comes from the partial shape and
     the element type, never from a name. `has_embedded_nms` comes from walking the ops.
+
+    **The graph is walked before any early return.** A zero-output model is a real IR
+    state, and the honest answer for one is "this graph contains no suppression op",
+    not "there is nothing to suppress" - the first is a measurement, the second is an
+    assumption about a graph that was never opened. So `has_embedded_nms` is computed
+    from the ops first and the zero-port case only *reports* it.
 
     The layout is decided on **the first output port**. A two-output detector (a raw
     head plus a decoded head, say) is not something this module can decode, and
     reporting a confident layout for it would be the guess this function exists to
     avoid - so a second output port makes the whole spec `"unknown"`.
     """
+    # First, and unconditionally: has_embedded_nms is a claim about the graph.
+    has_embedded_nms = _has_embedded_nms(model)
     ports = list(model.outputs)
     if not ports:
-        return ModelOutputSpec(names=(), shapes={}, layout=LAYOUT_UNKNOWN,
-                               num_classes=num_classes, has_embedded_nms=False)
+        return ModelOutputSpec(names=(), shapes={}, named_port_keys=(),
+                               layout=LAYOUT_UNKNOWN, num_classes=num_classes,
+                               has_embedded_nms=has_embedded_nms)
     shapes: dict[str, tuple[int, ...]] = {}
     names: list[str] = []
+    named_keys: list[str] = []
     layout = LAYOUT_UNKNOWN
     for index, port in enumerate(ports):
         shape = _port_shape(port)
@@ -443,7 +499,10 @@ def describe_outputs(model: Any, num_classes: int) -> ModelOutputSpec:
             shapes[key] = shape
         name = _port_name(port)
         if name:
+            # The key is recorded with the name, because `names` alone cannot say which
+            # port an entry belongs to. See ModelOutputSpec.named_port_keys.
             names.append(name)
+            named_keys.append(key)
         if index == 0:
             layout = classify_layout(shape, _port_element_type(port), num_classes)
     if len(ports) > 1:
@@ -452,9 +511,10 @@ def describe_outputs(model: Any, num_classes: int) -> ModelOutputSpec:
     return ModelOutputSpec(
         names=tuple(names),
         shapes=shapes,
+        named_port_keys=tuple(named_keys),
         layout=layout,
         num_classes=num_classes,
-        has_embedded_nms=_has_embedded_nms(model),
+        has_embedded_nms=has_embedded_nms,
     )
 
 
@@ -516,7 +576,12 @@ def _as_candidates(array: np.ndarray, layout: str,
                 f"reinterpreting it."
             )
         candidates = squeezed
-    else:  # pragma: no cover - guarded by DECODABLE_LAYOUTS in the caller
+    else:
+        # Defence in depth, not a branch the decode path can reach: `decode_detections`
+        # refuses anything outside DECODABLE_LAYOUTS before it gets here, and that
+        # refusal is what the tests pin. This backstop exists so that a future caller
+        # who reaches `_as_candidates` directly still gets an explicit refusal rather
+        # than a mis-read tensor.
         raise UnsupportedLayoutError(f"no tensor reader for layout {layout!r}")
     boxes = candidates[:, :BOX_VALUES]
     scores = candidates[:, BOX_VALUES:]
@@ -544,32 +609,58 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int
     act and would change which detections a booth shows.
 
     Greedy in descending score, and the returned indices are **ascending** so the result
-    does not depend on the score ordering of the input. An index of `-1` is a degenerate
-    box and is dropped rather than allowed to divide by zero; the returned list is
-    therefore not always a permutation of the input length, and a caller that needs a
-    one-to-one mapping must check its own boxes.
+    does not depend on the score ordering of the input.
+
+    **Degenerate boxes are dropped, not kept.** A box with zero or negative area - one
+    where `x2 <= x1` or `y2 <= y1` - cannot have an IoU, and the first version of this
+    function let it through: zero area makes `union` zero, `iou` was then defined as
+    `0.0`, and `0.0 <= threshold` *kept* it. Measured:
+
+        nms([[5, 5, 5, 5]], [0.9], 0.45)                  -> [0]     (was)
+        nms([[100, 100, 0, 0]], [0.9], 0.45)              -> [0]     (inside-out)
+        nms([[5,5,5,5],[0,0,10,10]], [0.9, 0.8], 0.45)    -> [0, 1]  (degenerate survived)
+
+    That is not a theoretical concern. `_cxcywh_to_xyxy` on a `w` or `h` of zero - which
+    a YOLO head can emit for a degenerate anchor - produces exactly a zero-size box, and
+    it would have reached the drawer as a zero-area or inside-out rectangle drawn at
+    whatever confidence the anchor carried.
+
+    So degenerate indices are removed before the greedy loop, and the returned list is a
+    **subset of the input indices** in which every entry has positive area. It is not a
+    permutation of the input, and a caller that needs a one-to-one mapping with its own
+    arrays must account for that.
     """
     threshold = _require_threshold("iou_threshold", iou_threshold)
     box_array = np.asarray(boxes, dtype=np.float32)
     score_array = np.asarray(scores, dtype=np.float32).reshape(-1)
-    if box_array.size == 0:
-        return []
-    if box_array.ndim != 2 or box_array.shape[1] != 4:
+    # Arity is checked BEFORE the empty short-circuit. A (0, 3) or (0,) array is empty
+    # and malformed at once, and the order below decides which complaint it gets: the
+    # first version returned [] for both, so a caller passing the wrong width got a
+    # plausible empty result instead of being told the array was malformed.
+    if box_array.ndim != 2 or box_array.shape[1:] != (4,):
         raise ValueError(f"boxes must be an (N, 4) xyxy array; got {box_array.shape!r}")
+    if box_array.shape[0] == 0:
+        return []
     if box_array.shape[0] != score_array.shape[0]:
         raise ValueError(
             f"boxes and scores must be the same length; got {box_array.shape[0]} and "
             f"{score_array.shape[0]}"
         )
-    # A negative or zero area cannot have an IoU, so it is not a box.
-    widths = np.maximum(box_array[:, 2] - box_array[:, 0], 0.0)
-    heights = np.maximum(box_array[:, 3] - box_array[:, 1], 0.0)
-    areas = widths * heights
+    # A negative or zero area cannot have an IoU, so it is not a box: drop those rows
+    # before suppression rather than letting them survive as iou 0.0.
+    widths = box_array[:, 2] - box_array[:, 0]
+    heights = box_array[:, 3] - box_array[:, 1]
+    usable = np.flatnonzero((widths > 0.0) & (heights > 0.0))
+    if usable.size == 0:
+        return []
+    box_array = box_array[usable]
+    score_array = score_array[usable]
+    areas = widths[usable] * heights[usable]
     order = np.argsort(-score_array, kind="stable")
     keep: list[int] = []
     while order.size:
         best = int(order[0])
-        keep.append(best)
+        keep.append(int(usable[best]))
         if order.size == 1:
             break
         rest = order[1:]

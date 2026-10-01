@@ -20,8 +20,8 @@ The transform, in full, with nothing implicit:
 suggests, so that `2 * pad + scaled <= dst` holds for every aspect ratio. Rounding can
 hand back half a pixel too much and push the right or bottom edge of the image off the
 canvas. Floor division cannot, and the remainder is simply pad at the bottom/right,
-which is invisible for a uniform zero pad. Every value the plan's tests pin is
-unchanged by this: 320/2 = 160 and 280/2 = 140 either way.
+which is invisible for a uniform pad. Every value the plan's tests pin is unchanged by
+this: 320/2 = 160 and 280/2 = 140 either way.
 
 Measured first-hand on this machine, through this module's own rule:
 
@@ -32,7 +32,32 @@ Measured first-hand on this machine, through this module's own rule:
 | 200x100   | 640x640 | 3.2      | 640x320 | (0, 160) |
 | 100x200   | 640x640 | 3.2      | 320x640 | (160, 0) |
 
-**Two things this module does not do, deliberately.**
+**RULING 24, 2026-10-01: the pad band is filled with mid-grey `114`, not zeros.**
+
+The plan specified zeros, and the first version of this module implemented that. It was
+then measured, and the zeros were a train/serve distribution shift that the export was
+converted *against*: this model came from the Ultralytics pipeline, which letterboxes
+with 114. On a 1920x1080 frame into 640x640, 21.88% of the canvas is pad, and filling it
+with 0 rather than 114 moves the tensor by up to 0.447 in `float32` NCHW (114/255 =
+0.447; the reviewer's uint8-domain figure of 368.11 is the same difference unscaled).
+
+`pad_value` is therefore a parameter defaulting to `114`, and it is recorded **on the
+`Letterbox`** so the pixel buffer and the record cannot disagree - the same discipline
+as `scaled_w`/`scaled_h`. `0` stays reachable so the A/B remains runnable, because the
+honest summary of what was measured is narrow:
+
+- The raw score array moves materially (max abs diff 0.806 across four frames).
+- The number of anchors above 0.25 moves (15 -> 20 on one frame).
+- The **decoded post-NMS detections were identical on all four frames tested.**
+
+So the zeros demonstrably change what the model computes, and demonstrably did not
+change the top detections on the frames that were checked. That second fact is luck of
+those frames - large, central, high-contrast objects - and it is **not** evidence that
+zeros are safe. What the change removes is the distribution shift the export was
+converted under. **No claim is made here that 114 improves detection quality**; there is
+no measurement of that, and the A/B detection-set delta tool is M1 work.
+
+**Two more things this module does not do, deliberately.**
 
 - *It does not clamp.* `to_source` is affine and unclamped, so a box in the pad band
   comes back as a negative or over-range source coordinate, which is the truth. Silently
@@ -45,26 +70,47 @@ Measured first-hand on this machine, through this module's own rule:
   reader uses; a hand-rolled bilinear resampler would add a second, subtler class of
   off-by-one indexing bug to a module whose entire job is to be exactly right about
   geometry.
-
-**Recorded divergence, not resolved here.** The pad band is filled with **zeros**, as
-the plan specifies. The Ultralytics training and export pipeline letterboxes with a
-mid-grey **114** instead. Zeros are not wrong - they are a real, stated choice - but
-they are a different input distribution from the one the model was converted under, and
-M1's detection quality may be measurably affected. It is recorded rather than silently
-changed, because changing it is a decision with a visible consequence and M0 does not
-run a quality benchmark.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 import cv2
 import numpy as np
 
-__all__ = ["Letterbox", "letterbox_params", "preprocess_bgr"]
+__all__ = ["DEFAULT_PAD_VALUE", "Letterbox", "letterbox_params", "preprocess_bgr"]
 
 Box = tuple[float, float, float, float]
+
+#: The value the pad band is filled with. 114 is what the Ultralytics training and
+#: export pipeline letterboxes with, and this export came from that pipeline - see
+#: RULING 24 in the module docstring. It is a named constant rather than a bare literal
+#: in a signature because it is a decision with a measured consequence, and a test pins
+#: that `preprocess_bgr` actually defaults to it.
+DEFAULT_PAD_VALUE: Final[int] = 114
+
+
+def _check_pad_value(pad_value: int) -> int:
+    """A pad value that is one uint8 pixel level, or a refusal naming the range.
+
+    A `bool` is refused because `True` is an `int` in Python and `True` as a pixel level
+    is a bug wearing a valid-looking value.
+    """
+    if not isinstance(pad_value, int) or isinstance(pad_value, bool):
+        raise TypeError(
+            f"pad_value must be an int pixel level in [0, 255]; got {pad_value!r}. A "
+            f"float would be silently truncated and a bool is an int in Python, so both "
+            f"are refused rather than coerced."
+        )
+    if not 0 <= pad_value <= 255:
+        raise ValueError(
+            f"pad_value must be a uint8 pixel level in [0, 255]; got {pad_value!r}. The "
+            f"canvas is uint8, so anything outside that range cannot be written to it."
+        )
+    return pad_value
+
 
 
 @dataclass(frozen=True)
@@ -80,6 +126,11 @@ class Letterbox:
     clamped to the destination, and they are the one place that expression exists. If
     the geometry and the resize were computed separately they could disagree by a
     pixel, and a one-pixel disagreement is a one-pixel error on every drawn box.
+
+    `pad_value` **is** stored, for the same reason: it is a fact about the pixel buffer
+    rather than about the geometry, and a record that did not carry it would let a
+    consumer reconstruct the transform and get a different tensor than the one the
+    model was shown. Ruling 24 - it is 114, not 0.
     """
 
     scale: float
@@ -89,6 +140,7 @@ class Letterbox:
     src_h: int
     dst_w: int
     dst_h: int
+    pad_value: int = DEFAULT_PAD_VALUE
 
     def __post_init__(self) -> None:
         if not (self.scale > 0.0) or not np.isfinite(self.scale):
@@ -103,6 +155,7 @@ class Letterbox:
                 raise ValueError(
                     f"Letterbox.{name} must be a positive int; got {value!r}"
                 )
+        _check_pad_value(self.pad_value)
 
     @property
     def scaled_w(self) -> int:
@@ -151,13 +204,18 @@ def _as_box(box: Box) -> Box:
     return values  # type: ignore[return-value]
 
 
-def letterbox_params(src_w: int, src_h: int, dst_w: int, dst_h: int) -> Letterbox:
+def letterbox_params(src_w: int, src_h: int, dst_w: int, dst_h: int,
+                     pad_value: int = DEFAULT_PAD_VALUE) -> Letterbox:
     """The letterbox for one source/destination pair: uniform scale, centred, recorded.
 
     The scale is `min` of the two axis ratios, so the whole image fits and the aspect
     ratio is preserved. The leftover on each axis is split evenly and the **top-left**
     half is the recorded pad; the image is placed there, which is what makes the
     single-value pad a true inverse rather than an approximation of one.
+
+    `pad_value` is recorded rather than applied here - this function describes the
+    transform, and `preprocess_bgr` is what writes pixels - so that a caller can build
+    the record without a frame and get exactly the record the array was built with.
     """
     for name, value in (("src_w", src_w), ("src_h", src_h),
                         ("dst_w", dst_w), ("dst_h", dst_h)):
@@ -167,6 +225,7 @@ def letterbox_params(src_w: int, src_h: int, dst_w: int, dst_h: int) -> Letterbo
                 f"has no letterbox, and a zero source extent is a ZeroDivisionError "
                 f"rather than a refusal."
             )
+    _check_pad_value(pad_value)
     scale = min(dst_w / src_w, dst_h / src_h)
     scaled_w = _scaled_extent(src_w, scale, dst_w)
     scaled_h = _scaled_extent(src_h, scale, dst_h)
@@ -178,10 +237,12 @@ def letterbox_params(src_w: int, src_h: int, dst_w: int, dst_h: int) -> Letterbo
         src_h=src_h,
         dst_w=dst_w,
         dst_h=dst_h,
+        pad_value=pad_value,
     )
 
 
-def preprocess_bgr(bgr: np.ndarray, dst_w: int, dst_h: int) -> tuple[np.ndarray, Letterbox]:
+def preprocess_bgr(bgr: np.ndarray, dst_w: int, dst_h: int,
+                   pad_value: int = DEFAULT_PAD_VALUE) -> tuple[np.ndarray, Letterbox]:
     """One BGR `uint8` frame -> one `float32` NCHW RGB tensor in `[0, 1]`, plus the record.
 
     Batch size is 1 and is not a parameter: the NPU rejects dynamic shapes (AGENTS.md
@@ -193,8 +254,13 @@ def preprocess_bgr(bgr: np.ndarray, dst_w: int, dst_h: int) -> tuple[np.ndarray,
     sliced array is a view with non-standard strides, and some inference backends read
     it as if it were dense.
 
+    The pad band is filled with `pad_value`, which defaults to **114** (Ruling 24, module
+    docstring) rather than the zeros the plan specified. `0` is still reachable so the
+    A/B stays runnable, and the value that was used is on the returned `Letterbox`.
+
     Fails closed on anything it cannot interpret without guessing: a non-`HxWx3` shape,
-    or a dtype that does not say which of `[0,1]` and `[0,255]` the numbers are in.
+    a dtype that does not say which of `[0,1]` and `[0,255]` the numbers are in, or a
+    `pad_value` that is not a uint8 pixel level.
     """
     array = np.asarray(bgr)
     if array.ndim != 3 or array.shape[2] != 3:
@@ -210,8 +276,9 @@ def preprocess_bgr(bgr: np.ndarray, dst_w: int, dst_h: int) -> tuple[np.ndarray,
             f"frame could be in [0,1] or in [0,255] and there is no measurement here "
             f"that would tell the two apart, so the caller has to say which."
         )
+    _check_pad_value(pad_value)
     src_h, src_w = int(array.shape[0]), int(array.shape[1])
-    letterbox = letterbox_params(src_w, src_h, dst_w, dst_h)
+    letterbox = letterbox_params(src_w, src_h, dst_w, dst_h, pad_value=pad_value)
 
     # INTER_LINEAR, not INTER_NEAREST: this is an upscale on this machine (1920x1080 ->
     # 640 wide) and nearest-neighbour blockiness is visible on a booth screen.
@@ -220,7 +287,10 @@ def preprocess_bgr(bgr: np.ndarray, dst_w: int, dst_h: int) -> tuple[np.ndarray,
         (letterbox.scaled_w, letterbox.scaled_h),
         interpolation=cv2.INTER_LINEAR,
     )
-    canvas = np.zeros((dst_h, dst_w, 3), dtype=np.uint8)
+    # `np.full`, not `np.zeros`: the band is 114 by default. Filling it through the
+    # record's own field is deliberate - a literal here would be a second place the
+    # value lives, which is how the array and the record come to disagree.
+    canvas = np.full((dst_h, dst_w, 3), letterbox.pad_value, dtype=np.uint8)
     canvas[letterbox.pad_y:letterbox.pad_y + letterbox.scaled_h,
            letterbox.pad_x:letterbox.pad_x + letterbox.scaled_w] = resized
 

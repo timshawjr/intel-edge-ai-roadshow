@@ -90,6 +90,7 @@
     }
   ],
   "output_names": [],
+  "named_port_keys": [],
   "shapes": {
     "0": [
       1,
@@ -98,6 +99,7 @@
     ]
   },
   "shapes_keyed_by": "port index as a string; the output port of this export is unnamed, so there is no name to key by",
+  "named_port_keys_note": "the port key of each entry of output_names, in order; output_names is compacted, so a name alone cannot say which port it belongs to",
   "layout": "yolo_v8_transposed",
   "box_encoding": "cxcywh",
   "has_embedded_nms": false,
@@ -137,7 +139,17 @@
       "Transpose": 1
     }
   },
-  "fetch_note": "ov.InferRequest.get_tensor accepts a port name or a port object but not an int, so the port index here is a key this project assigns to the array after fetching by the port object",
+  "fetch_api": {
+    "infer_input_int_index": "accepted",
+    "infer_input_port_name": "accepted",
+    "infer_input_output_port_object": "rejected: TypeError",
+    "infer_input_const_output": "accepted",
+    "get_tensor_output_int_index": "rejected: TypeError",
+    "get_tensor_output_output_port_object": "accepted: [1, 84, 8400]",
+    "get_tensor_output_const_output": "accepted: [1, 84, 8400]",
+    "get_output_tensor_int_index": "accepted: [1, 84, 8400]"
+  },
+  "fetch_note": "MEASURED on the installed runtime by this tool; see fetch_api for the per-call results. The two sides want DIFFERENT key types and neither accepts the obvious one: InferRequest.infer accepts an int index, a port NAME, or a ConstOutput, and REJECTS the Output port object; InferRequest.get_tensor accepts the Output port object or a ConstOutput and REJECTS an int index, while get_output_tensor(0) accepts the int. So the input for infer and the output for get_tensor cannot both be keyed the same way, and a caller that assumes they can finds out at runtime, on a booth. The port index app.inference.decode keys on is a key this project assigns, not one OpenVINO accepts for either call.",
   "layout_cross_check": {
     "independent_verdict": "yolo_v8_transposed",
     "from_describe_outputs": "yolo_v8_transposed",

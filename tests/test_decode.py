@@ -37,6 +37,7 @@ puts detections at late box indices with asymmetric coordinates, so a decoder th
 does not transpose either raises or returns different boxes.
 """
 
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -44,6 +45,7 @@ from pathlib import Path
 import numpy as np
 
 from app.inference.decode import (
+    Detection,
     ModelOutputSpec,
     UnsupportedLayoutError,
     describe_outputs,
@@ -114,7 +116,7 @@ LATE_DETECTIONS = [
 
 
 def _spec(layout, names=(), shapes=None, num_classes=NUM_CLASSES,
-          has_embedded_nms=False, num_boxes=NUM_BOXES):
+          has_embedded_nms=False, num_boxes=NUM_BOXES, named_port_keys=None):
     """A spec whose recorded shape matches the tensor it will be handed.
 
     A helper rather than something inlined, so the two cannot drift: a spec whose
@@ -128,9 +130,14 @@ def _spec(layout, names=(), shapes=None, num_classes=NUM_CLASSES,
             shapes = {"0": (1, num_boxes, 4 + num_classes)}
         else:
             shapes = {}
+    if named_port_keys is None:
+        # `names` is compacted and `named_port_keys` pairs with it; these helpers only
+        # ever name port 0, so the pairing is the identity here.
+        named_port_keys = tuple(sorted(shapes)[:len(names)])
     return ModelOutputSpec(
         names=tuple(names),
         shapes=dict(shapes),
+        named_port_keys=tuple(named_port_keys),
         layout=layout,
         num_classes=num_classes,
         has_embedded_nms=bool(has_embedded_nms),
@@ -455,6 +462,120 @@ class Nms(unittest.TestCase):
         s = np.array([0.9, 0.8], dtype=np.float32)
         self.assertEqual(nms(b, s, 0.45), [0, 1])
 
+    def test_the_iou_boundary_is_inclusive_and_pinned_on_both_sides(self):
+        # A=(0,0,4,4) area 16; B=(0,0,4,8) area 32; intersection 16; union 32; so the
+        # IoU is exactly 0.5, exactly representable in binary at every step.
+        # The comparison is `iou <= threshold` KEeps, so a pair sitting exactly ON the
+        # threshold survives and a threshold one ULP below it suppresses. (I had this
+        # backwards when writing it, and the test caught it: an IoU of exactly 0.5 is
+        # not "too similar", it is the agreed limit.)
+        b = np.array([[0, 0, 4, 4], [0, 0, 4, 8]], dtype=np.float32)
+        s = np.array([0.9, 0.8], dtype=np.float32)
+        self.assertEqual(nms(b, s, 0.5), [0, 1])
+        just_below = float(np.nextafter(np.float32(0.5), np.float32(0.0)))
+        self.assertEqual(nms(b, s, just_below), [0])
+        # One ULP above the IoU is still kept, so the boundary is the comparison itself
+        # and not some tolerance around it.
+        just_above = float(np.nextafter(np.float32(0.5), np.float32(1.0)))
+        self.assertEqual(nms(b, s, just_above), [0, 1])
+
+    def test_a_score_exactly_at_the_confidence_threshold_is_kept(self):
+        # The comparison is `>= conf`, so 0.25 at conf 0.25 survives.
+        det = (0, 300.0, 260.0, 80.0, 40.0, 0, 0.25)
+        outputs = _tensor("yolo_v8_transposed", [det])
+        lb = letterbox_params(640, 640, 640, 640)
+        self.assertEqual(
+            len(decode_detections(_spec("yolo_v8_transposed"), outputs, lb, 0.25, 0.45)),
+            1)
+        # One ULP above, the same anchor is dropped - so it is `>=` and not `>`.
+        just_above = float(np.nextafter(np.float32(0.25), np.float32(1.0)))
+        self.assertEqual(
+            decode_detections(_spec("yolo_v8_transposed"), outputs, lb, just_above, 0.45),
+            [])
+
+
+class DegenerateBoxesAreDropped(_BoxAssertions):
+    """I-1: the `nms` docstring promised to drop a degenerate box and did not.
+
+    Zero area makes `union` zero, so `iou` was defined as `0.0`, and `0.0 <= threshold`
+    **kept** the box. Measured before the fix:
+
+        nms([[5, 5, 5, 5]], [0.9], 0.45)                  -> [0]
+        nms([[100, 100, 0, 0]], [0.9], 0.45)              -> [0]     inside-out
+        nms([[5,5,5,5],[0,0,10,10]], [0.9, 0.8], 0.45)    -> [0, 1]
+
+    This is reachable from real output: `_cxcywh_to_xyxy` on a `w` or `h` of zero -
+    which a YOLO head can emit for a degenerate anchor - produces exactly a zero-area
+    box, and it reached the drawer as a zero-area or inside-out rectangle at whatever
+    confidence the anchor carried.
+    """
+
+    def test_a_zero_area_box_is_dropped(self):
+        self.assertEqual(nms([[5, 5, 5, 5]], [0.9], 0.45), [])
+
+    def test_an_inside_out_box_is_dropped(self):
+        self.assertEqual(nms([[100, 100, 0, 0]], [0.9], 0.45), [])
+
+    def test_a_degenerate_box_does_not_displace_a_real_one(self):
+        # The review's case: index 0 is degenerate and scores HIGHER, so under the old
+        # behaviour it survived and the real box came along behind it.
+        self.assertEqual(nms([[5, 5, 5, 5], [0, 0, 10, 10]], [0.9, 0.8], 0.45), [1])
+
+    def test_only_degenerate_boxes_gives_an_empty_answer(self):
+        self.assertEqual(nms([[5, 5, 5, 5], [9, 9, 9, 9]], [0.9, 0.8], 0.45), [])
+
+    def test_the_returned_indices_are_a_subset_and_all_have_positive_area(self):
+        boxes = np.array([[5, 5, 5, 5], [0, 0, 10, 10], [40, 40, 20, 20],
+                          [100, 100, 120, 120]], dtype=np.float32)
+        scores = np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float32)
+        kept = nms(boxes, scores, 0.45)
+        self.assertEqual(kept, [1, 3])
+        self.assertTrue(set(kept) <= set(range(len(boxes))))
+        for i in kept:
+            x1, y1, x2, y2 = (float(v) for v in boxes[i])
+            self.assertGreater(x2, x1)
+            self.assertGreater(y2, y1)
+
+    def test_a_degenerate_anchor_from_the_model_never_becomes_a_detection(self):
+        # End to end, through _cxcywh_to_xyxy. w == 0 and w < 0 are both things the head
+        # can emit; neither may reach the output list.
+        for layout in ("yolo_v8_transposed", "yolo_v8_passthrough"):
+            with self.subTest(layout=layout):
+                anchors = [
+                    (0, 300.0, 260.0, 0.0, 40.0, 0, 0.95),    # w == 0
+                    (1, 300.0, 260.0, -50.0, 40.0, 0, 0.94),  # w < 0
+                    (2, 500.0, 400.0, 40.0, 30.0, 0, 0.90),   # the only real one
+                ]
+                out = decode_detections(
+                    _spec(layout), _tensor(layout, anchors),
+                    letterbox_params(640, 640, 640, 640), 0.25, 0.45)
+                self.assertEqual(len(out), 1, f"{layout} returned {len(out)}")
+                self.assertAlmostEqual(out[0].score, 0.90, places=4)
+                for d in out:
+                    self.assertGreater(d.box[2], d.box[0], f"zero-width box {d.box}")
+                    self.assertGreater(d.box[3], d.box[1], f"zero-height box {d.box}")
+
+
+class MalformedInputIsRefusedNotAbsorbed(unittest.TestCase):
+    """M-3 / M-4: two validation-ordering defects, both of which turned a caller bug
+    into a plausible-looking answer rather than a refusal."""
+
+    def test_detection_refuses_a_box_of_the_wrong_arity(self):
+        for bad in [(1.0, 2.0), (1.0, 2.0, 3.0), (1.0, 2.0, 3.0, 4.0, 5.0), ()]:
+            with self.subTest(arity=len(bad)), self.assertRaises(ValueError):
+                Detection(class_id=0, score=0.5, box=bad)
+
+    def test_nms_refuses_a_malformed_array_even_when_it_is_empty(self):
+        # M-3: the empty short-circuit fired before the arity check, so a (0, 3) array -
+        # malformed and empty at once - came back as a plausible "no boxes" answer
+        # instead of a refusal.
+        for bad in [np.zeros((0,)), np.zeros((0, 3)), np.zeros((0, 2)),
+                    np.zeros((0, 4, 1)), np.zeros((5,))]:
+            with self.subTest(shape=bad.shape), self.assertRaises(ValueError):
+                nms(bad, np.zeros((0,)), 0.45)
+        # The well-formed empty case is still an empty answer, not a refusal.
+        self.assertEqual(nms(np.zeros((0, 4)), np.zeros((0,)), 0.45), [])
+
 
 class DescribeOutputsAgainstThePinnedIR(unittest.TestCase):
     """Step 6: the recorded description must agree with the real model.
@@ -553,6 +674,57 @@ class DescribeOutputsAgainstThePinnedIR(unittest.TestCase):
         labels = (IR_PATH.parent / "labels.txt").read_text(encoding="utf-8").split()
         self.assertEqual(len(labels), self.recorded["num_classes"])
 
+    def test_the_recorded_ir_hash_is_computed_from_the_artifact_not_copied(self):
+        # M-6: setting ir_sha256 to garbage left all 57 tests green, because the value
+        # was never compared to the file. It is the field that says WHICH IR produced
+        # the record, so it is hashed here from the bytes on disk. The manifest's own
+        # claim is cross-checked against the same digest, so the two cannot agree with
+        # each other while disagreeing with the artifact.
+        digest = hashlib.sha256(IR_PATH.read_bytes()).hexdigest()
+        self.assertEqual(self.recorded["ir_sha256"], digest)
+        self.assertEqual(self.manifest["models"][0]["sha256"], digest)
+
+    def test_the_recorded_runtime_version_is_the_installed_one(self):
+        import openvino as ov
+        self.assertEqual(self.recorded["openvino_version"], str(ov.__version__))
+        self.assertNotEqual(self.recorded["openvino_version"], "2026.4.0")
+
+    def test_the_recorded_fetch_api_covers_both_sides_and_was_measured(self):
+        # M-5: the note used to describe only get_tensor. Task 7 needs the INPUT side
+        # too, and the two sides accept different key types - infer REJECTS the port
+        # object it is handed while get_tensor REJECTS the int.
+        fetch = self.recorded["fetch_api"]
+        self.assertEqual(fetch["infer_input_output_port_object"], "rejected: TypeError")
+        self.assertTrue(fetch["infer_input_int_index"].startswith("accepted"))
+        self.assertTrue(fetch["infer_input_port_name"].startswith("accepted"))
+        self.assertTrue(fetch["infer_input_const_output"].startswith("accepted"))
+        self.assertEqual(fetch["get_tensor_output_int_index"], "rejected: TypeError")
+        self.assertTrue(fetch["get_tensor_output_output_port_object"].startswith("accepted"))
+        self.assertTrue(fetch["get_output_tensor_int_index"].startswith("accepted"))
+        self.assertIn("different key types", self.recorded["fetch_note"].lower())
+        self.assertIn("infer", self.recorded["fetch_note"])
+
+    def test_the_two_fetch_refusals_are_re_measured_not_only_recorded(self):
+        # So a runtime change is caught by the suite rather than only on the next
+        # regeneration of the record.
+        blank = np.zeros((1, 3, 640, 640), dtype=np.float32)
+        request = self.compiled.create_infer_request()
+        request.infer({0: blank})
+        with self.assertRaises(TypeError):
+            request.get_tensor(0)
+        self.assertEqual(tuple(request.get_tensor(self.model.outputs[0]).shape),
+                         (1, 84, 8400))
+        with self.assertRaises(TypeError):
+            self.compiled.create_infer_request().infer({self.model.inputs[0]: blank})
+        # The int form of infer, the one the app actually uses, still works.
+        self.compiled.create_infer_request().infer({0: blank})
+
+    def test_the_recorded_input_port_name_is_usable_as_an_infer_key(self):
+        self.assertEqual([p["names"] for p in self.recorded["inputs"]], [["x"]])
+        self.assertEqual(self.recorded["outputs"][0]["names"], [])
+        self.assertEqual(self.recorded["named_port_keys"], [])
+        self.assertEqual(self.recorded["unnamed_ports"], [0])
+
 
 class _FakePort:
     """A port stub. `shape` may hold `None` for an open (dynamic) dimension."""
@@ -605,6 +777,208 @@ MEASURED_OP_TYPES = (
     "Reshape", "GroupConvolution", "MaxPool", "MatMul", "Multiply", "Softmax",
     "Interpolate", "Divide", "Subtract", "Parameter", "Transpose", "ShapeOf", "Gather",
 )
+
+
+class EachGuardIsReachedDirectly(unittest.TestCase):
+    """M-1: two guards no test could distinguish from the layer beneath.
+
+    Both were found by mutation to survive. The shared cause is the same: a test that
+    happens to trip an *outer* check never exercises the *inner* one, so the inner one
+    is indistinguishable from not existing. Each test below removes the outer check by
+    construction - `shapes={}`, or an empty output mapping - so only the intended guard
+    can be what raised.
+    """
+
+    LB = letterbox_params(640, 640, 640, 640)
+
+    def test_the_layout_refusal_fires_before_any_complaint_about_the_tensor(self):
+        # Killing the DECODABLE_LAYOUTS guard let "ssd" fall through to the tensor
+        # checks, and with an empty mapping the first thing reached is the missing-port
+        # ValueError. assertRaises(UnsupportedLayoutError) does not match a plain
+        # ValueError, because UnsupportedLayoutError is the subclass, not the superclass.
+        spec = _spec("ssd", shapes={})
+        with self.assertRaises(UnsupportedLayoutError):
+            decode_detections(spec, {}, self.LB, 0.25, 0.45)
+
+    def test_the_same_ssd_spec_still_refuses_when_a_tensor_is_supplied(self):
+        # The message differs from the tensor-reader backstop's, which is how the two
+        # are told apart by a human reading a log.
+        with self.assertRaises(UnsupportedLayoutError) as caught:
+            decode_detections(_spec("ssd", shapes={}),
+                              _tensor("yolo_v8_transposed", [ONE_DETECTION]),
+                              self.LB, 0.25, 0.45)
+        self.assertIn("known layout this milestone does not decode", str(caught.exception))
+
+    def test_the_transposed_reader_refuses_a_contradicting_extent_with_no_record(self):
+        # shapes={} so the outer "recorded shape contradicts the tensor" check cannot
+        # fire. A (1, 8400, 84) tensor read as transposed would NOT raise anywhere else:
+        # 8400 features sliced to 80 classes still yields a class axis, so the wrong
+        # reading would decode silently. That is the whole reason for the inner check.
+        with self.assertRaises(ValueError) as caught:
+            decode_detections(_spec("yolo_v8_transposed", shapes={}),
+                              _tensor("yolo_v8_passthrough", [ONE_DETECTION]),
+                              self.LB, 0.25, 0.45)
+        self.assertIn("requires 84 features on axis 1", str(caught.exception))
+
+    def test_the_passthrough_reader_refuses_a_contradicting_extent_with_no_record(self):
+        with self.assertRaises(ValueError) as caught:
+            decode_detections(_spec("yolo_v8_passthrough", shapes={}),
+                              _tensor("yolo_v8_transposed", [ONE_DETECTION]),
+                              self.LB, 0.25, 0.45)
+        self.assertIn("requires 84 features on axis 2", str(caught.exception))
+
+    def test_a_spec_with_no_recorded_shape_still_decodes_the_right_tensor(self):
+        # The control for the two above: shapes={} is not itself a refusal.
+        out = decode_detections(_spec("yolo_v8_transposed", shapes={}),
+                                _tensor("yolo_v8_transposed", [ONE_DETECTION]),
+                                self.LB, 0.25, 0.45)
+        self.assertEqual(len(out), 1)
+
+
+class AZeroOutputModelStillHasItsGraphRead(unittest.TestCase):
+    """I-2: the zero-output early return fired BEFORE the op walk, so a model with no
+    outputs reported `has_embedded_nms=False` from a graph that was never opened - the
+    exact thing the module's own docstring forbids. A zero-output model is a real IR
+    state and the honest answer is what the graph says, not "there is nothing to
+    suppress"."""
+
+    def test_a_zero_output_model_with_a_suppression_op_reports_true(self):
+        model = _FakeModel([], ops=[_FakeOp("Convolution"), _FakeOp("NonMaxSuppression")])
+        spec = describe_outputs(model, num_classes=80)
+        self.assertIs(spec.has_embedded_nms, True)
+        self.assertEqual(spec.layout, "unknown")
+        self.assertEqual(spec.port_keys, ())
+        self.assertEqual(spec.unnamed_ports, ())
+
+    def test_a_zero_output_model_without_one_reports_false(self):
+        model = _FakeModel([], ops=[_FakeOp("Convolution"), _FakeOp("Softmax")])
+        self.assertIs(describe_outputs(model, num_classes=80).has_embedded_nms, False)
+
+    def test_a_zero_output_model_whose_graph_cannot_be_walked_still_refuses(self):
+        # The walk is unconditional, so the refusal survives the early return too -
+        # otherwise an un-walkable zero-output model would slip through as "no NMS".
+        with self.assertRaises(ValueError) as caught:
+            describe_outputs(_NoWalkNoOutputs(), num_classes=80)
+        self.assertIn("has_embedded_nms", str(caught.exception))
+
+    def test_the_walk_runs_before_the_ports_are_looked_at(self):
+        # Ordering, stated directly: a model whose outputs blow up is refused by the
+        # walk rather than reported from a graph it never read.
+        with self.assertRaises(Exception):
+            describe_outputs(_ExplodingOutputs([_FakeOp("Convolution")]),
+                             num_classes=80)
+
+
+class _NoWalkNoOutputs(_FakeModel):
+    def __init__(self):
+        super().__init__([])
+        del self.__dict__["_ops"]
+
+    def get_ordered_ops(self):
+        raise AttributeError("no op list here")
+
+
+class _ExplodingOutputs(_FakeModel):
+    def __init__(self, ops):
+        super().__init__([_FakePort([1, 84, 8400])], ops)
+
+    @property
+    def outputs(self):
+        raise RuntimeError("ports unavailable")
+
+
+class UnnamedPortsIsRightWhenTheUnnamedPortIsNotLast(unittest.TestCase):
+    """I-3: `names` is compacted - a port with no name contributes nothing - so it was
+    being indexed as if `names[j]` were port `j`. Measured before the fix, with port 0
+    unnamed and port 1 named `b`:
+
+        names ('b',)  port_keys ('0','1')  unnamed_ports (1,)   <- port 1 is the NAMED one
+
+    Correct for the pinned single-output model; wrong in general, and this is the field
+    pair the design leans on to tell "unnamed" from "absent"."""
+
+    def _spec_for(self, ports):
+        return describe_outputs(
+            _FakeModel(ports, [_FakeOp("Convolution")]), num_classes=80)
+
+    def test_port_zero_unnamed_and_port_one_named(self):
+        spec = self._spec_for([_FakePort([1, 84, 8400], names=()),
+                               _FakePort([1, 84, 8400], names=("b",))])
+        self.assertEqual(spec.names, ("b",))
+        self.assertEqual(spec.named_port_keys, ("1",))
+        self.assertEqual(spec.port_keys, ("0", "1"))
+        self.assertEqual(spec.unnamed_ports, (0,))
+
+    def test_port_zero_named_and_port_one_unnamed(self):
+        spec = self._spec_for([_FakePort([1, 84, 8400], names=("a",)),
+                               _FakePort([1, 84, 8400], names=())])
+        self.assertEqual(spec.names, ("a",))
+        self.assertEqual(spec.named_port_keys, ("0",))
+        self.assertEqual(spec.unnamed_ports, (1,))
+
+    def test_both_unnamed_and_both_named(self):
+        self.assertEqual(
+            self._spec_for([_FakePort([1, 84, 8400]), _FakePort([1, 84, 8400])])
+            .unnamed_ports, (0, 1))
+        self.assertEqual(
+            self._spec_for([_FakePort([1, 84, 8400], names=("a",)),
+                            _FakePort([1, 84, 8400], names=("b",))]).unnamed_ports, ())
+
+    def test_names_without_the_matching_keys_is_refused_not_guessed(self):
+        # The alignment cannot be invented, so a spec that claims a name without saying
+        # which port it belongs to is refused rather than lined up positionally.
+        with self.assertRaises(ValueError) as caught:
+            ModelOutputSpec(names=("b",), shapes={"0": (1, 84, 8400), "1": (1, 84, 8400)},
+                            layout="unknown", num_classes=80, has_embedded_nms=False)
+        self.assertIn("named_port_keys", str(caught.exception))
+
+    def test_a_name_for_a_port_with_no_recorded_shape_is_refused(self):
+        with self.assertRaises(ValueError):
+            ModelOutputSpec(names=("b",), shapes={"0": (1, 84, 8400)},
+                            named_port_keys=("1",), layout="unknown", num_classes=80,
+                            has_embedded_nms=False)
+
+
+class TheRecordIsImmutable(unittest.TestCase):
+    """M-2: `shapes` was a plain dict on a `frozen=True` dataclass, so
+    `spec.shapes['0'] = ...` succeeded and changed what `decode_detections` would read -
+    a mutation between the describe and the decode, with no trace."""
+
+    def _spec(self):
+        return ModelOutputSpec(names=(), shapes={"0": (1, 84, 8400)},
+                               named_port_keys=(), layout="yolo_v8_transposed",
+                               num_classes=80, has_embedded_nms=False)
+
+    def test_the_shape_mapping_cannot_be_written_to(self):
+        spec = self._spec()
+        # Item assignment is what a caller would actually write, and it raises TypeError.
+        with self.assertRaises(TypeError):
+            spec.shapes["0"] = (1, 84, 1)
+        with self.assertRaises(TypeError):
+            spec.shapes["new"] = (1, 1, 1)
+        # The mutating dict methods are not merely absent, they refuse.
+        for name in ("pop", "popitem", "clear", "update", "setdefault"):
+            with self.subTest(method=name), self.assertRaises((TypeError, AttributeError)):
+                getattr(spec.shapes, name)("0") if name != "clear" else spec.shapes.clear()
+        self.assertEqual(dict(spec.shapes), {"0": (1, 84, 8400)})
+
+    def test_the_attribute_itself_cannot_be_rebound(self):
+        spec = self._spec()
+        with self.assertRaises(AttributeError):
+            spec.shapes = {}
+        with self.assertRaises(AttributeError):
+            spec.num_classes = 7
+
+    def test_an_identical_twin_still_compares_equal(self):
+        self.assertEqual(self._spec(), self._spec())
+
+    def test_the_original_dict_passed_in_is_not_the_one_held(self):
+        original = {"0": (1, 84, 8400)}
+        spec = ModelOutputSpec(names=(), shapes=original, named_port_keys=(),
+                               layout="yolo_v8_transposed", num_classes=80,
+                               has_embedded_nms=False)
+        original["0"] = (1, 1, 1)          # the caller's own dict changes afterwards
+        self.assertEqual(dict(spec.shapes), {"0": (1, 84, 8400)})
 
 
 class DescribeOutputsClassification(unittest.TestCase):

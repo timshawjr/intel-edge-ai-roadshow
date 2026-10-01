@@ -24,7 +24,12 @@ import unittest
 
 import numpy as np
 
-from app.inference.preprocess import Letterbox, letterbox_params, preprocess_bgr
+from app.inference.preprocess import (
+    DEFAULT_PAD_VALUE,
+    Letterbox,
+    letterbox_params,
+    preprocess_bgr,
+)
 
 
 class LetterboxGeometry(unittest.TestCase):
@@ -71,6 +76,13 @@ class LetterboxGeometry(unittest.TestCase):
         back = lb.to_source(lb.to_model(corner_src))
         for a, b in zip(back, corner_src):
             self.assertAlmostEqual(a, b, places=3)
+
+
+#: The exact `float32` value a `float32` NCHW tensor holds for a pad level of 114.
+#: Comparing against Python's double `114 / 255.0` is wrong by 3.2e-9, because the array
+#: rounds to float32 and the double does not. `float32` spacing at 0.447 is 3.0e-8, so
+#: this is a representation difference, not a preprocessing defect.
+PAD_114_AS_FLOAT32 = float(np.float32(114) / np.float32(255.0))
 
 
 class _BoxAssertions(unittest.TestCase):
@@ -248,19 +260,25 @@ class TheArrayAgreesWithTheLetterbox(_BoxAssertions):
         self.assertLessEqual(int(rows[-1]), 479 + 3)
         self.assertGreaterEqual(int(cols[0]), 320 - 3)
         self.assertLessEqual(int(cols[-1]), 639)
-        # The quadrant's interior is fully white, and everything outside it is black.
+        # The quadrant's interior is fully white. Outside it there are now TWO distinct
+        # values to tell apart, and conflating them is what this assertion is for:
+        #   rows <320 and rows >480 include the 160px PAD band, which is 114 by default;
+        #   cols <320 within rows 323..477 is the IMAGE's own black half, which is 0.
+        # Under the previous zero-pad default all four read 0.0, so this could not have
+        # distinguished "pad band" from "black part of the picture" at all.
+        pad_level = PAD_114_AS_FLOAT32
         self.assertEqual(float(out[0, :, 323:477, 323:].min()), 1.0)
-        self.assertEqual(float(out[0, :, :317, :].max()), 0.0)
-        self.assertEqual(float(out[0, :, 483:, :].max()), 0.0)
+        self.assertEqual(float(out[0, :, :317, :].max()), pad_level)
+        self.assertEqual(float(out[0, :, 483:, :].max()), pad_level)
         self.assertEqual(float(out[0, :, 323:477, :317].max()), 0.0)
 
-    def test_the_pad_band_is_zeros_and_the_image_band_is_not(self):
+    def test_the_pad_band_is_the_pad_value_and_the_image_band_is_not(self):
         # 200x100 -> 640x640 with pad_y 160, so rows 0..159 and 480..639 are pure pad.
         bgr = np.full((100, 200, 3), 255, dtype=np.uint8)
         out, lb = preprocess_bgr(bgr, 640, 640)
         self.assertEqual(lb.pad_y, 160)
-        self.assertEqual(float(out[0, :, :160, :].max()), 0.0)
-        self.assertEqual(float(out[0, :, 480:, :].max()), 0.0)
+        self.assertEqual(float(out[0, :, :160, :].max()), PAD_114_AS_FLOAT32)
+        self.assertEqual(float(out[0, :, 480:, :].max()), PAD_114_AS_FLOAT32)
         self.assertEqual(float(out[0, :, 160:480, :].max()), 1.0)
 
     def test_a_corner_of_the_model_image_maps_back_to_a_corner_of_the_source(self):
@@ -279,6 +297,76 @@ class TheArrayAgreesWithTheLetterbox(_BoxAssertions):
         b, lb_b = preprocess_bgr(bgr, 640, 640)
         self.assertEqual(lb_a, lb_b)
         self.assertTrue(np.array_equal(a, b))
+
+
+class ThePadValueIsADecisionThatWasMeasured(unittest.TestCase):
+    """RULING 24, 2026-10-01: the pad band is mid-grey **114**, not zeros.
+
+    The plan specified zeros and the first version of this module implemented that. It
+    was then measured, and zeros turned out to be a train/serve distribution shift the
+    export was converted *against*: this model came from the Ultralytics pipeline, which
+    letterboxes with 114. On 1920x1080 into 640x640, 21.88% of the canvas is pad.
+
+    The number is now a decision with a measured consequence, so it is pinned here rather
+    than left as a default that can drift silently. `0` stays reachable because the A/B
+    must remain runnable - the M1 detection-set delta tool is what would settle whether
+    the value changes results, and M0 does not claim that it does.
+    """
+
+    def test_the_default_pad_value_is_114(self):
+        self.assertEqual(DEFAULT_PAD_VALUE, 114)
+        bgr = np.full((100, 200, 3), 255, dtype=np.uint8)
+        out, lb = preprocess_bgr(bgr, 640, 640)
+        self.assertEqual(lb.pad_value, 114)
+        self.assertEqual(float(out[0, :, :160, :].max()), PAD_114_AS_FLOAT32)
+        self.assertEqual(float(out[0, 0, 0, 0]), PAD_114_AS_FLOAT32)
+
+    def test_letterbox_params_defaults_to_the_same_value_as_preprocess(self):
+        # The array and the record cannot disagree: both default to the one constant, and
+        # `preprocess_bgr` builds the canvas from `letterbox.pad_value` rather than from
+        # a literal, so there is no second place the value lives.
+        self.assertEqual(letterbox_params(200, 100, 640, 640).pad_value,
+                         DEFAULT_PAD_VALUE)
+        _, lb = preprocess_bgr(np.zeros((100, 200, 3), dtype=np.uint8), 640, 640)
+        self.assertEqual(lb, letterbox_params(200, 100, 640, 640))
+
+    def test_zero_is_still_reachable_so_the_a_b_stays_runnable(self):
+        bgr = np.full((100, 200, 3), 255, dtype=np.uint8)
+        zero, lb_zero = preprocess_bgr(bgr, 640, 640, pad_value=0)
+        grey, lb_grey = preprocess_bgr(bgr, 640, 640, pad_value=114)
+        self.assertEqual(lb_zero.pad_value, 0)
+        self.assertEqual(float(zero[0, :, :160, :].max()), 0.0)
+        # The two differ by exactly the pad band and nowhere else.
+        self.assertAlmostEqual(float(zero[0, :, 160:480, :].max()),
+                               float(grey[0, :, 160:480, :].max()), places=6)
+        self.assertGreater(float(np.abs(zero - grey).max()), 0.0)
+        self.assertEqual(float(np.abs(zero - grey).max()), PAD_114_AS_FLOAT32)
+
+    def test_only_the_pad_band_differs_between_pad_values(self):
+        # Proves the parameter feeds the canvas fill and nothing else - a value that
+        # also leaked into the image band would be a preprocessing bug, not a pad change.
+        bgr = np.full((100, 200, 3), 255, dtype=np.uint8)
+        zero, _ = preprocess_bgr(bgr, 640, 640, pad_value=0)
+        grey, _ = preprocess_bgr(bgr, 640, 640, pad_value=114)
+        self.assertEqual(float(np.abs(zero[0, :, 160:480, :] - grey[0, :, 160:480, :]).max()),
+                         0.0)
+        self.assertNotEqual(float(np.abs(zero[0, :, :160, :] - grey[0, :, :160, :]).max()),
+                            0.0)
+
+    def test_a_pad_value_that_is_not_a_uint8_level_is_refused(self):
+        bgr = np.zeros((100, 200, 3), dtype=np.uint8)
+        for bad in [-1, 256, 1000]:
+            with self.subTest(pad_value=bad), self.assertRaises(ValueError):
+                preprocess_bgr(bgr, 640, 640, pad_value=bad)
+        # A bool is an int in Python, and `True` as a pixel level is a bug wearing a
+        # valid-looking value; a float would be silently truncated.
+        for bad in [True, 114.0, "114", None]:
+            with self.subTest(pad_value=bad), self.assertRaises(TypeError):
+                preprocess_bgr(bgr, 640, 640, pad_value=bad)
+        with self.assertRaises(ValueError):
+            letterbox_params(200, 100, 640, 640, pad_value=300)
+        with self.assertRaises(TypeError):
+            letterbox_params(200, 100, 640, 640, pad_value=True)
 
 
 if __name__ == "__main__":  # pragma: no cover
