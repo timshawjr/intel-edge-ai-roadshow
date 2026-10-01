@@ -11,10 +11,14 @@ Two rules in this module exist because of how badly a wrong device record shows 
    second, so an empty `supported_model_ids` means "not established yet", never
    "supports nothing".
 
-`device_type` is the stringified OpenVINO `DEVICE_TYPE` property, which is **not** a
-processor family and never a hardcoded one. Measured on this machine it reads
-`Type.INTEGRATED` for CPU, GPU and NPU alike, so it carries no discriminating
-information; the discriminating label is `device_id`, the OpenVINO plugin name.
+`device_type` is the OpenVINO plugin class - `CPU`, `GPU` or `NPU` - which is the same
+vocabulary as `device_id`, the field that actually identifies the device. It is
+deliberately not a processor family and never a hardcoded one; this machine is Lunar Lake,
+and nothing here may present a measurement as Panther Lake or Arrow Lake.
+
+DEVIATION, 2026-10-01, on the parent's ruling: this field used to be the stringified
+OpenVINO `DEVICE_TYPE` property, which measured `Type.INTEGRATED` for CPU, GPU and NPU
+alike and therefore discriminated nothing while looking as though it did.
 
 This module is pure. It does not import OpenVINO: `app.inference.devices` supplies the
 measured `runtime_version` and `driver_version`, so the contract can be unit-tested on a
@@ -53,9 +57,10 @@ class DeviceStatus:
     the blob cache key in `app.inference.cache`, and a fuller string invalidates more
     safely than a shorter one.
 
-    `driver_version` is the value the device itself reports, verbatim, and is `None`
-    when the device exposes no driver-version property. It is never a number invented
-    here and never `0`.
+    `driver_version` is the value the device's Windows signed driver reports, verbatim,
+    read from the PnP layer by `app.inference.device_drivers`. It is `None` when the
+    device has no separately versioned driver - the CPU, on this machine - and it is
+    never a number invented here and never `0`.
     """
 
     device_id: str

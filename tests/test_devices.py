@@ -1,6 +1,6 @@
 """Device discovery over a real `ov.Core`, and the placement contract.
 
-Two things are pinned here that nothing downstream would catch:
+Three things are pinned here that nothing downstream would catch:
 
 1. **Discovery is discovered.** `FULL_DEVICE_NAME` comes from OpenVINO, never from a
    hardcoded family string. This machine is Lunar Lake; nothing here may present a
@@ -9,6 +9,11 @@ Two things are pinned here that nothing downstream would catch:
    construction.** See `PlacementIsNeverCaptured`. This is the one invariant the whole
    product's honesty rests on, so it is pinned two ways: the dataclass has no field
    that could hold a placement, and the read demonstrably goes back to the runtime.
+3. **`EXECUTION_DEVICES` is not a consistent type.** See `ExecutionDevicesAreNormalised`
+   and `ConsumersMatchThroughIsDevice`. Measured: NPU returns the bare string `'NPU'`,
+   CPU returns `['CPU']`, GPU returns `['GPU.0']`. The normalisation is pinned here so a
+   refactor cannot reintroduce a `('N','P','U')` tuple or leave a consumer matching a
+   bare `"GPU"` against a dotted reading.
 """
 
 import dataclasses
@@ -20,17 +25,42 @@ from pathlib import Path
 # The top-level module exposes Core, Model and InferRequest directly.
 import openvino as ov
 
+from app.inference.cache import cache_identity
+from app.inference.device_drivers import (
+    PnpDriver,
+    WindowsDriverLookup,
+    default_driver_lookup,
+)
 from app.inference.devices import (
     DEVICE_IDS,
     CompiledTarget,
     DeviceRegistry,
     TargetSpec,
+    is_device,
+    normalise_execution_devices,
+    plugin_class,
     require_static_shape,
 )
 
 MODELS = json.loads(Path("config/models.json").read_text(encoding="utf-8"))
 DETECTOR = next(m for m in MODELS["models"] if m["id"] == "yolo11n-fp16")
 IR_PATH = Path(DETECTOR["ir_path"])
+
+#: A pinned PnP table for the hermetic tests. The ids and versions here are test fixtures,
+#: not measurements: `NothingIsHardcoded` in `tests/test_device_drivers.py` pins that no
+#: measured id or version is written into the shipped module.
+FAKE_NPU_PCI = "PCI\\VEN_8086&DEV_1111&SUBSYS_00000000&REV_04\\3&1&0&11"
+FAKE_GPU_PCI = "PCI\\VEN_8086&DEV_2222&SUBSYS_00000000&REV_04\\3&1&0&22"
+FAKE_PNP = (
+    PnpDriver(device_id=FAKE_NPU_PCI, name="Fake NPU", driver_version="9.9.1.1"),
+    PnpDriver(device_id=FAKE_GPU_PCI, name="Fake GPU (iGPU)", driver_version="9.9.2.2"),
+)
+
+#: "The Windows PnP layer could not be read." A `_FakeCore` reports names like
+#: 'Fake NPU', which match no PnP row anyway; pinning the table keeps these unit tests
+#: off the real machine and keeps the OpenVINO-only fallback the path actually under test.
+NO_PNP = WindowsDriverLookup(drivers=())
+
 
 
 class DeviceDiscovery(unittest.TestCase):
@@ -123,7 +153,8 @@ class AnAbsentDeviceIsExplained(unittest.TestCase):
     def test_an_absent_device_carries_the_openvino_error_text(self):
         core = _FakeCore(names=("CPU", "GPU"),
                          errors={"NPU": RuntimeError("NPU plugin is not available")})
-        statuses = {s.device_id: s for s in DeviceRegistry(core).describe()}
+        statuses = {s.device_id: s for s in
+                    DeviceRegistry(core, driver_lookup=NO_PNP).describe()}
         self.assertTrue(statuses["NPU"].unavailable_reason)
         self.assertIn("NPU plugin is not available", statuses["NPU"].unavailable_reason)
         self.assertFalse(statuses["NPU"].available)
@@ -131,33 +162,117 @@ class AnAbsentDeviceIsExplained(unittest.TestCase):
 
     def test_an_available_device_has_no_reason_and_a_discovered_name(self):
         core = _FakeCore(names=("CPU", "GPU", "NPU"))
-        for s in DeviceRegistry(core).describe():
+        for s in DeviceRegistry(core, driver_lookup=NO_PNP).describe():
             self.assertTrue(s.available)
             self.assertIsNone(s.unavailable_reason)
             self.assertEqual(s.full_name, f"Fake {s.device_id}")
 
     def test_a_device_with_no_driver_property_records_null_not_zero(self):
         core = _FakeCore(names=("CPU", "GPU", "NPU"))
-        for s in DeviceRegistry(core).describe():
+        for s in DeviceRegistry(core, driver_lookup=NO_PNP).describe():
             self.assertIsNone(s.driver_version,
                               "a device reporting no driver version must be null, not 0")
 
     def test_a_reported_driver_version_is_recorded_verbatim(self):
         core = _FakeCore(names=("CPU", "GPU", "NPU"),
                          driver_properties={"NPU": {"NPU_DRIVER_VERSION": 1005540}})
-        statuses = {s.device_id: s for s in DeviceRegistry(core).describe()}
+        statuses = {s.device_id: s for s in
+                    DeviceRegistry(core, driver_lookup=NO_PNP).describe()}
         # Measured on this machine: the NPU plugin exposes NPU_DRIVER_VERSION = 1005540
-        # and CPU/GPU expose no driver-version property at all.
+        # and CPU/GPU expose no driver-version property at all. With the PnP layer
+        # unreadable this is the fallback; see `ThePnpLayerIsTheAuthority`.
         self.assertEqual(statuses["NPU"].driver_version, "1005540")
         self.assertIsNone(statuses["CPU"].driver_version)
         self.assertIsNone(statuses["GPU"].driver_version)
 
     def test_discovery_alone_never_claims_a_device_is_validated_or_ready(self):
         # Presence is not proof. Nothing has compiled a model at this point.
-        for s in DeviceRegistry(_FakeCore(names=("CPU", "GPU", "NPU"))).describe():
+        core = _FakeCore(names=("CPU", "GPU", "NPU"))
+        for s in DeviceRegistry(core, driver_lookup=NO_PNP).describe():
             self.assertFalse(s.validated, f"{s.device_id} claimed validated by discovery")
             self.assertFalse(s.ready, f"{s.device_id} claimed ready by discovery")
             self.assertEqual(s.supported_model_ids, ())
+
+    def test_device_type_is_the_plugin_class_and_not_the_openvino_device_type(self):
+        # C2: DEVICE_TYPE measures Type.INTEGRATED on all three, so it discriminated
+        # nothing. The plugin class is the vocabulary `device_id` already uses.
+        statuses = DeviceRegistry(_FakeCore(names=("CPU", "GPU", "NPU")),
+                                  driver_lookup=NO_PNP).describe()
+        for s in statuses:
+            self.assertEqual(s.device_type, s.device_id)
+            self.assertIn(s.device_type, ("CPU", "GPU", "NPU"))
+            self.assertNotIn("INTEGRATED", s.device_type)
+
+    def test_device_type_tells_the_three_devices_apart(self):
+        statuses = DeviceRegistry(_FakeCore(names=("CPU", "GPU", "NPU")),
+                                  driver_lookup=NO_PNP).describe()
+        self.assertEqual({s.device_type for s in statuses}, {"CPU", "GPU", "NPU"})
+
+
+class ThePnpLayerIsTheAuthority(unittest.TestCase):
+    """C3: driver versions come from Windows, because only the NPU's is in OpenVINO."""
+
+    def test_the_pci_device_id_is_discovered_from_supported_properties(self):
+        # The GPU plugin reports its own PCI device id; the property *name* is found by
+        # enumerating SUPPORTED_PROPERTIES. The name 'Fake GPU' matches no PnP row, so a
+        # version here can only have come through the id route.
+        core = _FakeCore(names=("GPU",),
+                         driver_properties={"GPU": {"GPU_DEVICE_ID": "0x2222"}})
+        statuses = {s.device_id: s for s in DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(drivers=FAKE_PNP)).describe()}
+        self.assertEqual(statuses["GPU"].driver_version, "9.9.2.2")
+
+    def test_a_plugin_ordinal_is_never_searched_for_as_a_pci_device_id(self):
+        # DEVICE_ID reads '0' on the GPU plugin. A table whose *name* cannot match, so the
+        # only route left is the ordinal: it must find nothing rather than find the row.
+        table = (PnpDriver(device_id=FAKE_GPU_PCI, name="Something Else Entirely",
+                           driver_version="9.9.2.2"),)
+        core = _FakeCore(names=("GPU",), driver_properties={"GPU": {"DEVICE_ID": "0"}})
+        statuses = {s.device_id: s for s in DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(drivers=table)).describe()}
+        self.assertIsNone(statuses["GPU"].driver_version)
+
+        # The same table, the same plugin, but the property name now means a real PCI id.
+        core = _FakeCore(names=("GPU",),
+                         driver_properties={"GPU": {"GPU_DEVICE_ID": "0x2222"}})
+        statuses = {s.device_id: s for s in DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(drivers=table)).describe()}
+        self.assertEqual(statuses["GPU"].driver_version, "9.9.2.2")
+
+    def test_the_discovered_name_route_resolves_a_plugin_with_no_device_id(self):
+        # The NPU plugin exposes no PCI device id at all, so the name is its only handle.
+        core = _FakeCore(names=("NPU",))
+        statuses = {s.device_id: s for s in DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(drivers=FAKE_PNP)).describe()}
+        # _FakeCore answers FULL_DEVICE_NAME as 'Fake NPU', which is the pinned PnP row's
+        # name. The GPU fixture above is deliberately named 'Fake GPU (iGPU)' so it
+        # matches nothing by name, leaving the id route as the only route that can work.
+        self.assertEqual(statuses["NPU"].driver_version, "9.9.1.1")
+
+    def test_an_unreadable_pnp_layer_falls_back_to_the_openvino_property(self):
+        def blocked(script, timeout):
+            raise OSError("powershell.exe is blocked by policy")
+
+        core = _FakeCore(names=("CPU", "GPU", "NPU"),
+                         driver_properties={"NPU": {"NPU_DRIVER_VERSION": 1005540}})
+        statuses = {s.device_id: s for s in DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(runner=blocked)).describe()}
+        self.assertEqual(statuses["NPU"].driver_version, "1005540")
+        self.assertIsNone(statuses["CPU"].driver_version)
+        self.assertIsNone(statuses["GPU"].driver_version)
+
+    def test_an_unreadable_pnp_layer_never_stops_discovery(self):
+        def blocked(script, timeout):
+            raise OSError("powershell.exe is blocked by policy")
+
+        core = _FakeCore(names=("CPU", "GPU", "NPU"))
+        statuses = DeviceRegistry(
+            core, driver_lookup=WindowsDriverLookup(runner=blocked)).describe()
+        self.assertEqual([s.device_id for s in statuses], list(DEVICE_IDS))
+        for s in statuses:
+            self.assertTrue(s.available)
+            self.assertTrue(s.full_name)
+
 
 
 class StaticShapesAreEnforced(unittest.TestCase):
@@ -303,6 +418,245 @@ class PlacementIsNeverCaptured(unittest.TestCase):
         self.assertEqual(compiled.reads, 1)
 
 
+class ExecutionDevicesAreNormalised(unittest.TestCase):
+    """C5: the three plugins do not agree on the *type* of `EXECUTION_DEVICES`.
+
+    Measured on this machine, first-hand:
+
+        CPU -> ['CPU']        a list
+        GPU -> ['GPU.0']     a list, with a sub-device suffix
+        NPU -> 'NPU'         a bare **string**
+
+    The string case is the trap. `tuple('NPU')` is `('N', 'P', 'U')`, which would render
+    as a three-device row and read as "the NPU ran three places". Every reading therefore
+    goes through one normaliser, and these tests feed it all three measured shapes.
+    """
+
+    def setUp(self):
+        self._core = _FakeCore(names=("CPU", "GPU", "NPU"))
+
+    def _reading(self, reported):
+        compiled = _FakeCompiled([reported])
+        request = _FakeRequest(compiled)
+        target = CompiledTarget(device_id="NPU", model_path=Path("model.xml"),
+                                model_hash="a" * 64, input_shape=(1, 3, 640, 640),
+                                _core=self._core, _request=request)
+        return target.execution_devices_now()
+
+    def test_a_bare_npu_string_becomes_a_one_element_tuple(self):
+        self.assertEqual(self._reading("NPU"), ("NPU",))
+
+    def test_a_bare_string_is_never_split_into_its_characters(self):
+        # The specific regression: `tuple(value)` on the string 'NPU'.
+        reading = self._reading("NPU")
+        self.assertEqual(len(reading), 1, f"'NPU' was split into {reading}")
+        self.assertNotIn("P", reading)
+        self.assertNotEqual(reading, tuple("NPU"))
+
+    def test_a_cpu_list_becomes_a_one_element_tuple(self):
+        self.assertEqual(self._reading(["CPU"]), ("CPU",))
+
+    def test_a_gpu_list_keeps_its_dotted_sub_device_suffix(self):
+        # Normalisation changes the *container*, never the value. 'GPU.0' is what the GPU
+        # reports and it must survive verbatim; `is_device` is what absorbs the suffix.
+        self.assertEqual(self._reading(["GPU.0"]), ("GPU.0",))
+
+    def test_every_measured_shape_normalises_to_a_tuple(self):
+        for reported, expected in ((["CPU"], ("CPU",)),
+                                   (["GPU.0"], ("GPU.0",)),
+                                   ("NPU", ("NPU",))):
+            reading = self._reading(reported)
+            self.assertEqual(reading, expected)
+            self.assertIsInstance(reading, tuple)
+            self.assertNotIsInstance(reading, list)
+
+    def test_the_normaliser_takes_each_measured_shape_directly(self):
+        self.assertEqual(normalise_execution_devices("NPU"), ("NPU",))
+        self.assertEqual(normalise_execution_devices(["CPU"]), ("CPU",))
+        self.assertEqual(normalise_execution_devices(["GPU.0"]), ("GPU.0",))
+
+    def test_absent_and_empty_readings_are_no_devices(self):
+        self.assertEqual(self._reading(None), ())
+        self.assertEqual(self._reading([]), ())
+        self.assertEqual(normalise_execution_devices(None), ())
+        self.assertEqual(normalise_execution_devices(""), ())
+        self.assertEqual(normalise_execution_devices("   "), ())
+
+    def test_a_multi_device_reading_is_kept_in_order(self):
+        # Nothing on this machine reports two, but the shape must not be collapsed.
+        self.assertEqual(normalise_execution_devices(["CPU", "GPU.0"]), ("CPU", "GPU.0"))
+        self.assertEqual(normalise_execution_devices(["NPU", "CPU"]), ("NPU", "CPU"))
+
+    def test_normalisation_is_stable_when_applied_twice(self):
+        once = normalise_execution_devices("NPU")
+        self.assertEqual(normalise_execution_devices(once), once)
+
+
+class ConsumersMatchThroughIsDevice(unittest.TestCase):
+    """C6: the GPU reports `GPU.0`, so a bare `"GPU"` check cannot be the contract.
+
+    The parent's ruling, implemented: consumers match the **exact** normalised string, and
+    come through `is_device` for the `.0` suffix, so no consumer has to remember the
+    dotted form and none can pass on a substring by accident.
+    """
+
+    def test_the_exact_normalised_string_is_what_consumers_compare(self):
+        self.assertIn("CPU", ("CPU",))
+        self.assertIn("GPU.0", ("GPU.0",))
+        self.assertIn("NPU", ("NPU",))
+
+    def test_a_bare_gpu_check_fails_against_the_dotted_reading(self):
+        # Stated as a fact, because it is why `is_device` exists.
+        self.assertNotIn("GPU", ("GPU.0",))
+
+    def test_the_substring_trap_is_real_and_is_not_what_the_helper_does(self):
+        # `'GPU' in 'GPU.0'` is True because that is a substring test, not a membership
+        # test. It would also be True for a nonexistent 'GP' device.
+        self.assertIn("GPU", "GPU.0")
+        self.assertIn("GP", "GPU.0")
+        self.assertFalse(is_device("GP", "GPU"))
+
+    def test_is_device_handles_the_dotted_gpu_suffix(self):
+        self.assertTrue(is_device(("GPU.0",), "GPU"))
+        self.assertTrue(is_device(["GPU.0"], "GPU"))
+        self.assertTrue(is_device("GPU.0", "GPU"))
+        self.assertTrue(is_device(("GPU.0",), "GPU.0"))
+
+    def test_is_device_matches_the_undotted_devices(self):
+        self.assertTrue(is_device(("CPU",), "CPU"))
+        self.assertTrue(is_device(("NPU",), "NPU"))
+        self.assertTrue(is_device("NPU", "NPU"))
+
+    def test_is_device_is_false_for_a_different_device(self):
+        self.assertFalse(is_device(("NPU",), "GPU"))
+        self.assertFalse(is_device(("GPU.0",), "NPU"))
+        self.assertFalse(is_device(("CPU", "GPU.0"), "NPU"))
+
+    def test_is_device_is_false_for_no_reading_at_all(self):
+        for empty in (None, (), [], ""):
+            self.assertFalse(is_device(empty, "GPU"), repr(empty))
+
+    def test_is_device_is_false_for_an_empty_or_absent_wanted_device(self):
+        self.assertFalse(is_device(("CPU",), ""))
+        self.assertFalse(is_device(("CPU",), None))
+
+    def test_is_device_is_case_insensitive(self):
+        self.assertTrue(is_device(("gpu.0",), "GPU"))
+
+    def test_plugin_class_strips_a_sub_device_and_a_pseudo_device(self):
+        self.assertEqual(plugin_class("GPU.0"), "GPU")
+        self.assertEqual(plugin_class("GPU"), "GPU")
+        self.assertEqual(plugin_class("NPU"), "NPU")
+        self.assertEqual(plugin_class("HETERO:GPU,CPU"), "HETERO")
+        self.assertEqual(plugin_class("gpu.1"), "GPU")
+        self.assertEqual(plugin_class(""), "")
+        self.assertEqual(plugin_class(None), "")
+
+    def test_an_unheard_of_device_id_is_not_promoted_to_a_known_class(self):
+        # Nothing is invented: an id this build has never seen stays itself.
+        self.assertEqual(plugin_class("MYACCEL"), "MYACCEL")
+        self.assertFalse(is_device(("MYACCEL",), "GPU"))
+
+
+class TheRealPluginsReportTheseShapes(unittest.TestCase):
+    """The normalisation pinned against the real runtime, not only against doubles."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.core = ov.Core()
+
+    def test_the_real_gpu_reports_a_dotted_name_that_only_is_device_matches(self):
+        import numpy as np
+        target = DeviceRegistry(self.core).compile_target(
+            TargetSpec(device_id="GPU", model_path=IR_PATH,
+                       input_shape=tuple(DETECTOR["input_shape"])))
+        target.request.infer(np.zeros((1, 3, 640, 640), dtype=np.float32))
+        reading = target.execution_devices_now()
+        self.assertEqual(reading, ("GPU.0",),
+                         "the GPU's own reading changed; re-check is_device's contract")
+        self.assertTrue(is_device(reading, "GPU"))
+        self.assertNotIn("GPU", reading)
+
+    def test_the_real_npu_reports_a_bare_string_that_is_not_split(self):
+        import numpy as np
+        target = DeviceRegistry(self.core).compile_target(
+            TargetSpec(device_id="NPU", model_path=IR_PATH,
+                       input_shape=tuple(DETECTOR["input_shape"])))
+        target.request.infer(np.zeros((1, 3, 640, 640), dtype=np.float32))
+        reading = target.execution_devices_now()
+        self.assertEqual(reading, ("NPU",),
+                         "the NPU's own reading changed; re-check the string case")
+        self.assertEqual(len(reading), 1)
+        self.assertTrue(is_device(reading, "NPU"))
+
+    def test_the_real_cpu_reports_a_one_element_tuple(self):
+        import numpy as np
+        target = DeviceRegistry(self.core).compile_target(
+            TargetSpec(device_id="CPU", model_path=IR_PATH,
+                       input_shape=tuple(DETECTOR["input_shape"])))
+        target.request.infer(np.zeros((1, 3, 640, 640), dtype=np.float32))
+        reading = target.execution_devices_now()
+        self.assertEqual(reading, ("CPU",))
+        self.assertTrue(is_device(reading, "CPU"))
+
+
+class RealDriverVersionsComeFromWindows(unittest.TestCase):
+    """C3 measured on this machine: GPU and NPU have Windows driver versions, CPU does not."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.core = ov.Core()
+        cls.registry = DeviceRegistry(cls.core)
+        cls.statuses = {s.device_id: s for s in cls.registry.describe()}
+
+    def _pnp_version(self, device_id):
+        full_name = str(self.core.get_property(device_id, "FULL_DEVICE_NAME"))
+        return default_driver_lookup().driver_version_for(full_name)
+
+    def test_the_gpu_driver_version_is_the_windows_one(self):
+        self.assertEqual(self.statuses["GPU"].driver_version,
+                         self._pnp_version("GPU"))
+        self.assertIsNotNone(self.statuses["GPU"].driver_version)
+        self.assertNotEqual(self.statuses["GPU"].driver_version, "0")
+
+    def test_the_npu_driver_version_is_the_windows_one_and_not_the_openvino_spelling(self):
+        self.assertEqual(self.statuses["NPU"].driver_version,
+                         self._pnp_version("NPU"))
+        self.assertNotEqual(self.statuses["NPU"].driver_version,
+                            str(self.core.get_property("NPU", "NPU_DRIVER_VERSION")),
+                            "the PnP layer is the authority; the plugin property is the "
+                            "fallback only")
+
+    def test_the_cpu_driver_version_is_null_because_it_has_no_separate_driver(self):
+        self.assertIsNone(self.statuses["CPU"].driver_version)
+        self.assertIsNone(self._pnp_version("CPU"))
+
+    def test_a_null_driver_version_stays_distinct_in_the_blob_cache_key(self):
+        # Review Focus #5: "no driver artefact" must not collide with any version.
+        core_version = self.statuses["CPU"].driver_version
+        gpu_version = self.statuses["GPU"].driver_version
+        self.assertIsNone(core_version)
+        self.assertIsNotNone(gpu_version)
+        keys = {
+            cache_identity(model_hash="a" * 64, device_id="X",
+                           runtime_version="2026.4.0", driver_version=version,
+                           properties="LATENCY")["driver_version"]
+            for version in (None, gpu_version, "", "0")
+        }
+        self.assertEqual(len(keys), 4, f"cache identity collapsed states: {keys}")
+
+    def test_device_type_is_the_plugin_class_on_this_machine(self):
+        self.assertEqual({s.device_type for s in self.statuses.values()},
+                         {"CPU", "GPU", "NPU"})
+        for status in self.statuses.values():
+            self.assertEqual(status.device_type, status.device_id)
+            self.assertNotIn("INTEGRATED", status.device_type)
+            self.assertNotEqual(
+                status.device_type,
+                str(self.core.get_property(status.device_id, "DEVICE_TYPE")))
+
+
+
 class TargetsAndHashesAreReal(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -399,6 +753,21 @@ class TargetSpecAndDeviceIdsAreStable(unittest.TestCase):
                                 model_hash="a" * 64, input_shape=(1, 3, 640, 640))
         with self.assertRaises(TypeError):
             target.execution_devices_now()
+
+    def test_the_live_handles_are_compared_and_shown_not_silently_excluded(self):
+        # Measured, and the docstring says so: all six fields carry compare=True and
+        # repr=True. Changing that would alter __eq__/__hash__ and is a deliberate act,
+        # so it is pinned rather than left to drift.
+        specs = {f.name: (f.compare, f.repr) for f in dataclasses.fields(CompiledTarget)}
+        self.assertEqual(specs["_core"], (True, True))
+        self.assertEqual(specs["_request"], (True, True))
+        left = CompiledTarget(device_id="CPU", model_path=Path("m.xml"),
+                              model_hash="a" * 64, input_shape=(1, 3, 640, 640))
+        right = CompiledTarget(device_id="GPU", model_path=Path("m.xml"),
+                               model_hash="a" * 64, input_shape=(1, 3, 640, 640))
+        self.assertNotEqual(left, right)
+        self.assertIn("_core", repr(left))
+        self.assertIn("_request", repr(left))
 
 
 if __name__ == "__main__":

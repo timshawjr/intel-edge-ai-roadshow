@@ -20,14 +20,22 @@ Measured on this machine, and the reason the reads below are written defensively
   string**. `DeviceStatus.runtime_version` records it verbatim; the cache key in
   `app.inference.cache` depends on the whole thing.
 - `EXECUTION_DEVICES` is a list on CPU (`['CPU']`) and GPU (`['GPU.0']`) but a bare
-  string on NPU (`'NPU'`), so the read is normalised to a tuple.
+  string on NPU (`'NPU'`), so the read is normalised to a tuple by
+  `normalise_execution_devices`, and consumers compare through `is_device`.
 - `core.get_property(compiled_model, ...)` is a `TypeError` in 2026.4.0. The property
   is read from the compiled model itself, or from the request's compiled model.
+- `SUPPORTED_PROPERTIES` is a **dict** of property name to access mode, and it *is*
+  readable; the lower-case `supported_properties` spelling raises. It is enumerated to
+  find a plugin's own PCI device id (`GPU_DEVICE_ID` on GPU) rather than assuming one.
+- `NPU_DRIVER_VERSION` (`1005540`) is exposed by the NPU plugin only, but that is a
+  property of the accessor, not of the hardware. `app.inference.device_drivers` reads the
+  Windows PnP driver version, which exists for the GPU as well.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -35,12 +43,20 @@ from typing import Any, Final
 import openvino as ov
 
 from app.contracts.device_status import DeviceStatus
+from app.inference.device_drivers import (
+    WindowsDriverLookup,
+    default_driver_lookup,
+    looks_like_a_pci_device_id,
+)
 
 __all__ = [
     "DEVICE_IDS",
     "CompiledTarget",
     "DeviceRegistry",
     "TargetSpec",
+    "is_device",
+    "normalise_execution_devices",
+    "plugin_class",
     "require_static_shape",
 ]
 
@@ -57,9 +73,67 @@ FORBIDDEN_TARGETS: Final[frozenset[str]] = frozenset({"AUTO", "HETERO", "MULTI",
 EXECUTION_DEVICES: Final[str] = "EXECUTION_DEVICES"
 FULL_DEVICE_NAME: Final[str] = "FULL_DEVICE_NAME"
 SUPPORTED_PROPERTIES: Final[str] = "SUPPORTED_PROPERTIES"
-#: The only device-specific driver-version property OpenVINO exposes, and only on the
-#: NPU plugin. CPU and GPU expose none, so their `driver_version` is `null`.
+#: Only reachable for a device whose PnP entry does exist. Kept as the **fallback** for
+#: the NPU only: it is the one property the NPU plugin exposes, and the PnP layer is the
+#: authority. Measured on this machine, `NPU_DRIVER_VERSION` reads `1005540` and the PnP
+#: row for the same device reads `32.0.100.5540` - the same driver, two spellings.
 NPU_DRIVER_VERSION: Final[str] = "NPU_DRIVER_VERSION"
+DEVICE_ID: Final[str] = "DEVICE_ID"
+
+
+def plugin_class(device: str) -> str:
+    """The plugin class of a device id, with any sub-device suffix removed.
+
+    `'GPU.0'` -> `'GPU'`, `'NPU'` -> `'NPU'`, `'HETERO:GPU,CPU'` -> `'HETERO'`. Upper-cased
+    so a comparison is not defeated by casing. An empty id yields `''`, never a guess.
+    """
+    head = str(device or "").split(":", 1)[0].split(".", 1)[0].strip().upper()
+    return head
+
+
+def normalise_execution_devices(value: Any) -> tuple[str, ...]:
+    """`EXECUTION_DEVICES` as a tuple, whatever shape the plugin happened to report.
+
+    Measured on this machine: CPU -> `['CPU']`, GPU -> `['GPU.0']`, NPU -> the **bare
+    string** `'NPU'`. A bare string is one device, not a sequence of three characters, so
+    the obvious `tuple(value)` would yield `('N', 'P', 'U')` for the NPU and render as a
+    three-device CPU-style row. This is the one place that difference is absorbed, and
+    the tests pin each of the three measured shapes through it.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, Iterable):
+        return tuple(str(entry) for entry in value)
+    return (str(value),)
+
+
+def is_device(execution_devices: Any, device_id: str) -> bool:
+    """Whether a normalised `EXECUTION_DEVICES` reading names `device_id`.
+
+    Consumers match the **exact** normalised string - `'GPU.0'` is what the GPU reports,
+    and `'CPU' in ('CPU',)` is the intended check - and come here for the one thing
+    normalisation cannot remove. Two measured traps:
+
+    - `'GPU' in ('GPU.0',)` is `False`, because the reading carries the sub-device suffix.
+    - `'GPU' in 'GPU.0'` is `True`, because that is a *substring* test on an unnormalised
+      string. It would also be `True` for `'GP' in 'GPU.0'`.
+
+    So: no consumer has to remember the dotted form, and none can accidentally pass on a
+    substring. `None`, `()` and an unrecognised device are all `False`.
+    """
+    if execution_devices is None:
+        return False
+    if isinstance(execution_devices, str):
+        entries: tuple[str, ...] = (execution_devices,)
+    elif isinstance(execution_devices, Iterable):
+        entries = tuple(str(entry) for entry in execution_devices)
+    else:
+        return False
+    wanted = plugin_class(device_id)
+    return bool(wanted) and any(plugin_class(entry) == wanted for entry in entries)
 
 
 def require_static_shape(shape: tuple[int, ...]) -> None:
@@ -87,7 +161,7 @@ def require_static_shape(shape: tuple[int, ...]) -> None:
 
 def _refuse_pseudo_device(device_id: str) -> None:
     """Raise if `device_id` is an implicit-placement plugin rather than a real device."""
-    head = device_id.split(":", 1)[0].split(".", 1)[0].strip().upper()
+    head = plugin_class(device_id)
     if head in FORBIDDEN_TARGETS:
         raise ValueError(
             f"refusing to compile to {device_id!r}: this demo uses explicit "
@@ -119,9 +193,13 @@ class CompiledTarget:
     `dataclasses.fields()` is asserted in the tests to contain no placement-shaped name,
     and a fresh target is asserted to have performed zero property reads.
 
-    The handles are excluded from `__eq__`, `__hash__` and `__repr__` so two targets
-    compiled from the same spec on the same device compare equal, which is what the
-    cache key and the report both mean by "the same target".
+    CORRECTED 2026-10-01: an earlier version of this docstring claimed the handles are
+    excluded from `__eq__`, `__hash__` and `__repr__`. They are not - measured, all six
+    fields carry `compare=True` and `repr=True`, so `repr()` includes `_core` and
+    `_request` and two targets are equal only when the handles are. The claim was false
+    and a false claim in this docstring is exactly what the rest of this project exists to
+    prevent. The field definitions are unchanged: changing them would alter `__eq__` and
+    `__hash__`, which is not what this fix round was for.
     """
 
     device_id: str
@@ -148,10 +226,10 @@ class CompiledTarget:
         this target was built with, so the common call is `target.execution_devices_now()`
         and it still cannot return anything recorded at construction time.
 
-        Returns a tuple, normalising the measured inconsistency that the NPU plugin
-        reports a bare string while CPU and GPU report a list. Raises `TypeError` when
-        no live handle is available, rather than returning an empty tuple that would
-        read as "it ran nowhere".
+        Returns a tuple, via `normalise_execution_devices`, absorbing the measured
+        inconsistency that the NPU plugin reports a bare string while CPU and GPU report
+        a list. Raises `TypeError` when no live handle is available, rather than returning
+        an empty tuple that would read as "it ran nowhere".
         """
         live_core = core if core is not None else self._core
         live_request = request if request is not None else self._request
@@ -167,12 +245,7 @@ class CompiledTarget:
             value = live_request.get_compiled_model().get_property(EXECUTION_DEVICES)
         else:
             value = live_core.get_property(self.device_id, EXECUTION_DEVICES)
-        if isinstance(value, str):
-            # Measured: the NPU plugin returns 'NPU', not ['NPU'].
-            return (value,)
-        if value is None:
-            return ()
-        return tuple(value)
+        return normalise_execution_devices(value)
 
     @property
     def request(self) -> Any:
@@ -188,8 +261,17 @@ def _hash_ir(model_path: Path) -> str:
 class DeviceRegistry:
     """Discovers the devices and compiles explicit targets for them."""
 
-    def __init__(self, core: "ov.Core") -> None:
+    def __init__(
+        self,
+        core: "ov.Core",
+        driver_lookup: WindowsDriverLookup | None = None,
+    ) -> None:
         self._core = core
+        # `None` resolves to the process-wide lookup, so the one Windows PnP enumeration
+        # is paid once per process rather than once per registry. Tests pass their own.
+        self._driver_lookup = (
+            driver_lookup if driver_lookup is not None else default_driver_lookup()
+        )
 
     @property
     def core(self) -> "ov.Core":
@@ -216,12 +298,54 @@ class DeviceRegistry:
         """
         return str(self._core.get_property(device_id, FULL_DEVICE_NAME))
 
-    def _driver_version(self, device_id: str) -> str | None:
-        """The device's own driver version, or `None` where it reports none.
+    def _supported_properties(self, device_id: str) -> tuple[str, ...]:
+        """The plugin's `SUPPORTED_PROPERTIES`, as names.
 
-        `None`, never `0` and never a guess. On this machine only the NPU plugin
-        exposes `NPU_DRIVER_VERSION`; CPU and GPU have no driver-version property, so
-        their `DeviceStatus.driver_version` is `null`.
+        Measured on this machine: a dict of property name to access mode, not a list, so
+        `in` works on it and iteration yields names. An unreadable set is empty, which
+        costs a fallback rather than a failure.
+        """
+        try:
+            supported = self._core.get_property(device_id, SUPPORTED_PROPERTIES)
+        except Exception:  # noqa: BLE001 - an unreadable property list is "none known"
+            return ()
+        try:
+            return tuple(sorted(str(name) for name in supported))
+        except TypeError:
+            return ()
+
+    def _pci_id_hints(self, device_id: str) -> tuple[str, ...]:
+        """PCI device ids this plugin reports for itself, discovered not assumed.
+
+        The GPU plugin's `SUPPORTED_PROPERTIES` includes `GPU_DEVICE_ID`, measured
+        `'0x64a0'` here, which is the `DEV_64A0` field of the PnP row for that GPU. The
+        property name is found by enumerating `SUPPORTED_PROPERTIES` and keeping the names
+        that end in `_DEVICE_ID`, so a plugin that renames or adds one is picked up.
+
+        Values that cannot be a PCI device id are dropped rather than searched for. The
+        GPU's `DEVICE_ID` reads `'0'`, a plugin ordinal; searching for it would match
+        nothing but is exactly the sort of plausible-looking string that must not end up
+        in a version field.
+        """
+        hints: list[str] = []
+        for name in self._supported_properties(device_id):
+            if not (name == DEVICE_ID or name.endswith("_DEVICE_ID")):
+                continue
+            try:
+                value = str(self._core.get_property(device_id, name)).strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if looks_like_a_pci_device_id(value) and value not in hints:
+                hints.append(value)
+        return tuple(hints)
+
+    def _openvino_driver_version(self, device_id: str) -> str | None:
+        """`NPU_DRIVER_VERSION`, for the NPU only, or `None`.
+
+        `None`, never `0` and never a guess. Measured on this machine the property is
+        absent from the CPU and GPU plugins entirely. It is the **fallback**: the Windows
+        PnP layer is the authority, and this exists so the NPU still reports a driver
+        version when that layer cannot be read.
         """
         try:
             supported = self._core.get_property(device_id, SUPPORTED_PROPERTIES)
@@ -233,6 +357,25 @@ class DeviceRegistry:
             return str(self._core.get_property(device_id, NPU_DRIVER_VERSION))
         except Exception:  # noqa: BLE001
             return None
+
+    def _driver_version(self, device_id: str, full_name: str) -> str | None:
+        """The device's Windows driver version, or `None`.
+
+        Read from the PnP layer first, because that is where the version actually is.
+        Measured on this machine the GPU reports no driver-version property through
+        OpenVINO at all, yet Windows versions its driver; the NPU's OpenVINO property and
+        the PnP row describe the same driver.
+
+        `None` - never `0`, never a plausible-looking string - when the device has no
+        separate driver artefact (the CPU), when the PnP layer cannot be read, and when
+        the match is ambiguous.
+        """
+        version = self._driver_lookup.driver_version_for(
+            full_name, device_id_hints=self._pci_id_hints(device_id)
+        )
+        if version is not None:
+            return version
+        return self._openvino_driver_version(device_id)
 
     def describe(self) -> tuple[DeviceStatus, ...]:
         """One `DeviceStatus` per id in `DEVICE_IDS`, in that order.
@@ -250,15 +393,16 @@ class DeviceRegistry:
         statuses: list[DeviceStatus] = []
         for device_id in DEVICE_IDS:
             if device_id in present:
+                full_name = self.full_name(device_id)
                 statuses.append(DeviceStatus(
                     device_id=device_id,
-                    full_name=self.full_name(device_id),
+                    full_name=full_name,
                     device_type=self._device_type(device_id),
                     available=True,
                     validated=False,
                     ready=False,
                     runtime_version=self.runtime_version,
-                    driver_version=self._driver_version(device_id),
+                    driver_version=self._driver_version(device_id, full_name),
                     supported_model_ids=(),
                     unavailable_reason=None,
                 ))
@@ -266,7 +410,7 @@ class DeviceRegistry:
                 statuses.append(DeviceStatus(
                     device_id=device_id,
                     full_name="",
-                    device_type=device_id,
+                    device_type=self._device_type(device_id),
                     available=False,
                     validated=False,
                     ready=False,
@@ -278,16 +422,19 @@ class DeviceRegistry:
         return tuple(statuses)
 
     def _device_type(self, device_id: str) -> str:
-        """`DEVICE_TYPE` as OpenVINO reports it, stringified.
+        """The OpenVINO plugin class: `CPU`, `GPU` or `NPU`.
 
-        Measured: `Type.INTEGRATED` for CPU, GPU and NPU alike, so it carries no
-        discriminating information. The plugin name in `device_id` is the label that
-        does. It is recorded because it was measured, not because it is useful.
+        DEVIATION, 2026-10-01, on the parent's ruling. This used to be the stringified
+        `DEVICE_TYPE` property. Measured on this machine that reads `Type.INTEGRATED` for
+        CPU, GPU and NPU alike, so the field discriminated nothing and looked more
+        informative than it was. The plugin class is the same vocabulary as `device_id`,
+        which is the field that actually identifies the device.
+
+        Nothing is fabricated: it is read off the discovered device id, so an id this
+        build has never heard of yields that id, not a guess at a class. `GPU.0` reduces
+        to `GPU`.
         """
-        try:
-            return str(self._core.get_property(device_id, "DEVICE_TYPE"))
-        except Exception:  # noqa: BLE001
-            return device_id
+        return plugin_class(device_id)
 
     def _unavailable_reason(self, device_id: str, present: tuple[str, ...]) -> str:
         """The OpenVINO error text for the missing device, plus what *is* there.
