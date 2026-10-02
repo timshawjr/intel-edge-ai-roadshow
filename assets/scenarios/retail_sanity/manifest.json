@@ -1,10 +1,12 @@
 {
   "schema_version": 1,
   "id": "retail_sanity",
-  "title": "Retail / Shelf Monitoring - sanity pack",
+  "title": "Retail / Checkout zone presence - sanity pack (reduced scope)",
   "built_on": "2026-10-01",
-  "purpose": "M0 sanity scenario. One real retail clip, one pinned detector, the annotated detection fixture, and the clips a presenter can switch between. ROI geometry and event state machines land in M1+; this pack records only what is measured.",
-  "model_ids": ["yolo11n-fp16"],
+  "purpose": "M0 sanity scenario, updated at M1. One real retail clip, one pinned detector, the annotated detection fixture, and the clips a presenter can switch between. M1 delivered the ROI geometry and event state machine: app/engine/retail_config.py ships COUNTER_BAND and a people-in-zone presence event. NO product-transfer event is detectable on this footage - the only reliably tracked product is stationary in the basket for the entire clip.",
+  "model_ids": [
+    "yolo11n-fp16"
+  ],
   "clips": [
     {
       "id": "retail_checkout",
@@ -52,12 +54,37 @@
       "notes": "Single-file walking queue. Alternate clip, not a second camera."
     }
   ],
-  "roi": [],
-  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead, in tests/fixtures/retail_sanity/retail_sanity.json - that file exists and is committed, together with the JPEG it was drawn on (retail_000.jpg, frame 0 of retail_checkout.mp4 at native resolution), and tools/build_sanity_fixture.py evaluates the model against it read-only. This is a record of an existing artifact, not a forward reference to planned work; tests/test_verify_sources.py fails if this note stops agreeing with the tree.",
-  "event_annotations": [],
+  "roi": [
+    {
+      "name": "counter_band",
+      "kind": "shelf",
+      "roi": [
+        0.0,
+        0.2,
+        1.0,
+        0.6
+      ],
+      "source": "app/engine/retail_config.py COUNTER_BAND, derived from a measured centroid histogram",
+      "measured": "captures 65.1% of person detections inside, 34.9% outside (cy 0.034..0.864)"
+    }
+  ],
+  "roi_note": "Normalized ROIs shipped at M1 in app/engine/retail_config.py (COUNTER_BAND), not here, to keep the asset manifest describing assets rather than engine configuration. M0 annotates a single fixed frame instead, in tests/fixtures/retail_sanity/retail_sanity.json - that file exists and is committed, together with its JPEG.",
+  "event_annotations": [
+    {
+      "kind": "zone_occupancy",
+      "class_name": "person",
+      "definition": "a tracked person whose centroid is inside counter_band for at least min_presence_seconds",
+      "measured": "2 events over the clip = two sustained presences, one per person-track; NOT a people count and NOT a dwell measurement, as the event carries no duration",
+      "guard": "tests/test_retail_footage_guard.py fails if a shipped config emits zero events"
+    }
+  ],
   "content_gate": {
     "spec_requirement": "three 45-90 second clips per scenario pack",
-    "measured_durations_s": [65.41535, 113.0129, 139.4],
+    "measured_durations_s": [
+      65.41535,
+      113.0129,
+      139.4
+    ],
     "status": "unmet M5 content gate",
     "note": "Clip count for this pack is met at three; the duration band is not. Only store_aisle_alt (65.41535 s) lies inside 45-90 s. retail_checkout (113.0129 s) and queue_alt (139.4 s) are longer than the band. Durations are cv2.VideoCapture measurements of the copied files, not rounded or trimmed. Carried to Task 9 as a declared unmet gate."
   }

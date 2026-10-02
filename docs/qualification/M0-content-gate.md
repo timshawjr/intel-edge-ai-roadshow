@@ -176,10 +176,31 @@ all; it is a one-person-at-a-time person-detection clip.
 The requested scenario is therefore **left incomplete rather than claimed**. M0 commits to
 the documented reduced scope, as an **explicitly labelled intermediate milestone**:
 
-> **"Items entering the checkout zone"** — for `retail_sanity`, the business event is an
-> item leaving the shopper's basket and entering the checkout / scanner zone. The shelf
-> half of the original scenario is **not delivered**, and every screen, presenter line and
-> export that refers to this pack must say so.
+> ~~**"Items entering the checkout zone"** — for `retail_sanity`, the business event is an
+> item leaving the shopper's basket and entering the checkout / scanner zone.~~
+>
+> **SUPERSEDED at M1, 2026-10-02, by measurement.** M0 committed to this reduced scope on the
+> reasonable reading that the shopper's basket *is* the origin zone. Running the pinned detector
+> over the whole clip showed that reading was wrong: **no product-class zone transition fires on
+> `retail_checkout` at the pinned operating point.** The only reliably tracked product is the apple
+> already sitting in the basket at `(0.00, 0.85, 0.09, 0.99)`, which is stationary for the entire
+> clip (max corner deviation 0.0006 over 483 frames). The full-clip run under the M0 zone
+> rectangles produced **0 events**.
+>
+> The delivered event is therefore **people-in-zone presence**, not an item transition:
+>
+> > **"No product-transfer event is detectable on this footage; this pack is people-in-zone
+> > presence."** Shelf-to-basket is **not delivered**. Not delivered either is the item-transition
+> > reading of "checkout zone", because the footage does not support it. The person is the only
+> > object that moves, and it does not traverse — 17.441 frame-widths of cumulative travel against
+> > 0.015 of net displacement, pacing behind the counter — so a traversal event fires once per
+> > 113-second clip and would be a number that looks like a business event without being one.
+>
+> A guard test now runs the real pipeline over the real clip and **fails if a shipped
+> configuration emits zero events**, so this class of misconfiguration cannot reappear. The
+> counter surface is additionally excluded from event logic: its label is unstable (the dominant
+> label changes in 228 of 1792 adjacent frame pairs, 12.7%), so a count over it would measure the
+> model's mood rather than the scene.
 
 Conditions attached, so the label cannot quietly become a claim:
 

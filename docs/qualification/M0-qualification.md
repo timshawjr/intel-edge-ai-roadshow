@@ -105,8 +105,15 @@ statuses are recorded as-is.
 
 Answered in full, from the footage, in **[M0-content-gate.md](M0-content-gate.md)**. The
 durations above are re-measured there; the headline result is that **no shelf-to-basket clip
-exists in the provisioned material**, a reduced-scope "items entering the checkout zone"
-fallback is committed to, and 1 of 12 required clips falls inside the 45–90 s band.
+exists in the provisioned material**, a reduced-scope fallback is committed to, and 1 of 12
+required clips falls inside the 45–90 s band.
+
+**Updated at M1, 2026-10-02.** M0's reduced scope was "items entering the checkout zone".
+M1 measured that reading as wrong: **no product-class zone transition fires on
+`retail_checkout`** — the only reliably tracked product is stationary in the basket for the whole
+clip, and the full-clip run under M0's zone rectangles produced **0 events**. The delivered event
+is **people-in-zone presence**, and the shelf-to-basket scenario remains **not delivered**. See
+[M0-content-gate.md](M0-content-gate.md) for the measurement and the superseded claim.
 
 ---
 
