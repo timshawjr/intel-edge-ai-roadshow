@@ -32,12 +32,20 @@ what the machine must *refuse* to do:
   rejected candidate - there is nothing to un-do, so a track that reaches
   confirmation later still transfers.
 
-**The machine is pure.** Time is `frame.captured_at`; no clock is read, no file is
-opened, nothing is written. Class names come from an injected label tuple, defaulting
-to the pinned model's via `app.inference.pinned`, and a `class_id` outside that tuple
-**raises** rather than being reported as `"unknown"` - a fabricated class name is a
-fabricated measurement, and it would render on the booth as a label the model never
-produced.
+**The machine is pure.** Time is `frame.captured_at`; no clock is read and **no file is
+opened after construction**. Class names are resolved and cross-checked against the pin
+**once, in `__init__`**. That is a correction: an earlier revision imported
+`app.inference.pinned` lazily on first observation, and `pinned.class_names()` does
+`Path.read_text` on `labels.txt` - so the first frame of a live stream performed a
+filesystem read, and the "no file is opened" claim above was false. A review caught it
+by spying on `pathlib.Path.read_text`, which spying on `builtins.open` does not see.
+`tests/test_events.py::Purity::test_observe_opens_no_file_after_construction` now pins
+it. `observe()` reads a list of strings and a dict; that is all.
+
+An unmappable `class_id` is **counted and skipped**, not raised: `class_id` comes from
+the model, so an id past the end of the label list is a fact about the model, and
+killing a live stream over it would be worse than reporting it
+(`skipped_unmapped_class`). The name is never fabricated.
 
 **Which zones the footage actually supports.** Read
 `docs/qualification/M0-content-gate.md` §3-§4 before reading this module as a claim
@@ -80,20 +88,34 @@ __all__ = ["BusinessEvent", "EventRule", "RetailEventMachine"]
 ORIGIN_SLOT_KEY = "origin_slot"
 DESTINATION_SLOT_KEY = "destination_slot"
 
+#: A presence rule: "anything tracked that stays in `presence_zone` for
+#: `min_presence_seconds` is a `zone_occupancy` event". This is what the shipped
+#: retail pack uses, because that is the only business statement the provisioned
+#: footage supports - see the module note.
+PRESENCE_ZONE_KEY = "presence_zone"
+MIN_PRESENCE_KEY = "min_presence_seconds"
+
+#: Sentinel for "this track has no presence record at all", distinct from a record
+#: holding `None` ("this track's stay has been counted"). The two must not be
+#: confused: conflating them would either abandon an already-counted stay or keep a
+#: lost track's dwell alive.
+_NEVER: object = object()
+
 #: The only kinds this machine emits. `uncertain` is deliberately absent as a kind:
 #: spec §4 offers "uncertain **or** not counted", and this milestone takes *not
 #: counted* - an event whose evidence is incomplete is not emitted at all. The
 #: `uncertain` field on `BusinessEvent` stays so the contract has room for a later
 #: milestone to mark rather than drop, and every event emitted here is `False`.
-EVENT_KINDS: frozenset[str] = frozenset({"candidate_transfer", "candidate_return"})
+EVENT_KINDS: frozenset[str] = frozenset({
+    "candidate_transfer", "candidate_return", "zone_occupancy",
+})
 
-#: Default slot names in `event_rules` for the origin and destination of a transfer.
-#: These are **defaults, not requirements**: `event_rules` may carry
-#: `origin_slot`/`destination_slot` naming any two ROI entries, which is how the
-#: retail pack describes `basket` -> `checkout` for footage that contains no shelf.
-#: The machine holds no opinion about what a zone is called.
-DEFAULT_ORIGIN_SLOT = "shelf"
-DEFAULT_DESTINATION_SLOT = "basket"
+#: A transfer route is declared by naming both slots. There are **no default zone
+#: names in this module**: `shelf` and `basket` appeared here in an earlier revision
+#: as implicit defaults, which meant a pack got a transfer route it never asked for
+#: just by having ROIs called `shelf` and `basket`, and a pack whose footage has no
+#: shelf had no way to say so without inventing a slot name. A route is now explicit or
+#: absent.
 
 
 @dataclass(frozen=True)
@@ -148,10 +170,19 @@ class EventRule:
 class BusinessEvent:
     """One counted business event, on one frame of one loop.
 
-    `dedup_key` is `f"{source_loop_id}:{track_id}:{class_name}:{kind_suffix}"`. It is
-    the whole of Review Focus #3: stable across replays of the same frames, distinct
-    for two different objects in the same loop, and distinct again after a loop, so a
-    consumer that has already shown a key can skip it without guessing.
+    `dedup_key` is `f"{source_loop_id}:{track_id}:{class_name}:{kind_suffix}"`, where
+    the suffix is `transfer`, `return`, or `presence:<zone_name>`. It is the whole of
+    Review Focus #3: stable across replays of the same frames, distinct for two
+    different objects in the same loop, and distinct again after a loop, so a consumer
+    that has already shown a key can skip it without guessing.
+
+    **One consequence, stated rather than left to be discovered:** the key carries no
+    episode discriminator, so a track that leaves a zone and comes back **within the
+    same loop** produces the same key and is counted **once**. That is deliberate and it
+    is uniform across all three kinds; a future need to count repeated round trips
+    requires a per-episode discriminator here and in `_emit_keyed`, not a change to any
+    caller's expectations. `test_a_second_stay_in_the_same_loop_is_suppressed_by_the_dedup_key`
+    pins it.
 
     `at_frame_id` and `source_loop_id` are carried so a caller can check the event
     against the frame on screen. An event whose loop is not the one being displayed
@@ -210,6 +241,31 @@ class BusinessEvent:
             )
 
 
+def _seconds(rules: Mapping[str, Any], key: str, *, required: bool = True) -> float | None:
+    """A dwell/interval threshold from `event_rules`, validated.
+
+    `required=False` returns `None` for a key that is absent, which is how a
+    presence-only pack omits the transfer thresholds instead of having to invent
+    them. An invented threshold decides what counts as a business event, so it is
+    never invented.
+    """
+    if key not in rules:
+        if required:
+            raise ValueError(
+                f"event_rules has no {key!r}; keys are {sorted(rules)}. Without it the "
+                f"machine would have to invent a threshold, and an invented threshold "
+                f"decides what counts as a business event."
+            )
+        return None
+    value = rules[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a real number of seconds; got {value!r}")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")) or number < 0.0:
+        raise ValueError(f"{key} must be a finite, non-negative number of seconds; got {value!r}")
+    return number
+
+
 @dataclass
 class _Progress:
     """Per-track state. Mutable, and discarded wholesale on any interruption."""
@@ -250,13 +306,35 @@ class _Progress:
 
 
 class RetailEventMachine:
-    """The state machine. Pure: no clock, no OpenVINO, no I/O.
+    """The state machine. Pure: no clock, no OpenVINO, **no I/O**.
 
-    `class_names` is the label list to map a track's `class_id` to a name. It
-    defaults to the pinned model's via `app.inference.pinned`, which reads
-    `labels.txt`; tests pass one explicitly so they do not need the model
-    provisioned. A `class_id` past the end of the list **raises** - see the module
-    note.
+    `class_names` is the label list used to turn a track's `class_id` into a name, and
+    it is **resolved and validated here, once, at construction**. It defaults to the
+    pinned model's via `app.inference.pinned.class_names()`, which reads `labels.txt`
+    - that read happens exactly once, during `__init__`, and never again. After
+    construction `observe()` opens nothing. (It used to import `pinned` lazily on
+    first use, which meant a filesystem read on the first frame of a live stream; a
+    review caught it by spying on `Path.read_text`, which `builtins.open` spying does
+    not see, and the "no file is opened" claim in this module's docstring was
+    therefore false.)
+
+    Every startup failure this module can have happens in `__init__`, where it is
+    diagnosable: a missing `labels.txt`, a label list that disagrees with the pinned
+    class count, an undeclared tracked class, a malformed ROI.
+
+    Two rules the machine applies, each from a review finding:
+
+    - **An unmappable `class_id` does not kill the stream.** `class_id` comes from the
+      model, so a detector emitting an id past the end of the label list is a fact
+      about the model, not a bug in the caller. The correct invariant is a *startup*
+      one - `pinned.labels_match_pin()` - and it is checked in `__init__`. At
+      observation time an unmappable id is an unusable observation: it yields no
+      event and increments `skipped_unmapped_class`, so the screen can read "N
+      skipped: class not in label list" instead of the stream dying repeatedly
+      (AGENTS.md rule 12). It never becomes the fabricated name `"unknown"`.
+    - **Only current tracks are events.** A coasted track's box is the last one seen;
+      counting it as present would place an object where nobody observed it. Use
+      `Tracker.current_tracks()` to feed this machine.
     """
 
     def __init__(self, manifest: ScenarioManifest,
@@ -266,21 +344,28 @@ class RetailEventMachine:
                 f"manifest must be a ScenarioManifest; got {type(manifest).__name__}"
             )
         rules = manifest.event_rules
-        for key in ("min_dwell_seconds", "max_transition_seconds", "tracked_classes"):
-            if key not in rules:
-                raise ValueError(
-                    f"event_rules has no {key!r}; keys are {sorted(rules)}. Without it "
-                    f"the machine would have to invent a threshold, and an invented "
-                    f"threshold decides what counts as a business event."
-                )
-        self._rule = EventRule(
-            name="retail_transfer",
-            min_dwell_seconds=rules["min_dwell_seconds"],
-            max_transition_seconds=rules["max_transition_seconds"],
-            classes=tuple(rules["tracked_classes"]),
+        if "tracked_classes" not in rules:
+            raise ValueError(
+                f"event_rules has no 'tracked_classes'; keys are {sorted(rules)}. "
+                f"Without it the machine would have to invent a class list, and an "
+                f"invented list decides what counts as a business event."
+            )
+        self._tracked_classes = frozenset(rules["tracked_classes"])
+        declares_route = ORIGIN_SLOT_KEY in rules or DESTINATION_SLOT_KEY in rules
+        # The transfer thresholds belong to the transfer rule. A presence-only pack
+        # declares none of them, and must not have to invent values for a rule it does
+        # not use.
+        self._rule = (
+            EventRule(
+                name="retail_transfer",
+                min_dwell_seconds=_seconds(rules, "min_dwell_seconds"),
+                max_transition_seconds=_seconds(rules, "max_transition_seconds"),
+                classes=tuple(rules["tracked_classes"]),
+            )
+            if declares_route else None
         )
         allowlist = set(manifest.class_allowlist)
-        undeclared = sorted(set(self._rule.classes) - allowlist)
+        undeclared = sorted(set(self._tracked_classes) - allowlist)
         if undeclared:
             raise ValueError(
                 f"tracked_classes {undeclared} are not in class_allowlist "
@@ -289,41 +374,118 @@ class RetailEventMachine:
                 f"the scenario never claimed to detect."
             )
         self._zones, self._origin_name, self._destination_name = self._build_zones(rules)
-        self._class_names = tuple(class_names) if class_names is not None else None
+        self._presence_zone_name = rules.get(PRESENCE_ZONE_KEY)
+        self._min_presence = _seconds(rules, MIN_PRESENCE_KEY, required=False)
+        if self._presence_zone_name is None and self._min_presence is not None:
+            raise ValueError(
+                f"event_rules sets {MIN_PRESENCE_KEY!r} but names no "
+                f"{PRESENCE_ZONE_KEY!r}. A minimum presence with no zone to be present "
+                f"in is a threshold that can never be met."
+            )
+        if self._presence_zone_name is not None:
+            if self._presence_zone_name not in self._zones:
+                raise ValueError(
+                    f"{PRESENCE_ZONE_KEY} is {self._presence_zone_name!r}, which is not "
+                    f"an ROI in event_rules; zones are {sorted(self._zones)}."
+                )
+            if self._min_presence is None:
+                raise ValueError(
+                    f"event_rules names {PRESENCE_ZONE_KEY!r} but no "
+                    f"{MIN_PRESENCE_KEY!r}; the machine would have to invent a dwell "
+                    f"requirement, and an invented one decides what counts as presence."
+                )
+        if self._origin_name is None and self._presence_zone_name is None:
+            raise ValueError(
+                f"event_rules configures no rule: neither a transfer route "
+                f"({ORIGIN_SLOT_KEY!r}/{DESTINATION_SLOT_KEY!r}) nor a presence rule "
+                f"({PRESENCE_ZONE_KEY!r}). A machine that can never emit is a counter "
+                f"that reads zero forever, which on a booth screen says 'nothing is "
+                f"happening'."
+            )
+        self._class_names = self._resolve_class_names(class_names)
         self._manifest = manifest
         self._progress: dict[int, _Progress] = {}
+        self._presence: dict[int, tuple[float, str]] = {}
         self._events: list[BusinessEvent] = []
         self._emitted: set[str] = set()
         self._loop_id: int | None = None
         self._abandoned = 0
         self._abandoned_reasons: dict[str, int] = {}
+        self._skipped_unmapped = 0
+
+    def _resolve_class_names(self, class_names: tuple[str, ...] | None) -> tuple[str, ...]:
+        """The label list, read and cross-checked **here and nowhere else**.
+
+        When it comes from the pin, it is checked against `pinned.num_classes()` -
+        which is `labels_match_pin()` in effect, and is the invariant that makes an
+        out-of-range `class_id` at observation time a *model* fact rather than a
+        silent mismatch.
+        """
+        if class_names is not None:
+            names = tuple(str(n) for n in class_names)
+            if not names:
+                raise ValueError(
+                    "class_names is empty. Every observation's class_id is resolved "
+                    "against this list, and an empty list would make every frame "
+                    "unusable while reporting nothing wrong."
+                )
+            return names
+        from app.inference.pinned import class_names as pinned_class_names
+        from app.inference.pinned import labels_match_pin, num_classes
+        if not labels_match_pin():
+            raise ValueError(
+                f"labels.txt has {len(pinned_class_names())} names but the pin declares "
+                f"{num_classes()} classes. Refusing to build the machine: with a label "
+                f"list that does not match the model, an in-range class_id could be "
+                f"given the wrong name, and a wrong class name on a retail event is a "
+                f"fabricated measurement. Re-provision rather than substitute."
+            )
+        return tuple(pinned_class_names())
 
     @staticmethod
-    def _build_zones(rules: Mapping[str, Any]) -> tuple[dict[str, Zone], str, str]:
+    def _build_zones(rules: Mapping[str, Any]) -> tuple[dict[str, Zone], str | None, str | None]:
         """Build the `Zone`s named by the rule slots; return them and the route.
 
         The slot names come from `event_rules` (`origin_slot`/`destination_slot`,
-        defaulting to `shelf`/`basket`), so a pack whose footage has no shelf declares
-        `basket`/`checkout` and this function builds those. **The machine holds no
-        opinion about what a zone is called** - the only two names it will invent are
-        the defaults above, and a pack that wants different ones says so in its own
-        config.
+        defaulting to `shelf`/`basket` when **either** is declared), so a pack whose
+        footage has no shelf declares `basket`/`checkout` and this function builds
+        those. **The machine holds no opinion about what a zone is called** - the only
+        two names it will invent are those defaults.
+
+        A transfer route is **optional**. A presence-only pack declares
+        `presence_zone` and no origin/destination, and gets a machine that emits
+        `zone_occupancy` only. That matters because the shipped retail pack is
+        presence-only: requiring it to declare a transfer route it does not use would
+        mean putting an unused `origin_slot` in the config, which is a claim the
+        footage does not support.
 
         Every ROI is validated by `Zone` here, at load, with the slot's name in the
         message - the difference between a loud failure at startup and boxes in the
         wrong place for a whole session.
         """
-        named_keys = {ORIGIN_SLOT_KEY, DESTINATION_SLOT_KEY}
+        named_keys = {ORIGIN_SLOT_KEY, DESTINATION_SLOT_KEY, PRESENCE_ZONE_KEY}
         roi_slots = {
             key: value for key, value in rules.items()
             if key not in named_keys
             and isinstance(value, (tuple, list)) and len(value) == 4
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
         }
-        origin_name = rules.get(ORIGIN_SLOT_KEY, DEFAULT_ORIGIN_SLOT)
-        destination_name = rules.get(DESTINATION_SLOT_KEY, DEFAULT_DESTINATION_SLOT)
+        declares_route = ORIGIN_SLOT_KEY in rules or DESTINATION_SLOT_KEY in rules
+        if not declares_route:
+            return ({slot: Zone(name=slot, kind="area", roi=tuple(roi))
+                     for slot, roi in roi_slots.items()}, None, None)
+        origin_name = rules.get(ORIGIN_SLOT_KEY)
+        destination_name = rules.get(DESTINATION_SLOT_KEY)
         for role, slot in ((ORIGIN_SLOT_KEY, origin_name),
                            (DESTINATION_SLOT_KEY, destination_name)):
+            if slot is None:
+                raise ValueError(
+                    f"event_rules declares one end of a transfer route but not the "
+                    f"other: {sorted(k for k in (ORIGIN_SLOT_KEY, DESTINATION_SLOT_KEY) if k in rules)}. "
+                    f"Both are required, because a half-declared route would have to "
+                    f"invent the missing end - and an invented zone is a claim about "
+                    f"the footage nobody made."
+                )
             if not isinstance(slot, str) or not slot.strip():
                 raise ValueError(f"{role} must name an ROI entry; got {slot!r}")
             if slot not in roi_slots:
@@ -350,9 +512,19 @@ class RetailEventMachine:
         return self._manifest
 
     @property
-    def rule(self) -> EventRule:
-        """The thresholds and classes this machine judges against."""
+    def rule(self) -> EventRule | None:
+        """The transfer thresholds, or `None` in a presence-only pack.
+
+        `None` is the honest answer for a pack that declares no route: there is no
+        transfer to threshold, and inventing `min_dwell_seconds` for it would be a
+        number on a screen describing a rule that does not exist.
+        """
         return self._rule
+
+    @property
+    def tracked_classes(self) -> frozenset[str]:
+        """The class names this machine will emit events for."""
+        return self._tracked_classes
 
     @property
     def zones(self) -> Mapping[str, Zone]:
@@ -360,22 +532,53 @@ class RetailEventMachine:
         return MappingProxyType(self._zones)
 
     @property
-    def origin(self) -> Zone:
-        """The zone an item departs from. Named by `event_rules`, not by this module."""
-        return self._zones[self._origin_name]
+    def origin(self) -> Zone | None:
+        """The zone an item departs from, or `None` in a presence-only pack.
+
+        Named by `event_rules`, never by this module. `None` is an honest answer for a
+        pack that declares no transfer route - the shipped retail pack is presence-only
+        because the footage supports no product transfer.
+        """
+        return self._zones[self._origin_name] if self._origin_name else None
 
     @property
-    def destination(self) -> Zone:
-        """The zone an item arrives in. Named by `event_rules`."""
-        return self._zones[self._destination_name]
+    def destination(self) -> Zone | None:
+        """The zone an item arrives in, or `None` in a presence-only pack."""
+        return self._zones[self._destination_name] if self._destination_name else None
 
     @property
-    def origin_name(self) -> str:
+    def origin_name(self) -> str | None:
         return self._origin_name
 
     @property
-    def destination_name(self) -> str:
+    def destination_name(self) -> str | None:
         return self._destination_name
+
+    @property
+    def presence_zone(self) -> Zone | None:
+        """The zone whose sustained occupancy is an event, or `None` if unconfigured."""
+        if not self._presence_zone_name:
+            return None
+        return self._zones[self._presence_zone_name]
+
+    @property
+    def min_presence_seconds(self) -> float | None:
+        return self._min_presence
+
+    @property
+    def skipped_unmapped_class(self) -> int:
+        """Observations dropped because their `class_id` had no name.
+
+        **Non-fatal by design.** `class_id` comes from the model, so an id past the
+        end of the label list is a fact about the model, and killing the stream over it
+        would take down a booth for something the label list - not the caller - is
+        wrong about (AGENTS.md rule 12). The real invariant is checked once at startup,
+        against the pin.
+
+        Exposed so the screen can say "N skipped: class not in label list" instead of
+        showing a count that is quietly short.
+        """
+        return self._skipped_unmapped
 
     @property
     def events(self) -> list[BusinessEvent]:
@@ -435,14 +638,20 @@ class RetailEventMachine:
            about raises. Adopting it silently would let one loop's pending state leak
            into the next (Review Focus #3, other direction). Spec §9 requires an
            explicit `reset` per loop.
-        2. **Class not tracked.** A person walking the route produces nothing, and no
+        2. **Unmapped class id.** Counts `skipped_unmapped_class` and returns nothing.
+           It does **not** raise: `class_id` comes from the model, so this is a fact
+           about the model, and a per-frame exception would take a live stream down
+           repeatedly for something the caller cannot fix (AGENTS.md rule 12). The
+           matching invariant - label list length against the pinned class count - is
+           checked once in `__init__`.
+        3. **Class not tracked.** A person walking a route produces nothing, and no
            state is kept - there is no pending transfer to poison.
-        3. **Not confirmed.** Not evidence. No state kept, nothing counted.
-        4. **Track not current.** A coasted track's box is the last one *seen*; using
+        4. **Not confirmed.** Not evidence. No state kept, nothing counted.
+        5. **Track not current.** A coasted track's box is the last one *seen*; using
            it now would place the object somewhere nobody observed it.
-        5. **Unmapped class id.** Raises rather than becoming `"unknown"`.
 
-        `now` is `frame.captured_at`. This method reads no clock.
+        `now` is `frame.captured_at`. **This method reads no clock and opens no
+        file** - the label list was resolved in `__init__`.
         """
         if not isinstance(track, Track):
             raise ValueError(f"track must be a Track; got {type(track).__name__}")
@@ -459,10 +668,13 @@ class RetailEventMachine:
                 f"loop's pending transfers into the next."
             )
 
-        class_name = self._class_name_for(track.class_id)
         now = frame.captured_at
+        if not 0 <= track.class_id < len(self._class_names):
+            self._skipped_unmapped += 1
+            return ()
+        class_name = self._class_names[track.class_id]
 
-        if class_name not in self._rule.classes:
+        if class_name not in self._tracked_classes:
             return ()
         if not track.confirmed:
             return ()
@@ -470,8 +682,60 @@ class RetailEventMachine:
             return ()
 
         normalised = _normalise(track.box, frame)
-        in_origin = self.origin.contains(normalised)
-        in_destination = self.destination.contains(normalised)
+        emitted: tuple[BusinessEvent, ...] = ()
+        if self._presence_zone_name:
+            emitted += self._maybe_emit_presence(track, class_name, frame, now,
+                                                 normalised)
+        if self._origin_name is not None:
+            emitted += self._observe_route(track, class_name, frame, now, normalised)
+        return emitted
+
+    def _maybe_emit_presence(self, track: Track, class_name: str, frame: FramePacket,
+                             now: float,
+                             normalised: tuple[float, float, float, float],
+                             ) -> tuple[BusinessEvent, ...]:
+        """Sustained presence in the configured zone is itself the event.
+
+        The test is on the object's **centre**, via `Zone.contains_point`, not on
+        `Zone.contains`. That is measured, not stylistic: on `retail_checkout` a
+        person's box is routinely clipped by the frame border (`x1 = -0.001`,
+        `x2 = 0.999`), so full containment is never true and a presence rule written on
+        it would report an empty shop.
+
+        Dwell is `now - entered_at`, elapsed wall-clock time between real
+        observations. Sampling the clip changes the resolution of the measurement, not
+        the elapsed time, so a guard that samples measures the same presence the
+        product would at full rate.
+
+        Emitted **once per continuous stay** per track: the `dedup_key` carries the
+        zone and the loop, and leaving the zone starts a new stay.
+        """
+        zone = self._zones[self._presence_zone_name]
+        if not zone.contains_point(zone.centroid_of(normalised)):
+            self._presence.pop(track.track_id, None)
+            return ()
+        entered_at = self._presence.setdefault(track.track_id, now)
+        if (now - entered_at) < self._min_presence:
+            return ()
+        # No "already counted" marker is kept here. One was, and it was actively
+        # harmful: it made `_presence` hold `None` for a counted stay, which meant a
+        # `reset()` that failed to clear the dict left the `None` behind and the next
+        # observation silently returned instead of starting a fresh stay - a mutant no
+        # test could catch. `dedup_key` already suppresses the repeat (once per track
+        # per loop), so the marker bought nothing.
+        key = (f"{frame.source_loop_id}:{track.track_id}:{class_name}"
+               f":presence:{self._presence_zone_name}")
+        return self._emit_keyed("zone_occupancy", key, track.track_id, class_name,
+                                frame, now)
+
+    def _observe_route(self, track: Track, class_name: str, frame: FramePacket,
+                       now: float, normalised: tuple[float, float, float, float],
+                       ) -> tuple[BusinessEvent, ...]:
+        """The origin -> destination -> origin legs. Absent in a presence-only pack."""
+        origin = self._zones[self._origin_name]
+        destination = self._zones[self._destination_name]
+        in_origin = origin.contains(normalised)
+        in_destination = destination.contains(normalised)
 
         progress = self._progress.get(track.track_id)
         if progress is None or progress.class_id != track.class_id:
@@ -562,14 +826,28 @@ class RetailEventMachine:
               frame: FramePacket, now: float) -> tuple[BusinessEvent, ...]:
         suffix = "transfer" if kind == "candidate_transfer" else "return"
         key = f"{frame.source_loop_id}:{progress.track_id}:{class_name}:{suffix}"
+        return self._emit_keyed(kind, key, progress.track_id, class_name, frame, now)
+
+    def _emit_keyed(self, kind: str, key: str, track_id: int, class_name: str,
+                    frame: FramePacket, now: float) -> tuple[BusinessEvent, ...]:
+        """Append an event unless its `dedup_key` has already been emitted this loop.
+
+        This is also where a **second round trip by the same track in one loop** is
+        suppressed. That is a deliberate, documented consequence of the key rather
+        than of the state machine: a track that leaves the zone and comes back within
+        the same loop produces the *same* key and is therefore counted once. If a
+        product later needs repeated round trips counted separately, the key needs a
+        per-episode discriminator - which is a change to this method and to
+        `BusinessEvent.dedup_key`, not to the caller's expectations.
+        """
         if key in self._emitted:
-            # Replayed frames of an already-counted transfer. Skipping is the whole
-            # point of the key: the same movement, seen again, is not a second event.
+            # Replayed frames of an already-counted event. Skipping is the whole point
+            # of the key: the same movement, seen again, is not a second event.
             return ()
         event = BusinessEvent(
             kind=kind,
             class_name=class_name,
-            track_id=progress.track_id,
+            track_id=track_id,
             source_loop_id=frame.source_loop_id,
             at_frame_id=frame.frame_id,
             at_time=now,
@@ -616,15 +894,22 @@ class RetailEventMachine:
         if isinstance(now, bool) or not isinstance(now, (int, float)):
             raise ValueError(f"now must be a real number; got {now!r}")
         progress = self._progress.pop(track_id, None)
-        if progress is None:
-            return ()
+        # A presence stay is interrupted by the loss too. Leaving it in place would
+        # let a track that vanished mid-dwell come back under the same id and be
+        # credited with time nobody observed it standing there. A stay that has
+        # already been *counted* is not abandoned - it was counted, and nothing is
+        # being retracted here.
+        stay = self._presence.pop(track_id, _NEVER)
+        had_uncounted_stay = stay is not _NEVER
         had_pending = (
-            progress.first_seen_in_origin is not None
+            progress is not None
+            and progress.first_seen_in_origin is not None
             and progress.last_seen_in_origin is not None
+            and self._rule is not None
             and progress.has_origin_dwell(self._rule.min_dwell_seconds)
             and not progress.transferred
         )
-        if had_pending:
+        if had_pending or had_uncounted_stay:
             self._abandoned += 1
             self._abandoned_reasons["track_lost"] = (
                 self._abandoned_reasons.get("track_lost", 0) + 1
@@ -648,34 +933,23 @@ class RetailEventMachine:
                 f"that follow can be checked against."
             )
         self._progress = {}
+        self._presence = {}
         self._events = []
         self._emitted = set()
         self._abandoned = 0
         self._abandoned_reasons = {}
+        self._skipped_unmapped = 0
         self._loop_id = loop_id
 
     # -- names ----------------------------------------------------------------
-
-    def _class_name_for(self, class_id: int) -> str:
-        """The label for `class_id`, or a refusal.
-
-        Never `"unknown"`. An unmappable class id is a disagreement between the
-        detector and the label list, and rendering it as a class name would put a
-        word on the screen that the model never produced.
-        """
-        names = self._class_names
-        if names is None:
-            from app.inference.pinned import class_names as pinned_class_names
-            names = pinned_class_names()
-            self._class_names = names
-        if not 0 <= class_id < len(names):
-            raise ValueError(
-                f"class_id {class_id} is outside the label list of {len(names)} classes "
-                f"(the pinned model is {names and len(names)} wide). Refusing rather "
-                f"than labelling it 'unknown': a class name the model did not produce "
-                f"is a fabricated measurement on a booth screen."
-            )
-        return names[class_id]
+    #
+    # There is deliberately no `_class_name_for` any more. It used to exist, and it
+    # lazily imported `app.inference.pinned` - which reads `labels.txt` - on the
+    # first observation, which put a filesystem read on the first frame of a live
+    # stream and made this module's "no file is opened" claim false. A review caught
+    # it by spying on `pathlib.Path.read_text`; spying on `builtins.open` does not
+    # see it. The label list is resolved once in `__init__` (`_resolve_class_names`)
+    # and an id with no entry is counted and skipped, never named.
 
 
 def _normalise(box: tuple[float, float, float, float],

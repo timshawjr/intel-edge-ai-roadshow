@@ -322,8 +322,24 @@ class Tracker:
         return tuple(sorted(self._tracks))
 
     def tracks(self) -> tuple[Track, ...]:
-        """Every live track, ascending by `track_id`."""
+        """Every live track, current first then coasted, ascending by `track_id`."""
         return tuple(self._tracks[track_id] for track_id in sorted(self._tracks))
+
+    def current_tracks(self) -> tuple[Track, ...]:
+        """Only the tracks matched by the most recent `update`, ascending by `track_id`.
+
+        **This is the accessor an overlay or an event machine should use.** The
+        failure it avoids is silent and expensive: a coasted track's `box` is the last
+        one *seen*, so drawing from `update()`'s return value without filtering draws
+        a plausible, correctly-placed rectangle from a recent frame on top of an
+        object that has since left. Nothing about that rectangle looks wrong.
+
+        `update()` still returns coasted tracks on purpose - the event machine needs
+        to know a track is coasting so it can decide whether a pending transfer
+        survives an occlusion - which is exactly why the filtering has to be a named,
+        tested call rather than something every consumer remembers to do.
+        """
+        return tuple(track for track in self.tracks() if track.is_current)
 
     def get(self, track_id: int) -> Track | None:
         """The live track with this id, or `None` if there is none.

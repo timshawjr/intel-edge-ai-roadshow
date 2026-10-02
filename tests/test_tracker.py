@@ -251,6 +251,48 @@ class OutputOrder(unittest.TestCase):
         self.assertEqual(ids, list(t.active_track_ids()))
 
 
+class CurrentTracks(unittest.TestCase):
+    """I3: the accessor an overlay or the event machine must use.
+
+    The failure it avoids is silent and expensive. A coasted track's `box` is the last
+    one *seen*; drawing it draws a plausible, correctly-placed rectangle from a recent
+    frame on top of an object that has since left. Nothing about that rectangle looks
+    wrong, which is why the filter has to be a named, tested call.
+    """
+
+    def test_current_tracks_excludes_coasted_and_unmatched_ones(self):
+        t = Tracker(max_misses=3)
+        t.update([_d(0, 0, 50, 50), _d(400, 400, 450, 450)], now=0.0)
+        # One frame where only the first object is seen: the second coasts.
+        current = t.update([_d(0, 0, 50, 50)], now=0.1)
+        self.assertEqual(len(t.tracks()), 2, "the coasted track is still live")
+        self.assertEqual(len(t.current_tracks()), 1)
+        self.assertEqual([tr.track_id for tr in current if tr.is_current],
+                         [tr.track_id for tr in t.current_tracks()])
+
+    def test_a_track_returns_to_current_when_it_is_matched_again(self):
+        t = Tracker(max_misses=3)
+        t.update([_d(0, 0, 50, 50)], now=0.0)
+        t.update([], now=0.1)
+        self.assertEqual(t.current_tracks(), ())
+        again = t.update([_d(0, 0, 50, 50)], now=0.2)
+        self.assertEqual(len(t.current_tracks()), 1)
+        self.assertTrue(again[0].is_current)
+
+    def test_current_tracks_is_empty_when_nothing_was_seen_this_frame(self):
+        t = Tracker(max_misses=3)
+        t.update([_d(0, 0, 50, 50)], now=0.0)
+        t.update([], now=0.1)
+        self.assertEqual(t.current_tracks(), ())
+
+    def test_it_is_ordered_by_track_id(self):
+        t = Tracker()
+        t.update([_d(400, 400, 450, 450), _d(0, 0, 50, 50)], now=0.0)
+        t.update([_d(400, 400, 450, 450), _d(0, 0, 50, 50)], now=0.1)
+        ids = [tr.track_id for tr in t.current_tracks()]
+        self.assertEqual(ids, sorted(ids))
+
+
 class Validation(unittest.TestCase):
     def _refuse_ctor(self, **kw):
         with self.assertRaises(ValueError):

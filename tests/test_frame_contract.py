@@ -73,6 +73,20 @@ class Identity(unittest.TestCase):
         self.assertNotEqual(_p(stream_id="A"), _p(stream_id="B"))
         self.assertNotEqual(_p(session_id="s1"), _p(session_id="s2"))
 
+    def test_identity_omits_scenario_id_so_a_two_scenario_session_fails_loudly(self):
+        # M1 review finding: `identity` deliberately omits `scenario_id`, because one
+        # session runs one scenario at a time. This is the tripwire for that
+        # assumption. If a session ever runs two scenarios - or reuses a `session_id`
+        # across a scenario switch - these two frames are indistinguishable by identity
+        # and the assertions below fail, which is when someone must decide whether
+        # `scenario_id` belongs in the tuple.
+        a, b = _p(scenario_id="retail", frame_id=7), _p(scenario_id="store_aisle", frame_id=7)
+        self.assertEqual(a.identity, b.identity)
+        self.assertEqual(a, b, "a scenario switch is currently invisible to identity")
+        # ...and what identity *does* carry still discriminates as documented.
+        self.assertNotEqual(_p(scenario_id="retail").identity,
+                            _p(scenario_id="retail", source_loop_id=1).identity)
+
 
 class Age(unittest.TestCase):
     def test_age_is_measured_from_capture_not_decode(self):

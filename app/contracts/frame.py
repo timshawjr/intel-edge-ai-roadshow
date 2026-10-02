@@ -168,6 +168,16 @@ class FramePacket:
         The identity of the frame, and the only thing that distinguishes frame 7 of
         loop 0 from frame 7 of loop 1. An overlay binds to this, not to arrival
         order and not to `frame_id`.
+
+        **`scenario_id` is deliberately not in this tuple.** One session runs one
+        scenario at a time, so it adds no discrimination and every consumer would have
+        to carry it. That assumption is not free: a session that ran two scenarios
+        concurrently, or reused a `session_id` across a scenario switch, could file a
+        result from scenario A against a frame of scenario B and this tuple would not
+        notice. `test_identity_omits_scenario_id_so_a_two_scenario_session_fails_loudly`
+        pins the omission and the reason, so if a session ever becomes multi-scenario
+        the change is a decision someone makes rather than a bug someone finds at a
+        trade show.
         """
         return (self.session_id, self.stream_id, self.source_loop_id, self.frame_id)
 

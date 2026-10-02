@@ -38,12 +38,14 @@ actually ship. Nothing here may be read as the shelf-to-basket claim being met.
 """
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 from app.contracts.frame import FramePacket
 from app.contracts.scenario_manifest import ScenarioManifest
 from app.engine.events import BusinessEvent, RetailEventMachine
+from app.engine.retail_config import retail_sanity_manifest
 from app.engine.tracker import Track
 from app.engine.zones import Zone
 
@@ -57,10 +59,14 @@ BASKET = (0.60, 0.30, 0.98, 0.70)
 IN_SHELF = (80, 300, 400, 500)
 IN_BASKET = (1200, 380, 1700, 700)
 
-# The pinned label list has 80 entries and 'apple' is 47 (COCO). Supplied explicitly
-# so this module's tests do not read the provisioned labels.txt.
-CLASS_NAMES = tuple(f"class_{i}" for i in range(47)) + ("apple",) + tuple(
-    f"class_{i}" for i in range(48, 80))
+# The pinned label list has 80 entries, 'person' is 0 and 'apple' is 47 (COCO) - both
+# checked against `app.inference.pinned` by
+# `test_the_default_label_list_is_resolved_and_cross_checked_at_construction`.
+# Supplied explicitly so this module's tests do not read the provisioned labels.txt.
+CLASS_NAMES = (
+    ("person",) + tuple(f"class_{i}" for i in range(1, 47)) + ("apple",)
+    + tuple(f"class_{i}" for i in range(48, 80))
+)
 PERSON_ID = 0
 APPLE_ID = 47
 
@@ -73,6 +79,7 @@ def _manifest(**kw):
         zones=(),
         event_rules={
             "min_dwell_seconds": 0.5, "max_transition_seconds": 12.0,
+            "origin_slot": "shelf", "destination_slot": "basket",
             "shelf": SHELF, "basket": BASKET, "tracked_classes": ("person", "apple"),
         },
         source_ids=("retail_checkout",), conf_threshold=0.25, iou_threshold=0.45,
@@ -356,24 +363,68 @@ class TrackedClasses(unittest.TestCase):
         self.m = RetailEventMachine(_manifest(), class_names=CLASS_NAMES)
 
     def test_a_class_outside_tracked_classes_moves_without_producing_an_event(self):
-        # A person walks the whole route. Nobody wants "person entered the basket" on
-        # a retail loss screen, and the manifest is where that is decided.
+        # A class the pack does not track walks the whole route and emits nothing. This
+        # previously used `person`, which **is** in `tracked_classes` - the test passed
+        # only because the synthetic label list happened to call class 0 `class_0`, so
+        # it was really testing an unmapped name and saying it was testing the
+        # allowlist. Class 1 is genuinely untracked.
+        untracked = 1   # 'class_1', not in ("person", "apple")
+        self.assertNotIn("class_1", self.m.tracked_classes)
         for t, box in [(0.0, IN_SHELF), (0.6, IN_SHELF),
                        (1.0, IN_BASKET), (1.4, IN_BASKET)]:
-            self.m.observe(_track(1, box, t, cls=PERSON_ID), _frame(int(t * 10), t))
+            self.m.observe(_track(1, box, t, cls=untracked), _frame(int(t * 10), t))
         self.assertEqual(self.m.events, [])
+        self.assertEqual(self.m.skipped_unmapped_class, 0,
+                         "a mapped but untracked class is not a skipped class")
 
     def test_the_tracked_classes_come_from_the_manifest(self):
         self.assertEqual(self.m.rule.classes, ("person", "apple"))
         self.assertEqual(self.m.rule.min_dwell_seconds, 0.5)
         self.assertEqual(self.m.rule.max_transition_seconds, 12.0)
 
-    def test_a_class_id_past_the_end_of_the_label_list_is_refused(self):
-        # An out-of-range class id must not become the string "unknown" on a screen:
-        # that is a fabricated class name presented as a measurement.
+    def test_a_class_id_past_the_end_of_the_label_list_is_skipped_not_fatal(self):
+        # I2 review finding. `class_id` comes from the *model*, so an id past the end
+        # of the label list is a fact about the model, not a caller bug. Raising here
+        # took a live stream down, repeatedly, for something the caller cannot fix
+        # (AGENTS.md rule 12). The genuine invariant is a startup one and lives in
+        # `_resolve_class_names`.
         for t, box in [(0.0, IN_SHELF), (0.6, IN_SHELF), (1.0, IN_BASKET)]:
-            with self.assertRaises(ValueError):
-                self.m.observe(_track(1, box, t, cls=9999), _frame(int(t * 10), t))
+            events = self.m.observe(_track(1, box, t, cls=9999), _frame(int(t * 10), t))
+            self.assertEqual(events, ())
+        self.assertEqual(self.m.skipped_unmapped_class, 3)
+        self.assertEqual(self.m.events, [])
+
+    def test_an_unmapped_class_id_never_becomes_the_string_unknown(self):
+        # The fabricated name is the thing that must not happen: "unknown" on a screen
+        # reads as a class the model reported.
+        for t in (0.0, 0.6, 1.0, 1.4):
+            self.m.observe(_track(1, IN_SHELF, t, cls=9999), _frame(int(t * 10), t))
+        names = [e.class_name for e in self.m.events]
+        self.assertNotIn("unknown", names)
+        self.assertEqual(names, [])
+
+    def test_the_skipped_count_survives_so_the_screen_can_report_it(self):
+        self.m.observe(_track(1, IN_SHELF, 0.0, cls=9999), _frame(0, 0.0))
+        self.assertEqual(self.m.skipped_unmapped_class, 1)
+        # A later, mappable observation still works: one bad id does not wedge the
+        # machine.
+        self.m.observe(_track(2, IN_SHELF, 0.1), _frame(1, 0.1))
+        self.assertEqual(self.m.skipped_unmapped_class, 1)
+        self.assertEqual(self.m.state_of(2), "in_origin")
+
+    def test_an_empty_label_list_is_refused_at_construction(self):
+        # With an empty list every observation would be unmappable and every frame
+        # would be skipped - a machine that reports "nothing is happening" for a
+        # reason it cannot state.
+        with self.assertRaises(ValueError):
+            RetailEventMachine(_manifest(), class_names=())
+
+    def test_the_default_label_list_is_resolved_and_cross_checked_at_construction(self):
+        # C2: resolution happens once, here, and is checked against the pin. The
+        # construction succeeding at all proves the lazy read is gone from `observe`.
+        m = RetailEventMachine(_manifest())
+        self.assertEqual(len(m.tracked_classes), 2)
+        self.assertEqual(APPLE_ID, 47, "the fixture's apple id must match labels.txt")
 
     def test_a_class_not_in_the_allowlist_is_refused_at_construction(self):
         # The allowlist and the tracked list have to agree, or the machine would
@@ -386,49 +437,160 @@ class TrackedClasses(unittest.TestCase):
             RetailEventMachine(bad, class_names=CLASS_NAMES)
 
 
-class TheFootageHonestConfiguration(unittest.TestCase):
-    """`retail_checkout` is basket -> scanner plate. There is no shelf in it.
+class TheShippedPresenceConfiguration(unittest.TestCase):
+    """The configuration M1 actually ships: **people in zone**.
 
-    This is the configuration that will actually ship, driven end to end, so the
-    machine is proven against the reduced scope rather than against a fixture that
-    presumes the unfilmed one. `docs/qualification/M0-content-gate.md` §3-§4.
+    A previous version of this file declared `BASKET_ZONE = (0.00, 0.70, 0.22, 0.99)`
+    and `CHECKOUT_ZONE = (0.35, 0.30, 0.75, 0.62)` to be "the honest configuration"
+    and drove a transfer through them. Both rectangles were wrong, and a review
+    measured it over the whole clip: the first holds 1286 detections of which **1285
+    are the stationary apple** that is the only hand-annotated object in the
+    repository, and the second holds **2 `suitcase` detections**. Zero product
+    transfers. The configuration now lives in `app/engine/retail_config.py`, is
+    derived from measured person-centroid occupancy, and is checked against the real
+    footage by `tests/test_retail_footage_guard.py`.
     """
 
-    # The basket is at the left of the frame; the scanner plate is centre-right.
-    BASKET_ZONE = (0.00, 0.70, 0.22, 0.99)     # the black basket, bottom-left
-    CHECKOUT_ZONE = (0.35, 0.30, 0.75, 0.62)   # the recessed scanner plate
-    IN_BASKET_ZONE = (20, 780, 380, 1060)
-    IN_CHECKOUT_ZONE = (700, 340, 1400, 660)
+    def test_the_shipped_manifest_is_presence_only_and_declares_no_transfer(self):
+        manifest = retail_sanity_manifest()
+        rules = manifest.event_rules
+        self.assertEqual(rules["presence_zone"], "counter_band")
+        self.assertNotIn("origin_slot", rules)
+        self.assertNotIn("destination_slot", rules)
+        m = RetailEventMachine(manifest, class_names=CLASS_NAMES)
+        self.assertIsNone(m.origin)
+        self.assertIsNone(m.destination)
+        self.assertIsNotNone(m.presence_zone)
 
-    def _manifest(self):
-        return _manifest(event_rules={
-            "min_dwell_seconds": 0.5, "max_transition_seconds": 12.0,
-            "basket": self.BASKET_ZONE, "checkout": self.CHECKOUT_ZONE,
-            # The slots are named in data. The machine's defaults are `shelf`/`basket`,
-            # which this footage cannot honour: there is no shelf in it.
-            "origin_slot": "basket", "destination_slot": "checkout",
-            "tracked_classes": ("apple",),
-        }, business_line="Items entering the checkout zone")
+    def test_the_business_line_does_not_claim_a_product_transfer(self):
+        text = retail_sanity_manifest().business_line.lower()
+        for forbidden in ("shelf", "basket", "transfer", "loss prevention"):
+            self.assertNotIn(forbidden, text)
+        self.assertIn("people", text)
 
-    def test_a_basket_to_checkout_move_is_a_candidate_transfer(self):
-        m = RetailEventMachine(self._manifest(), class_names=CLASS_NAMES)
-        for t, box in [(0.0, self.IN_BASKET_ZONE), (0.6, self.IN_BASKET_ZONE),
-                       (1.0, self.IN_CHECKOUT_ZONE), (1.4, self.IN_CHECKOUT_ZONE)]:
-            m.observe(_track(1, box, t), _frame(int(t * 10), t))
-        kinds = [e.kind for e in m.events]
-        self.assertIn("candidate_transfer", kinds)
-        self.assertEqual(m.events[0].class_name, "apple")
+    def test_the_scope_note_says_the_reduction_outright(self):
+        note = retail_sanity_manifest().scope_note
+        self.assertIn("NOT delivered", note)
+        self.assertIn("no product-transfer event is detectable", note.lower())
 
-    def test_the_business_line_is_the_reduced_scope_sentence(self):
-        m = RetailEventMachine(self._manifest(), class_names=CLASS_NAMES)
-        self.assertEqual(m.manifest.business_line, "Items entering the checkout zone")
-        self.assertNotIn("shelf", m.manifest.business_line.lower())
+    def test_only_person_is_tracked(self):
+        # The counter surface is labelled 17 different ways by the detector. A count
+        # over it is a count of label noise.
+        self.assertEqual(retail_sanity_manifest().event_rules["tracked_classes"],
+                         ("person",))
 
-    def test_the_origin_slot_is_whatever_the_manifest_names(self):
-        # The machine has no hardcoded "shelf"; the slots come from event_rules, so a
-        # pack whose footage has no shelf simply does not declare one.
-        m = RetailEventMachine(self._manifest(), class_names=CLASS_NAMES)
-        self.assertEqual(set(m.zones), {"basket", "checkout"})
+    def test_a_sustained_presence_is_a_zone_occupancy_event(self):
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        # A person box clipped by the frame border, exactly as measured on the clip.
+        box = (500, 260, 1280, 660)
+        events = []
+        for t in (0.0, 1.0, 2.0, 2.5, 3.0):
+            events += m.observe(_track(1, box, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        kinds = [e.kind for e in events]
+        self.assertEqual(kinds.count("zone_occupancy"), 1)
+        self.assertEqual(m.events[0].class_name, "person")
+        self.assertIn("presence:counter_band", m.events[0].dedup_key)
+
+    def test_presence_is_measured_on_the_centre_not_on_containment(self):
+        # The measured reason the zone test is `contains_point`: this box overhangs the
+        # frame, so `Zone.contains` is False for it and a rule built on `contains`
+        # would report nobody present at all.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        box = (0, 0, 1920, 1080)   # overhangs on every side
+        self.assertFalse(m.presence_zone.contains(box))
+        for t in (0.0, 1.0, 2.0, 2.5):
+            m.observe(_track(1, box, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        self.assertEqual([e.kind for e in m.events], ["zone_occupancy"])
+
+    def test_presence_below_the_minimum_is_not_an_event(self):
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        for t in (0.0, 0.5, 1.0):
+            m.observe(_track(1, (500, 260, 1280, 660), t, cls=PERSON_ID),
+                      _frame(int(t * 10), t))
+        self.assertEqual(m.events, [])
+
+    def test_a_second_stay_in_the_same_loop_is_suppressed_by_the_dedup_key(self):
+        # M3 review finding, made explicit for presence. A track that leaves the zone
+        # and comes back produces the *same* `dedup_key`, so it is counted once per
+        # loop. That is the same rule the transfer legs use and it is deliberate; the
+        # alternative needs a per-episode discriminator in the key. What matters is
+        # that it is a decision rather than an accident.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        inside = (500, 260, 1280, 660)
+        outside = (20, 780, 380, 1060)   # centroid at y ~ 0.85, below the band
+        emitted = []
+        for t, box in [(0.0, inside), (1.0, inside), (2.0, inside),
+                       (3.0, outside), (4.0, inside), (5.0, inside),
+                       (6.0, inside), (7.0, inside)]:
+            emitted += m.observe(_track(1, box, t, cls=PERSON_ID),
+                                 _frame(int(t * 10), t))
+        stays = [e for e in emitted if e.kind == "zone_occupancy"]
+        self.assertEqual(len(stays), 1, "one stay per track per loop, by the dedup key")
+        # The state, however, did restart: `state_of` and a fresh loop each see it.
+        m.reset(loop_id=1)
+        again = m.observe(_track(1, inside, 8.0, cls=PERSON_ID), _frame(80, 8.0, loop=1))
+        self.assertEqual(again, (), "1.0s into a fresh loop's stay is below the minimum")
+
+    def test_leaving_the_zone_restarts_the_dwell_clock(self):
+        # ...and the clock really does restart, which is what makes the suppression
+        # above a dedup decision rather than a dwell that never matured.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        inside = (500, 260, 1280, 660)
+        outside = (20, 780, 380, 1060)
+        emitted = []
+        for t, box in [(0.0, inside), (1.0, inside), (1.9, outside),
+                       (2.0, inside), (3.0, inside), (3.5, inside)]:
+            emitted += m.observe(_track(1, box, t, cls=PERSON_ID),
+                                 _frame(int(t * 10), t))
+        self.assertEqual([e for e in emitted if e.kind == "zone_occupancy"], [])
+
+    def test_a_presence_stay_is_counted_once_not_once_per_frame(self):
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        emitted = []
+        for t in [i * 0.5 for i in range(20)]:
+            emitted += m.observe(_track(1, (500, 260, 1280, 660), t, cls=PERSON_ID),
+                                 _frame(int(t * 10), t))
+        self.assertEqual(len([e for e in emitted if e.kind == "zone_occupancy"]), 1)
+
+    def test_a_lost_track_does_not_carry_its_presence_forward(self):
+        # The occlusion rule applied to presence: the track vanishes mid-dwell, and a
+        # same-id observation afterwards must not be credited with the missing time.
+        #
+        # The observation at t=2.0 is the discriminator, and it has to be there
+        # specifically. The stay began at 0.0; if the presence record survived the loss
+        # the clock would still be running from 0.0 and would mature at t=2.0. With the
+        # record cleared the new stay began at 1.6 and is only 0.4 s old at t=2.0.
+        # A test that waited until the *new* stay had matured could not tell the two
+        # apart, which is why an earlier version of this test survived the mutant.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        box = (500, 260, 1280, 660)
+        for t in (0.0, 1.0):
+            m.observe(_track(1, box, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        m.on_track_lost(1, 1.5)
+        self.assertEqual(m.abandoned_transfers, 1)
+        early = m.observe(_track(1, box, 1.6, cls=PERSON_ID), _frame(16, 1.6))
+        self.assertEqual([e.kind for e in early], [])
+        at_two = m.observe(_track(1, box, 2.0, cls=PERSON_ID), _frame(20, 2.0))
+        self.assertEqual([e.kind for e in at_two], [],
+                         "a dwell matured on pre-loss time nobody observed standing there")
+        # ...and the new stay does fire once it has genuinely earned 2.0 s of its own.
+        late = m.observe(_track(1, box, 3.6, cls=PERSON_ID), _frame(36, 3.6))
+        self.assertEqual([e.kind for e in late], ["zone_occupancy"])
+
+    def test_reset_clears_presence_state(self):
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        inside = (500, 260, 1280, 660)
+        for t in (0.0, 1.0, 2.0, 2.5):
+            m.observe(_track(1, inside, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        self.assertEqual(len(m.events), 1)
+        m.reset(loop_id=1)
+        self.assertEqual(m.events, [])
+        # The presence record itself must be gone, not merely the event log. If it
+        # survived, the first observation of the new loop would inherit the old entry
+        # time and mature a dwell made of frames nobody observed in this loop.
+        first = m.observe(_track(1, inside, 3.0, cls=PERSON_ID), _frame(30, 3.0, loop=1))
+        self.assertEqual([e.kind for e in first], [],
+                         "3.0s after a reset must start a fresh stay, not inherit one")
 
 
 class Purity(unittest.TestCase):
@@ -447,6 +609,42 @@ class Purity(unittest.TestCase):
         for t, box in [(0.0, IN_SHELF), (0.6, IN_SHELF), (1.0, IN_BASKET)]:
             m.observe(_track(1, box, t), _frame(3, t + 1000.0))
         self.assertEqual(m.events[0].at_time, 1001.0)
+
+    def test_observe_opens_no_file_after_construction(self):
+        # C2 review finding. The lazy `app.inference.pinned` import meant
+        # `pinned.class_names()` -> `Path.read_text('labels.txt')` ran on the first
+        # observation, i.e. on the first frame of a live stream, making this module's
+        # "no file is opened" claim false.
+        #
+        # `pathlib.Path.read_text` is the thing to spy on, **not** `builtins.open`:
+        # `Path.read_text` calls `self.open(...)`, which does not go through the
+        # `builtins.open` name the module holds, so an `open`-based spy sees nothing
+        # and the test passes against the very code it is meant to catch.
+        m = RetailEventMachine(_manifest(), class_names=CLASS_NAMES)
+        opened: list[str] = []
+        original = Path.read_text
+
+        def spy(self, *args, **kwargs):
+            opened.append(str(self))
+            return original(self, *args, **kwargs)
+
+        Path.read_text = spy
+        try:
+            for t, box in [(0.0, IN_SHELF), (0.6, IN_SHELF),
+                           (1.0, IN_BASKET), (1.4, IN_BASKET)]:
+                m.observe(_track(1, box, t), _frame(int(t * 10), t))
+        finally:
+            Path.read_text = original
+        self.assertEqual(opened, [], f"observe() read {opened}")
+        # ...and the spy is real: it does catch a read if one happens. This
+        # self-check is what stops the assertion above from passing because the spy
+        # was never installed on the code path that mattered.
+        Path.read_text = spy
+        try:
+            Path("config/models.json").read_text(encoding="utf-8")
+        finally:
+            Path.read_text = original
+        self.assertTrue(opened, "the Path.read_text spy did not observe a real read")
 
 
 class Records(unittest.TestCase):
@@ -485,20 +683,52 @@ class Records(unittest.TestCase):
         self.assertTrue(m.events)
         self.assertTrue(all(e.uncertain is False for e in m.events))
 
-    def test_a_zone_is_needed_to_build_a_machine(self):
+    def test_a_pack_with_no_rule_at_all_is_refused(self):
+        # Tracked classes but no route and no presence rule: a machine that can never
+        # emit. A booth showing it would read zero forever, which says "nothing is
+        # happening here" rather than "this pack is misconfigured".
         with self.assertRaises(ValueError):
-            RetailEventMachine(_manifest(event_rules={"min_dwell_seconds": 0.5,
-                                                      "max_transition_seconds": 12.0,
-                                                      "tracked_classes": ("apple",)}),
+            RetailEventMachine(_manifest(event_rules={"tracked_classes": ("apple",)}),
                                class_names=CLASS_NAMES)
 
-    def test_the_machine_requires_the_origin_and_destination_slots(self):
+    def test_a_presence_zone_without_a_threshold_is_refused(self):
         with self.assertRaises(ValueError):
-            RetailEventMachine(_manifest(event_rules={"min_dwell_seconds": 0.5,
-                                                      "max_transition_seconds": 12.0,
-                                                      "shelf": SHELF,
-                                                      "tracked_classes": ("apple",)}),
-                               class_names=CLASS_NAMES)
+            RetailEventMachine(_manifest(event_rules={
+                "presence_zone": "basket", "tracked_classes": ("apple",),
+                "basket": BASKET}), class_names=CLASS_NAMES)
+
+    def test_a_threshold_without_a_zone_is_refused(self):
+        with self.assertRaises(ValueError):
+            RetailEventMachine(_manifest(event_rules={
+                "min_presence_seconds": 2.0, "tracked_classes": ("apple",)}),
+                class_names=CLASS_NAMES)
+
+    def test_half_a_transfer_route_is_refused(self):
+        # One end declared and the other missing: the machine would have to invent it,
+        # and an invented zone is a claim about the footage nobody made.
+        with self.assertRaises(ValueError):
+            RetailEventMachine(_manifest(event_rules={
+                "min_dwell_seconds": 0.5, "max_transition_seconds": 12.0,
+                "origin_slot": "shelf", "shelf": SHELF, "basket": BASKET,
+                "tracked_classes": ("apple",)}), class_names=CLASS_NAMES)
+
+    def test_a_route_naming_an_absent_roi_is_refused(self):
+        with self.assertRaises(ValueError):
+            RetailEventMachine(_manifest(event_rules={
+                "min_dwell_seconds": 0.5, "max_transition_seconds": 12.0,
+                "origin_slot": "shelf", "destination_slot": "checkout",
+                "shelf": SHELF, "basket": BASKET,
+                "tracked_classes": ("apple",)}), class_names=CLASS_NAMES)
+
+    def test_the_default_zone_names_are_gone_from_the_app_layer(self):
+        # No `shelf`/`basket` defaults remain. A pack's route is declared or absent, so
+        # a config can never acquire a transfer it did not ask for. Asserted over the
+        # source so a default cannot quietly return.
+        import inspect
+        from app.engine import events as events_module
+        source = inspect.getsource(events_module)
+        for dead in ("DEFAULT_ORIGIN_SLOT", "DEFAULT_DESTINATION_SLOT"):
+            self.assertNotIn(dead, source)
 
     def test_the_manifest_must_be_a_manifest(self):
         with self.assertRaises(ValueError):

@@ -183,6 +183,23 @@ class Zone:
         zx1, zy1, zx2, zy2 = self.roi
         return x1 >= zx1 and y1 >= zy1 and x2 <= zx2 and y2 <= zy2
 
+    def contains_point(self, point: tuple[float, float]) -> bool:
+        """Whether a single `(x, y)` lies inside this zone, edges inclusive.
+
+        This is the test a **presence** rule uses, and it is not interchangeable with
+        `contains`. Measured on `retail_checkout`: a person's box is routinely clipped
+        by the frame border (`x1 = -0.001`, `x2 = 0.999`), so **full containment can
+        never hold for a person in this footage** - a presence rule written on
+        `contains` reports that nobody is ever anywhere, which is a false statement
+        about a shop. Where an object *is* cannot be decided by a box that runs off
+        the edge of the picture; where its **centre** is can.
+
+        A point exactly on an edge is inside, consistent with `contains`.
+        """
+        x, y = _require_point("point", point)
+        zx1, zy1, zx2, zy2 = self.roi
+        return zx1 <= x <= zx2 and zy1 <= y <= zy2
+
     def centroid_of(self, box: tuple[float, float, float, float]) -> tuple[float, float]:
         """The centre of `box`, in the same normalised coordinates.
 
@@ -249,9 +266,20 @@ def crossed_line(zone: Zone, previous: tuple[float, float], current: tuple[float
                  direction: int) -> bool:
     """Whether a centroid moved across `zone`'s band in `direction`.
 
-    A `"line"` zone's ROI is a **vertical band**: `x1`..`x2` is the band, `y1`..`y2`
-    is the extent along which a crossing counts, and the band **centre** is the
-    line. A crossing is a change of side:
+    A `"line"` zone's ROI is a **vertical segment**: `x1`..`x2` is the band,
+    `y1`..`y2` is the extent along which a crossing counts, and the band **centre** is
+    the line. Both endpoints of the movement must lie within `y1`..`y2`, so a
+    horizontal movement at the far bottom of the frame does not count as crossing a
+    line drawn near the top.
+
+    That `y` test is deliberately **strict at the boundary**: a movement whose start
+    is outside `y1`..`y2` does not fire, even if it ends inside. The alternative -
+    intersecting the movement segment with the band - would fire for an object
+    arriving from below the line as well as one crossing it, which is the same
+    one-event-two-reasons problem `crossed_line` exists to avoid. The looser rule is
+    future work and would need its own measured test.
+
+    A crossing is a change of side:
 
         crossed_line(BELT, (0.30, 0.40), (0.80, 0.42), direction=1)   -> True
         crossed_line(BELT, (0.30, 0.40), (0.80, 0.42), direction=-1)  -> False
@@ -284,9 +312,15 @@ def crossed_line(zone: Zone, previous: tuple[float, float], current: tuple[float
             f"event, so a direction of 0 meaning 'either way' would merge a transfer "
             f"and its own return into one event."
         )
-    previous_x, _ = _require_point("previous", previous)
-    current_x, _ = _require_point("current", current)
-    zx1, _zy1, zx2, _zy2 = zone.roi
+    previous_x, previous_y = _require_point("previous", previous)
+    current_x, current_y = _require_point("current", current)
+    zx1, zy1, zx2, zy2 = zone.roi
+    # The band is a segment, not an infinite line: both endpoints must lie within its
+    # y extent. Reading `zy1`/`zy2` and discarding them - which is what this function
+    # did before a review caught it - would let a movement at the bottom of the frame
+    # cross a line drawn at the top.
+    if not (zy1 <= previous_y <= zy2 and zy1 <= current_y <= zy2):
+        return False
     centre = (zx1 + zx2) / 2.0
     was_left = previous_x < centre
     now_left = current_x < centre

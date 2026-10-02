@@ -155,6 +155,63 @@ class Geometry(unittest.TestCase):
             SHELF.centroid_of((0.1, 0.2, 0.3))
 
 
+class ContainsPoint(unittest.TestCase):
+    """`contains_point` is the presence primitive, and it is not `contains`.
+
+    Measured on `retail_checkout`: a person's box is routinely clipped by the frame
+    border (`x1 = -0.001`, `x2 = 0.999`), so **full containment is never true for a
+    person in this footage**. A presence rule written on `contains` reports an empty
+    shop, which is a false statement about a shop.
+    """
+
+    def test_a_point_inside_is_in(self):
+        self.assertTrue(SHELF.contains_point((0.10, 0.30)))
+        self.assertFalse(SHELF.contains_point((0.90, 0.30)))
+
+    def test_a_point_on_the_edge_is_in(self):
+        self.assertTrue(SHELF.contains_point((0.02, 0.22)))
+        self.assertTrue(SHELF.contains_point((0.34, 0.55)))
+
+    def test_a_box_clipped_by_the_frame_border_is_still_present(self):
+        # The measured case: `x1` is negative and `x2` is at the frame edge.
+        zone = Zone("band", "area", (0.0, 0.20, 1.0, 0.60))
+        clipped = (-0.001, 0.004, 0.665, 0.613)
+        self.assertFalse(zone.contains(clipped),
+                         "the box overhangs the frame, so it is not contained")
+        self.assertTrue(zone.contains_point(zone.centroid_of(clipped)),
+                        "its centre is in the band, which is what presence means")
+
+    def test_a_bad_point_is_refused(self):
+        with self.assertRaises(ValueError):
+            SHELF.contains_point((0.1,))
+        with self.assertRaises(ValueError):
+            SHELF.contains_point((float("nan"), 0.3))
+
+
+class LineBandExtent(unittest.TestCase):
+    """M2: `crossed_line` consults the band's `y` extent.
+
+    It used to read `zy1`/`zy2` and discard them, while the docstring said they were
+    "the extent along which a crossing counts". A horizontal movement at the bottom of
+    the frame therefore counted as crossing a line drawn near the top.
+    """
+
+    def test_a_movement_outside_the_band_y_extent_is_not_a_crossing(self):
+        self.assertFalse(crossed_line(BELT, (0.30, 0.90), (0.80, 0.92), direction=1))
+        self.assertFalse(crossed_line(BELT, (0.30, 0.01), (0.80, 0.02), direction=1))
+
+    def test_a_movement_starting_outside_and_ending_inside_is_not_a_crossing(self):
+        # Documented strictness: the rule needs both endpoints within the extent, so an
+        # object arriving from below the line does not fire. The looser
+        # segment-intersection rule would fire for "arrived" as well as "crossed", which
+        # is the one-event-two-reasons problem this function exists to avoid.
+        self.assertFalse(crossed_line(BELT, (0.30, 0.90), (0.80, 0.42), direction=1))
+
+    def test_a_movement_inside_the_band_y_extent_still_crosses(self):
+        self.assertTrue(crossed_line(BELT, (0.30, 0.20), (0.80, 0.22), direction=1))
+        self.assertTrue(crossed_line(BELT, (0.30, 0.56), (0.80, 0.58), direction=1))
+
+
 class Dwell(unittest.TestCase):
     def test_dwell_accumulates_only_while_inside(self):
         # enters at t=1, still inside at t=3 -> 2 seconds
