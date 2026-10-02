@@ -16,8 +16,51 @@ every object, a missing `w/2` shifts every box, a missed inverse displaces the e
 decoder's own unit tests cannot catch any of it, because every tensor they decode is one
 this project fabricated.
 
-The only thing that can catch it is an annotation made by somebody **looking at the
-frame**. So the workflow here is deliberately ordered:
+**Which of those four this fixture actually checks, measured by injecting mutants.**
+A first version of this docstring claimed all four. That was an over-claim, and a mutant
+sweep found two of the four were not covered at all:
+
+| reading | mutant injected | caught? |
+|---|---|---|
+| features on axis 1 | slice axis 1, never transpose | **yes** |
+| `cx, cy, w, h` not `xyxy` | no `w/2, h/2` subtraction; read as `xyxy` | **yes** |
+| letterbox inverse applied | `to_source` made the identity | **yes** |
+| letterbox pad band at 114 | pad 0, and pad 255 | **NO - see below** |
+| scores already activated | a second sigmoid | **was not checked; NOW IS** |
+| `w` and `h` in the right order | swap them | **NO - not separable here, see `_aspect`** |
+
+**The activation hole, and the one fix for it.** A second activation pushes every score
+into `(0.5, 0.73)`, so all 8400 anchors clear the conf threshold and the decoder returns
+**1205 boxes** where the frame holds four objects. The original fixture went green,
+because IoU-matching only ever looks at the best-matching box per annotation and never
+asks how many boxes arrived - and 1205 rectangles on a booth screen is a catastrophic,
+silent failure. A disabled NMS (19 boxes) survived the same way.
+
+`max_detections` closes both. It is how many boxes the frame can possibly justify - two
+named objects, the basket, the counter, the trolley's lower half, a second shopper's
+feet - and it is a judgement about **the picture**, recorded in the annotation, which is
+what keeps the fixture non-circular. It also makes the `oven` false positive on the
+counter visible as a box rather than something a reader has to notice.
+
+**The `w`/`h` hole is real and is NOT closed here.** A transposition mirrors each box,
+both annotated objects are near-square, and a mirrored box overlaps the original well
+above any sane IoU. An aspect-ratio check was implemented, measured, and **rejected**:
+against this annotation the correct decoder is *further* from the annotated aspect than
+the mutant is, so the check failed a healthy run and passed the fault. The full numbers
+and the algebra are in `_aspect`. A check that cries wolf is worse than a documented hole,
+because the response to a false failure is to loosen the check until the real fault gets
+through. This fixture does not catch a transposed `w`/`h`, and says so.
+
+**A third hole the sweep found, which is about the frame rather than the decoder:** the
+pad-band mutant survives on frame 0. Filling the band with `0` or with `255` instead of
+`114` still yields 2/2 here. Task 4's own A/B measured that the pad value moves the raw
+score array materially but left the *decoded detections* identical on the four frames it
+tried, and frame 0 is evidently one of the benign ones. So this fixture does **not**
+discriminate the pad value, and this docstring no longer implies that it does. Catching it
+needs a frame where the pad band actually changes a detection, which is M1's job to find.
+
+The only thing that can catch a decoder fault is an annotation made by somebody **looking
+at the frame**. So the workflow here is deliberately ordered:
 
 1. `extract_frame` writes `retail_000.jpg` from the pinned clip at native resolution.
 2. A human opens that JPEG and writes the boxes in `retail_sanity.json` **by eye**, in
@@ -25,8 +68,7 @@ frame**. So the workflow here is deliberately ordered:
 3. Only then is the model run, and the annotation is compared against it.
 
 **A disagreement is a finding, not a nuisance.** If the model does not agree with a box
-somebody drew by looking at a real frame, the first thing to suspect is the decoder - the
-same four readings above are exactly the ways a decoder is systematically wrong. The
+somebody drew by looking at a real frame, the first thing to suspect is the decoder. The
 annotation is not adjusted to make the model agree; that would turn the fixture into
 "the model agrees with itself", which is the one thing it exists to disprove. This tool
 therefore never writes the fixture JSON. `evaluate_fixture` opens it read-only and returns
@@ -39,21 +81,28 @@ way they do** (`openvino==2026.4.0-22959-99c81491cc3-releases/2026/4`, CPU plugi
 |---|---|---|
 | `req.infer({0: blob})` | int port index | **accepted** |
 | `req.infer({"x": blob})` | input port name | **accepted** |
-| `req.infer({model.inputs[0]: blob})` | input port object | `TypeError: Incompatible key type for input` |
-| `req.infer({model.input(0): blob})` | input `ConstOutput` | `TypeError: Incompatible key type for input` |
+| `req.infer({model.inputs[0]: blob})`, `model` = the **IR** | IR input port object | `TypeError: Incompatible key type for input` |
+| `req.infer({model.input(0): blob})`, `model` = the **IR** | IR `ConstOutput` | `TypeError: Incompatible key type for input` |
+| `req.infer({compiled.inputs[0]: blob})` | **compiled** input port object | **accepted** |
 | `req.get_output_tensor(0)` | int port index | **accepted**, `[1, 84, 8400]` |
 | `req.get_tensor(model.outputs[0])` | output port object | **accepted**, `[1, 84, 8400]` |
 | `req.get_tensor(0)` | int port index | `TypeError: incompatible function arguments` |
 
-So the int port index is the one key type that works for **both** calls on this runtime,
-and it is what this module uses. It is worth recording that the obvious
-`{model.inputs[0]: blob}` - passing the port object, as most OpenVINO examples do -
-**raises on this build**, so a caller who has only ever seen the examples finds out at
-runtime, on a booth. The output port of this export has no name at all
-(`get_names() == set()`), so a name-based call is not available on the output side, and
-the tensors are handed to the decoder under `port_key(0)` - the string `"0"` - which is
-this project's own key, assigned because it is the one identifier that exists for an
-unnamed port.
+**The distinction is which model, not which key type.** A first version of this note said
+the port object "raises" and that the int index was the only key type that works; both
+were wrong in the same way, and the difference matters because the obvious reading
+("never pass a port object") is false. Passing the port object works when it comes from
+the **`ov.CompiledModel`**; it is the **IR** model's port object that is refused, with
+`Incompatible key type for input`. This module holds the IR (that is the only graph
+`describe_outputs` can walk), so using the int index is the choice that works from either.
+`config/model_io/yolo11n-fp16.json`'s measured `fetch_api` block records the IR-model
+results and does not distinguish the two models, so it reads as a blanket prohibition on
+port objects; amending it is a Task 5 file and is out of scope here.
+
+The output port of this export has no name at all (`get_names() == set()`), so a
+name-based call is not available on the output side, and the tensors are handed to the
+decoder under `port_key(0)` - the string `"0"` - which is this project's own key, assigned
+because it is the one identifier that exists for an unnamed port.
 
 `describe_outputs` is given the **`ov.Model` read from the IR**, never the
 `ov.CompiledModel`: a compiled model cannot be walked, so `has_embedded_nms` would be a
@@ -121,13 +170,30 @@ JPEG_QUALITY = 95
 class FixtureOutcome:
     """The result of checking one device against the hand annotation.
 
-    `passed` is `matched == expected` **and** every expectation matched. There is no
-    partial credit and no tolerance setting: a decoder that finds the apple and misses
-    the person has failed, and the record says so.
+    `passed` is the **verdict**, and it is stricter than `matched == expected`. It
+    requires all four of: every expectation matched, the detection count within the
+    annotation's `max_detections` bound, the matched pairs' aspect ratios within the
+    annotation's `max_aspect_delta`, and the run placed on the device that was asked for.
+
+    That last clause was missing from the first version. A device that silently fell back
+    to the CPU was printing `PASS: 2/2` and exiting 0, with `placed_on_requested=False`
+    two lines above it, while `tools/qualify_m0.py` - reading the same AGENTS.md rule 5 -
+    correctly failed. Two tools disagreeing about the same rule is how the rule stops
+    meaning anything.
+
+    The first version also enforced `passed == (matched == expected)` **in this
+    constructor**, on the reasoning that `passed` is derived and must not be stampable.
+    That invariant became false the moment the verdict grew past matching, and it then
+    raised `ValueError: passed=False contradicts matched=2 against expected=2` on a
+    correct, honest run. `matched <= expected` is still enforced - a record claiming more
+    matches than annotations is a bug in the matcher and would render as a better result
+    than the annotation allows. The rest of the verdict is `evaluate_fixture`'s to
+    compute, and its reasons are written into `details` so the verdict is never a bare
+    boolean.
 
     `details` carries the evidence - every detection the decoder produced, every
-    expectation and what matched it, and the `EXECUTION_DEVICES` reading the run was
-    placed by. It is the reason the record is worth keeping, and it is a tuple so the
+    expectation and what matched it, the `EXECUTION_DEVICES` reading the run was placed
+    by, and the `VERDICT` line naming every reason it failed. It is a tuple so the
     outcome cannot be edited after the fact.
     """
 
@@ -138,6 +204,8 @@ class FixtureOutcome:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "details", tuple(str(d) for d in self.details))
+        if not isinstance(self.passed, bool):
+            raise TypeError(f"passed must be a bool; got {self.passed!r}")
         if self.matched > self.expected:
             raise ValueError(
                 f"matched ({self.matched}) cannot exceed expected ({self.expected}); a "
@@ -145,11 +213,17 @@ class FixtureOutcome:
                 f"matcher, and it would render as a better result than the annotation "
                 f"allows."
             )
-        if self.passed != (self.expected > 0 and self.matched == self.expected):
+        if self.passed and self.matched != self.expected:
             raise ValueError(
-                f"passed={self.passed} contradicts matched={self.matched} against "
-                f"expected={self.expected}. `passed` is derived, never asserted: a "
-                f"caller must not be able to stamp a pass on a partial match."
+                f"passed=True with matched={self.matched} against expected="
+                f"{self.expected}. A pass must at least have matched every annotated "
+                f"object; the remaining verdict conditions can only make it stricter."
+            )
+        if self.passed and not any(d.startswith("VERDICT PASS") for d in self.details):
+            raise ValueError(
+                "passed=True with no 'VERDICT PASS' line in details. A pass a reader "
+                "cannot check the reasons for is the kind of record this project exists "
+                "not to produce."
             )
 
     def as_dict(self) -> dict[str, Any]:
@@ -266,6 +340,53 @@ def box_iou(a: Sequence[float], b: Sequence[float]) -> float:
     return inter / union
 
 
+def _aspect(box: Sequence[float]) -> float:
+    """A box's width / height. `0.0` for a degenerate one, which has no aspect.
+
+    **Reported by `evaluate_fixture`; deliberately NOT part of the verdict.** The first
+    version of this module's author proposed an aspect check precisely to catch a decoder
+    that read the four values as `cx, cy, h, w`, and it does not work on this fixture.
+    Measured, baseline against a `w`/`h`-swap mutant, relative difference from the
+    annotated box's aspect:
+
+    | object | annotated | baseline decode | swap mutant |
+    |---|---|---|---|
+    | person | 0.9468 | 0.9754 (delta **0.0303**) | 1.0252 (delta **0.0827**) |
+    | apple | 0.8152 | 1.1728 (delta **0.4387**) | 0.8527 (delta **0.0459**) |
+
+    The apple is **inverted**: the correct decoder is 0.4387 away from the annotation and
+    the mutant is only 0.0459 away, so any threshold tight enough to catch the mutant
+    fails the correct run, and any threshold loose enough to pass the correct run passes
+    the mutant. The reason is that this annotation's apple box is deliberately *tighter*
+    than the model's on three of four sides (independently confirmed against the pixels:
+    y1 878 vs 915, x2 150 vs 176), and a tight box is a poor estimate of the object's
+    aspect - so the honest disagreement about the fruit's extent is larger than the
+    transposition's own effect.
+
+    Nor can anything else separate them. A pure `w`/`h` swap preserves `cx`, `cy` and
+    `w * h` exactly - measured: 422304.4 px^2 both ways for the person, 26352.4 px^2 both
+    ways for the apple - so every centre- and area-based statistic is identical to the
+    correct decode. Aspect against an independent estimate of the object's true aspect is
+    the *only* candidate, and this fixture cannot supply one.
+
+    So the transposition is a **known, uncaught blind spot** and the honest thing is to
+    say so rather than ship a check that fails a healthy run. The reasoning is recorded
+    here, in the annotation's `known_blind_spots`, and in the M0 report so the next person
+    does not re-derive it. A fixture whose guard cries wolf on a correct decoder is worse
+    than one with a documented hole, because the response to a false failure is to loosen
+    the guard until the real fault passes too.
+
+    Closing it needs a different frame, not a different threshold: an object with an
+    aspect far from 1, annotated at the same tightness as the model draws it.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    width = abs(x2 - x1)
+    height = abs(y2 - y1)
+    if height <= 0.0:
+        return 0.0
+    return width / height
+
+
 # ---------------------------------------------------------------------- frame build
 
 
@@ -380,7 +501,8 @@ def pinned_input_shape() -> tuple[int, int, int, int]:
 
 
 def detect(core: ov.Core, spec: ModelOutputSpec, model: ov.Model, image: np.ndarray,
-           device: str) -> tuple[list[Detection], tuple[str, ...]]:
+           device: str, conf_threshold: float = CONF_THRESHOLD,
+           iou_threshold: float = IOU_THRESHOLD) -> tuple[list[Detection], tuple[str, ...]]:
     """Compile on `device`, infer once, and decode. Returns detections and placement.
 
     **One** inference: this is a correctness check, not a benchmark, and a loop here
@@ -389,6 +511,16 @@ def detect(core: ov.Core, spec: ModelOutputSpec, model: ov.Model, image: np.ndar
 
     The letterbox destination is the model's **input** extent - see `pinned_input_shape`
     for why it does not come from the spec.
+
+    `conf_threshold` and `iou_threshold` are **parameters and are used**. The first
+    version of this function hardcoded the module constants while `evaluate_fixture`
+    printed the caller's values, so `--conf 0.9` on the CLI displayed `conf=0.9`, decoded
+    at 0.25, and still emitted the 0.273557 apple with `PASS: 2/2`. A number on screen
+    that is not the number in effect is the exact failure this project exists to prevent,
+    and it was worse than cosmetic: at a genuine `conf=0.5` the apple is correctly filtered
+    out and the fixture should fail, and the flag **hid** that failure. Thresholds are now
+    threaded from the caller all the way into `decode_detections`, and
+    `test_a_caller_supplied_conf_threshold_actually_filters` pins it.
 
     `EXECUTION_DEVICES` is read from the request's **own** compiled model, after the
     inference, and normalised through `normalise_execution_devices` - the NPU plugin
@@ -399,16 +531,22 @@ def detect(core: ov.Core, spec: ModelOutputSpec, model: ov.Model, image: np.ndar
     blob, letterbox = preprocess_bgr(image, dst_w, dst_h)
     compiled = core.compile_model(model, device)
     request = compiled.create_infer_request()
-    # Measured: this runtime takes the int port index and the port *name* for `infer`,
-    # and rejects the port object with `TypeError: Incompatible key type for input`.
+    # Measured on this runtime, and the distinction is WHICH MODEL, not which key type:
+    #   infer key = int port index 0      -> accepted, from either the IR or the compiled
+    #   infer key = ir_model.inputs[0]    -> TypeError: Incompatible key type for input
+    #   infer key = compiled.inputs[0]    -> accepted
+    # So the int index is the one key that works from either model, which is what this
+    # uses. The port object is fine when it comes from the CompiledModel; it is the IR
+    # model's port object that is refused. `config/model_io/yolo11n-fp16.json`'s
+    # `fetch_api` block records the IR-model results and does not distinguish the two.
     request.infer({0: blob})
     # ...and takes the int index here too, which `get_tensor(0)` does not.
     tensor = request.get_output_tensor(0)
     outputs = {port_key(0): np.array(tensor.data)}
     placement = normalise_execution_devices(
         request.get_compiled_model().get_property("EXECUTION_DEVICES"))
-    detections = decode_detections(spec, outputs, letterbox, CONF_THRESHOLD,
-                                   IOU_THRESHOLD)
+    detections = decode_detections(spec, outputs, letterbox, conf_threshold,
+                                   iou_threshold)
     return detections, placement
 
 
@@ -433,10 +571,36 @@ def evaluate_fixture(spec: ModelOutputSpec, class_names: Sequence[str],
     message in `details` and every number left at its unmeasured state. A device that
     could not run is never rendered as a device that ran and found nothing.
 
+    **`passed` requires three things, not one.** Every expectation matched, the
+    detection count within the annotation's `max_detections` bound, **and** the run
+    placed on the device that was asked for. The placement clause was missing and is the
+    more serious of the two additions: a device that silently fell back to the CPU was
+    printing `PASS: 2/2` and exiting 0, with `placed_on_requested=False` visible two
+    lines above it. That is AGENTS.md rule 5 - `EXECUTION_DEVICES` is the only proof of
+    placement - and `tools/qualify_m0.py` already asserted it, so the two tools disagreed
+    about the same rule. A fixture that reports success for work the NPU never did is
+    worse than one that fails, because a booth will not read the line above the verdict.
+
     Matching is greedy on IoU, one detection per expectation. Each expectation needs a
     detection of the **same class id**, scoring at least the annotation's `min_score`,
     with IoU at least `match_iou` against the hand-drawn box. The best-IoU pair is taken
     first so the result does not depend on the order the two lists happen to be in.
+
+    Two further things are recorded in the annotation, and they are not the same kind of
+    thing. `max_detections` **gates** the verdict: it bounds how many boxes the decoder
+    may return, because a second activation applied to scores the export has already
+    activated pushes every score into `(0.5, 0.73)`, all 8400 anchors clear the conf
+    threshold, and the decoder returns **1205** boxes where there are 4 objects on screen.
+    A booth drawing 1205 rectangles is a catastrophic, silent failure, and the original
+    fixture went green on it because IoU-matching only ever looks at the best box per
+    annotation and never asks how many boxes arrived.
+
+    The matched pairs' **aspect ratios are reported and do not gate anything.** An aspect
+    check was written to catch a transposed `w`/`h`, measured, and rejected: against this
+    annotation the correct decode is *further* from the annotated aspect than the mutant
+    is, so it failed a healthy run and passed the fault. `matched_pairs` therefore appear
+    in `details` as an `ASPECT` line marked INFORMATIONAL, and a `w`/`h` transposition is
+    a known uncaught blind spot of this fixture. `_aspect` has the numbers and the algebra.
     """
     names = tuple(str(n) for n in class_names)
     if spec.num_classes != len(names):
@@ -486,7 +650,8 @@ def evaluate_fixture(spec: ModelOutputSpec, class_names: Sequence[str],
     model = read_pinned_model()
     live_core = core if core is not None else ov.Core()
     try:
-        detections, placement = detect(live_core, spec, model, image, device)
+        detections, placement = detect(live_core, spec, model, image, device,
+                                       conf_threshold, iou_threshold)
     except Exception as exc:  # noqa: BLE001 - a device that cannot run is a result
         return FixtureOutcome(
             passed=False, matched=0, expected=len(expected_entries),
@@ -494,12 +659,19 @@ def evaluate_fixture(spec: ModelOutputSpec, class_names: Sequence[str],
                 f"FAILED on {device}: {type(exc).__name__}: {exc}",
                 "no detections, no placement and no score were produced, and none are "
                 "reported above; this device did not run."]))
+    placed = is_device(placement, device)
     details.append(f"EXECUTION_DEVICES={list(placement)} "
-                   f"placed_on_requested={is_device(placement, device)}")
+                   f"placed_on_requested={placed}")
     details.append(f"decoder returned {len(detections)} detection(s)")
     for det in detections:
+        # A class id outside the label list is what a mis-read class block produces, and
+        # indexing `names` with it raised IndexError and took the whole reporter down
+        # with a traceback instead of reporting the mis-decode. A wrong answer deserves a
+        # sentence, not a crash.
+        label = (names[det.class_id] if 0 <= det.class_id < len(names)
+                 else f"<OUT OF RANGE, only {len(names)} labels>")
         details.append(
-            f"  detected class_id={det.class_id} name={names[det.class_id]!r} "
+            f"  detected class_id={det.class_id} name={label!r} "
             f"score={det.score:.6f} box={_format_box(det.box)}")
 
     # Greedy best-IoU-first pairing. Built from every admissible (expectation,
@@ -549,17 +721,71 @@ def evaluate_fixture(spec: ModelOutputSpec, class_names: Sequence[str],
                 det = best[1]
                 same = det.class_id == int(entry["class_id"])
                 enough = det.score >= float(entry["min_score"])
+                label = (names[det.class_id] if 0 <= det.class_id < len(names)
+                         else f"<OUT OF RANGE, only {len(names)} labels>")
                 details.append(
                     f"    closest detection: class_id={det.class_id} "
-                    f"name={names[det.class_id]!r} score={det.score:.6f} "
+                    f"name={label!r} score={det.score:.6f} "
                     f"iou={best[0]:.4f}"
                     f"{'' if same else '  (WRONG CLASS)'}"
                     f"{'' if enough else '  (BELOW min_score)'}"
                     f"{'' if best[0] >= match_iou else '  (IOU BELOW THRESHOLD)'}")
 
     matched = len(taken_e)
+    verdict_reasons: list[str] = []
+
+    # 1. Every annotated object found.
+    if matched != len(expected_entries):
+        verdict_reasons.append(f"{len(expected_entries) - matched} annotated object(s) "
+                               f"not matched")
+
+    # 2. Not a swarm of boxes. A judgement about the picture, recorded in the annotation.
+    max_detections = fixture.get("max_detections")
+    if max_detections is None:
+        verdict_reasons.append(
+            "the annotation records no max_detections bound, so a decoder returning a "
+            "thousand boxes would pass; the fixture cannot check what it was not told")
+    else:
+        limit = int(max_detections)
+        details.append(f"detection-count bound: {len(detections)} <= {limit} "
+                       f"(the annotation says at most {limit} objects on this frame)")
+        if len(detections) > limit:
+            verdict_reasons.append(
+                f"the decoder returned {len(detections)} boxes where the annotation "
+                f"says this frame holds at most {limit}")
+
+    # 3. Placed on the device that was asked for. AGENTS.md rule 5.
+    if not placed:
+        verdict_reasons.append(
+            f"the run was placed on {list(placement)}, not on the {device} that was "
+            f"requested, so its detections are not {device} detections")
+
+    # 4. Aspect ratio of each matched pair: REPORTED, and deliberately not a verdict
+    #    input. See `_aspect` and the module docstring for the measurement that stopped
+    #    this from being a gate.
+    for ei, entry in enumerate(expected_entries):
+        if ei not in taken_e:
+            continue
+        det = detections[taken_e[ei][0]]
+        annotated = _aspect(entry["box_xyxy"])
+        found = _aspect(det.box)
+        if annotated <= 0.0 or found <= 0.0:
+            continue
+        details.append(
+            f"  ASPECT {entry['class_name']}: annotated {annotated:.4f} vs detected "
+            f"{found:.4f}, relative difference {abs(found / annotated - 1.0):.4f} "
+            f"(INFORMATIONAL - not part of the verdict; see the module docstring)")
+
     details.append(f"RESULT matched {matched} of {len(expected_entries)}")
-    return FixtureOutcome(passed=matched == len(expected_entries), matched=matched,
+    if verdict_reasons:
+        details.append("VERDICT FAIL: " + "; ".join(verdict_reasons))
+    else:
+        details.append("VERDICT PASS: every annotated object matched, the detection "
+                       "count is within the annotation's bound, and the run was placed "
+                       "on the requested device. KNOWN BLIND SPOT, not checked here: a "
+                       "transposed w/h. See the module docstring - it is not separable "
+                       "on this fixture by any measurement.")
+    return FixtureOutcome(passed=not verdict_reasons, matched=matched,
                           expected=len(expected_entries), details=tuple(details))
 
 

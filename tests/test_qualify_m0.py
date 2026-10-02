@@ -55,7 +55,23 @@ class ReportIsHonest(unittest.TestCase):
         self.assertIn("CPU", table)
 
     def test_execution_devices_are_printed(self):
-        self.assertIn("CPU", render_table([_r("NPU", devices=("NPU",))]))
+        """The placement column carries what the runtime actually reported.
+
+        The brief's version of this test asserted `"CPU" in table` for a row whose
+        `device_id` *and* `execution_devices` are both `NPU`. There is no `CPU` anywhere
+        in that record, so the assertion could only pass because the legend mentions the
+        three device ids - and it could not fail while the legend stood, which is the
+        signature of a vacuous test. The name says what is being tested, so the name is
+        what the assertion now checks: the reported value appears in the row.
+        """
+        table = render_table([_r("NPU", devices=("NPU",))])
+        self.assertIn("NPU", table)
+        # And the device that was asked for is named, so the row cannot be mistaken for
+        # one that silently fell back to the CPU.
+        self.assertNotIn(FALLBACK_MARKER, table.lower())
+
+    def test_an_empty_execution_devices_reading_is_not_rendered_as_a_device(self):
+        self.assertIn(UNAVAILABLE, render_table([_r("NPU", error="x", devices=())]))
 
     def test_a_failed_target_renders_nothing_that_looks_like_a_result(self):
         r = _r("NPU", error="unsupported shape on this driver", devices=())
@@ -175,6 +191,130 @@ class PercentileIsHonest(unittest.TestCase):
     def test_an_out_of_range_percentile_is_refused(self):
         with self.assertRaises(ValueError):
             percentile([1.0, 2.0], 101.0)
+
+
+class AGuardRaisesRatherThanFailingTheRun(unittest.TestCase):
+    """A bad argument is a **failed row**, not an exception out of the tool.
+
+    `qualify_target`'s contract says any exception is caught and returned as `error`. The
+    first version broke that contract for its own argument guard: `entry_started` was
+    assigned inside the `try` and `del`'d in the `finally`, so when the `num_requests`
+    guard raised, the `finally` raised `UnboundLocalError: cannot access local variable
+    'entry_started'` and **discarded the `_failed(...)` return**. Measured: both
+    `num_requests=0` and `num_requests=-5` raised instead of returning a row.
+
+    That is the worst shape a bug can take here. The caller asked an impossible question,
+    the tool was supposed to answer "no, and here is why", and instead the process died -
+    so a mistyped flag on a booth takes down the qualification run rather than printing
+    one row saying the request count was invalid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import openvino as ov
+        except ImportError:
+            raise unittest.SkipTest("openvino is not importable")
+        if "CPU" not in tuple(ov.Core().available_devices):
+            raise unittest.SkipTest("no CPU plugin on this machine")
+
+    def _spec(self):
+        from app.inference.devices import TargetSpec
+        from tools.build_sanity_fixture import ir_path, pinned_input_shape
+        return TargetSpec(device_id="CPU", model_path=ir_path(),
+                          input_shape=pinned_input_shape())
+
+    def test_zero_requests_returns_a_failed_row(self):
+        import openvino as ov
+        from tools.qualify_m0 import qualify_target
+        result = qualify_target(ov.Core(), self._spec(), _frame(), 0)
+        self.assertTrue(result.failed)
+        self.assertIn("num_requests", result.error)
+        self.assertEqual(result.requests, 0)
+        self.assertEqual(result.execution_devices, ())
+        self.assertIsNone(result.latency_ms_p50)
+
+    def test_a_negative_request_count_returns_a_failed_row(self):
+        import openvino as ov
+        from tools.qualify_m0 import qualify_target
+        result = qualify_target(ov.Core(), self._spec(), _frame(), -5)
+        self.assertTrue(result.failed)
+        self.assertIn("num_requests", result.error)
+        self.assertEqual(result.requests, 0)
+
+    def test_a_non_integer_request_count_returns_a_failed_row(self):
+        import openvino as ov
+        from tools.qualify_m0 import qualify_target
+        result = qualify_target(ov.Core(), self._spec(), _frame(), "100")
+        self.assertTrue(result.failed)
+
+    def test_a_failed_row_renders_without_a_startup_figure(self):
+        """A row that never ran must not carry a time to its first inference.
+
+        `to_first_inference_s` was recorded unconditionally, so a device absent from
+        `available_devices` - which skips `qualify_target` entirely - got a row reading
+        about two millionths of a second. That is a *time to first inference* for a row
+        where no inference happened, and it sits in the same JSON as three honest rows
+        where a reader has no way to tell them apart.
+        """
+        from tools.qualify_m0 import TargetResult, _row_seconds
+        failed = TargetResult(device_id="NPU", full_name="", compile_seconds=None,
+                              warmup_seconds=None, requests=0, latency_ms_p50=None,
+                              latency_ms_p95=None, latency_ms_min=None,
+                              latency_ms_max=None, requests_per_second=None,
+                              execution_devices=(), rss_bytes=None,
+                              error="not in available_devices")
+        self.assertIsNone(_row_seconds(failed, 2.7e-06))
+        ok = _r("CPU", devices=("CPU",))
+        self.assertAlmostEqual(_row_seconds(ok, 1.25), 1.25)
+
+
+class FullNameIsNotSilentlyTruncated(unittest.TestCase):
+    """A cut string must say it was cut.
+
+    The first version truncated `full_name` at 34 characters with no marker, so
+    `Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)` printed as
+    `Intel(R) Arc(TM) 140V GPU (16GB) (` and a reader could not tell a cut string from
+    the whole name. That trailing `(iGPU)` is the difference between an integrated and a
+    discrete GPU, which is the first thing a visitor asks about this hardware.
+    """
+
+    def test_a_name_that_fits_is_left_alone(self):
+        from tools.qualify_m0 import _column
+        self.assertEqual(_column("Intel(R) AI Boost"), "Intel(R) AI Boost")
+
+    def test_a_name_that_does_not_fit_is_marked(self):
+        from tools.qualify_m0 import FULL_NAME_WIDTH, _column
+        long_name = "Intel(R) Arc(TM) 140V GPU (16GB) (iGPU) " + "x" * 40
+        self.assertGreater(len(long_name), FULL_NAME_WIDTH)
+        cut = _column(long_name)
+        self.assertTrue(cut.endswith("..."), f"{cut!r} does not say it was cut")
+        self.assertLessEqual(len(cut), FULL_NAME_WIDTH)
+        self.assertLess(len(cut), len(long_name))
+
+    def test_this_machines_gpu_name_keeps_its_qualifier(self):
+        from tools.qualify_m0 import FULL_NAME_WIDTH, _column
+        name = "Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)"
+        self.assertLessEqual(len(name), FULL_NAME_WIDTH,
+                             "the column is narrower than this machine's real GPU name, "
+                             "so the integrated/discrete qualifier is being hidden")
+        self.assertEqual(_column(name), name)
+
+    def test_the_truncated_row_still_carries_the_whole_name_in_the_json(self):
+        long_name = "Intel(R) Arc(TM) 140V GPU (16GB) (iGPU) with a very long suffix"
+        row = _r("GPU", devices=("GPU.0",))
+        row = type(row)(**{**{f: getattr(row, f) for f in row.__dataclass_fields__},
+                           "full_name": long_name})
+        payload = row.as_dict()
+        self.assertEqual(payload["full_name"], long_name,
+                         "the JSON record must carry the untruncated name, since that is "
+                         "what a reader checks the table against")
+
+
+def _frame():
+    """The pinned fixture frame, so a real inference is what gets timed."""
+    from tools.qualify_m0 import _fixture_image
+    return _fixture_image()
 
 
 if __name__ == "__main__":

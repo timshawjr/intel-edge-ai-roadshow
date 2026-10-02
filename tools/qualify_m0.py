@@ -268,6 +268,29 @@ def _fmt_bytes(value: int | None) -> str:
     return f"{mib:.1f} MiB ({int(value)} B)"
 
 
+#: Width of the full-name column, and the room kept for the ellipsis that says the
+#: string was cut. The first version truncated at 34 characters with **no** marker, so
+#: `Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)` printed as
+#: `Intel(R) Arc(TM) 140V GPU (16GB) (` and the reader could not tell a cut string from
+#: the whole name. That qualifier is the difference between an integrated and a discrete
+#: GPU - precisely what a presenter is asked about at a booth - so the column is wide
+#: enough to hold this machine's longest name and a cut is always marked.
+FULL_NAME_WIDTH = 40
+_ELLIPSIS = "..."
+
+
+def _column(text: str, width: int = FULL_NAME_WIDTH) -> str:
+    """`text` fitted to `width`, with an explicit ellipsis when it does not fit.
+
+    A silent truncation is a small lie: the reader cannot tell that the string they are
+    looking at is not the string the runtime reported. Three dots cost three columns and
+    say "there is more, and it is in the JSON".
+    """
+    if len(text) <= width:
+        return text
+    return text[:max(0, width - len(_ELLIPSIS))] + _ELLIPSIS
+
+
 def render_table(results: Sequence[TargetResult],
                  captions: Sequence[str] | None = None) -> str:
     """One row per device, and nothing on a failed row that looks like a result.
@@ -290,7 +313,7 @@ def render_table(results: Sequence[TargetResult],
     """
     rows = list(results)
     notes: list[str] = []
-    header = (f"{'device':<10} {'full name':<34} {'compile s':>10} {'warmup s':>9} "
+    header = (f"{'device':<10} {'full name':<40} {'compile s':>10} {'warmup s':>9} "
               f"{'requests':>9} {'p50 ms':>9} {'p95 ms':>9} {'min ms':>9} {'max ms':>9} "
               f"{'rps':>8}  {'EXECUTION_DEVICES':<20} {'rss':<26} note")
     lines = [header, "-" * len(header)]
@@ -321,9 +344,9 @@ def render_table(results: Sequence[TargetResult],
                 f"EXECUTION_DEVICES says {list(result.execution_devices)}")
         if captions is not None and index < len(captions) and captions[index]:
             notes.append(f"  {result.device_id:<10} {captions[index]}")
-        full_name = result.full_name or UNAVAILABLE
         lines.append(
-            f"{result.device_id:<10} {full_name[:34]:<34} {compile_s:>10} "
+            f"{result.device_id:<10} {_column(result.full_name or UNAVAILABLE):<40} "
+            f"{compile_s:>10} "
             f"{warmup_s:>9} {requests:>9} {p50:>9} {p95:>9} {lo:>9} {hi:>9} "
             f"{rps:>8}  {placement:<20} {rss:<26} {'; '.join(note_parts)}")
     out = "\n".join(lines)
@@ -381,7 +404,6 @@ def qualify_target(core: ov.Core, spec: TargetSpec, image: np.ndarray,
                 or num_requests <= 0:
             raise ValueError(f"num_requests must be a positive int; got {num_requests!r}")
         require_static_shape(tuple(spec.input_shape))
-        entry_started = time.perf_counter()
         full_name = str(core.get_property(device_id, "FULL_DEVICE_NAME"))
         model = core.read_model(str(spec.model_path))
 
@@ -427,11 +449,21 @@ def qualify_target(core: ov.Core, spec: TargetSpec, image: np.ndarray,
     except Exception as exc:  # noqa: BLE001 - a device that cannot run is a result
         detail = f"{type(exc).__name__}: {exc}".strip()
         return _failed(device_id, f"qualification failed - {detail}", full_name)
-    finally:
-        # Kept out of the returned record on purpose: the per-row startup figure would
-        # be a second, differently-defined "startup" in the same table. The process-wide
-        # figures are measured once, in `main`, where the definition can be stated.
-        del entry_started
+
+
+def _row_seconds(result: TargetResult, elapsed: float) -> float | None:
+    """Seconds from entering a row to its first inference - or `None` if it never ran.
+
+    A device absent from `available_devices` skips `qualify_target` entirely, and the
+    elapsed time for that skip is a few microseconds of Python. Recorded unconditionally
+    it became a row reading `to_first_inference_s: 2.7e-06`, which is a *time to first
+    inference* for a row where no inference happened. `None` says "this row never got
+    there", which is the only true thing, and it keeps the field consistent with the
+    other unmeasured fields on a failed row.
+    """
+    if result.failed or result.warmup_seconds is None:
+        return None
+    return float(elapsed)
 
 
 def _process_uptime_seconds() -> float:
@@ -492,7 +524,8 @@ def run_all(num_requests: int) -> dict[str, Any]:
         results.append(result)
         captions.append(DEVICE_CAPTION)
         rows.append({"row": device_id, "caption": DEVICE_CAPTION,
-                     "to_first_inference_s": time.perf_counter() - started,
+                     "to_first_inference_s": _row_seconds(
+                         result, time.perf_counter() - started),
                      **result.as_dict()})
 
     fallback_spec = TargetSpec(device_id="CPU", model_path=ir, input_shape=shape)
@@ -501,7 +534,8 @@ def run_all(num_requests: int) -> dict[str, Any]:
     results.append(fallback)
     captions.append(FALLBACK_CAPTION)
     rows.append({"row": "CPU-fallback-baseline", "caption": FALLBACK_CAPTION,
-                 "to_first_inference_s": time.perf_counter() - fallback_started,
+                 "to_first_inference_s": _row_seconds(
+                     fallback, time.perf_counter() - fallback_started),
                  **fallback.as_dict()})
 
     return {

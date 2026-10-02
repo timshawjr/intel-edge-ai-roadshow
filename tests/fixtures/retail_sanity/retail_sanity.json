@@ -4,13 +4,28 @@
   "source_clip": "assets/media/retail-checkout.mp4",
   "frame_index": 0,
   "image": "retail_000.jpg",
+  "max_detections": 6,
+  "max_detections_reasoning": "A judgement about the PICTURE, made by looking at retail_000.jpg and counting what is on it, not a number read off the detector. This frame holds two things a person would name - the shopper, and the apple - plus the shopping basket, the checkout counter with its scanner and its recessed scale, the trolley's lower half and a second shopper's feet at the top left. A human asked to draw every discrete box on this picture would produce on the order of five or six, and would not produce a fifth copy of the person. Six is therefore a ceiling with room for the marginal judgements a detector will make differently from me, not a prediction of what the model returns; the correct decode of this frame returns 4. It is here because a decoder that applies a second activation to scores the export has already activated pushes every score into (0.5, 0.73), all 8400 anchors clear the 0.25 threshold, and the decoder returns 1205 boxes where there are five objects - a silent, catastrophic drawing failure that box-matching alone cannot see. A disabled NMS returns 19 and slips through the same gap.",
+  "known_blind_spots": [
+    {
+      "fault": "the four box values read as cx, cy, h, w instead of cx, cy, w, h",
+      "caught": false,
+      "why": "Measured on this frame, relative difference between a matched detection's width/height ratio and the annotated box's. Person: annotated 0.9468, correct decode 0.9754 (difference 0.0303), swap mutant 1.0252 (difference 0.0827). Apple: annotated 0.8152, correct decode 1.1728 (difference 0.4387), swap mutant 0.8527 (difference 0.0459). The apple is inverted - the correct decode is FURTHER from my annotation than the mutant is - so any tolerance tight enough to catch the swap fails a healthy run and any tolerance loose enough to pass a healthy run passes the swap. The cause is that my apple box is deliberately tighter than the model's on three of four sides (y1 878 against 915, x2 150 against 176), and a tight box is a poor estimate of the object's aspect. Nothing else can separate them either: a pure w/h swap preserves cx, cy and w*h exactly (422304.4 px^2 either way for the person, 26352.4 px^2 either way for the apple), so every centre- and area-based statistic is identical to the correct decode. An aspect-ratio check was implemented, measured, and rejected for this reason; the aspect ratio is still reported in the run's details as information. Closing this needs a different frame - an object whose aspect is far from 1, annotated at the same tightness as the model draws it - not a different threshold, and not a looser guard on this one.",
+      "not_caused_by": "the annotation. The person box is 623x658 and the apple 150x184; both were drawn to the silhouette and independently confirmed against the pixels."
+    },
+    {
+      "fault": "the letterbox pad band filled with 0 or 255 instead of 114",
+      "caught": false,
+      "why": "Both mutants still return 2/2 on this frame. Task 4's own A/B measured that the pad value moves the raw score array materially but left the decoded detections identical on the four frames it tried, and frame 0 is one of the benign ones. This fixture therefore does not discriminate the pad value. Catching it needs a frame where the pad band actually changes a decoded detection."
+    }
+  ],
   "expected": [
     {
       "class_id": 0,
       "class_name": "person",
       "min_score": 0.25,
       "box_xyxy": [645, 0, 1268, 658],
-      "reasoning": "The shopper standing at the self-checkout, seen from an overhead camera. Drawn by eye on retail_000.jpg. Left edge 645 is the outer edge of their right upper arm where it meets the top of the frame - the arm slopes gently right as it descends, so the minimum over the whole body is at y=0. Right edge 1268 is the outer edge of their left upper arm, which is rightmost around y=150-200 and then turns back left towards the elbow. Top edge 0: the head is outside the frame, the torso is cut by the top border. Bottom edge 658: the bare shins disappear behind the near lip of the checkout counter at about y=655-660; the counter occludes the rest, so the box stops at the occlusion rather than guessing at the feet."
+      "reasoning": "The shopper standing at the self-checkout, seen from an overhead camera. Drawn by eye on retail_000.jpg. Left edge 645 is the outer edge of their right upper arm where it meets the top of the frame - the arm slopes gently right as it descends, so the minimum over the whole body is at y=0. Right edge 1268 is the outer edge of their left upper arm, which is rightmost high up, at about y=20-45 where the shoulder meets the top border, and then slopes steadily back left down the arm to the elbow. CORRECTED 2026-10-01: an earlier version of this note said rightmost at y=150-200, which is wrong by about 130 rows; the value 1268 was and is the true maximum. Top edge 0: the head is outside the frame, the torso is cut by the top border. Bottom edge 658: the bare shins disappear behind the near lip of the checkout counter at about y=655-660; the counter occludes the rest, so the box stops at the occlusion rather than guessing at the feet."
     },
     {
       "class_id": 47,
