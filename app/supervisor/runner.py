@@ -90,8 +90,8 @@ before it compiles anything, and the child says exactly that in the text the sup
 publishes. It is a fault injection, not a measurement of the NPU: it exercises the
 supervisor's detect-a-dead-worker, restart-once, fail-visibly path without needing a
 device that genuinely will not compile. A **real** compile refusal is exercised by
-`tests/test_worker.py::test_a_requested_device_that_does_not_exist_fails_instead_of_
-running_anywhere`, on a device id this machine does not have.
+`tests/test_worker.py`, which asks for a device id this machine does not have and
+requires an error rather than a run somewhere else.
 """
 
 from __future__ import annotations
