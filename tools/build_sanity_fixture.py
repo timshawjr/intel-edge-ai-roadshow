@@ -1,4 +1,4 @@
-﻿"""The annotated detection sanity fixture: build it, and check the model against it.
+"""The annotated detection sanity fixture: build it, and check the model against it.
 
 Run from the repo root:
 
@@ -241,16 +241,30 @@ class FixtureOutcome:
 
 # --------------------------------------------------------------------------- config
 
+# The readers of `config/models.json` now live in `app/inference/pinned.py`, which is
+# where M6 needs them: nothing under `app/` may depend on a tool to learn which model it
+# runs. They are re-exported here rather than reimplemented, so `tools/*.py` and
+# `tests/*.py` keep their existing import paths and there is still one implementation of
+# each. `read_pinned_model` - the OpenVINO-touching half - necessarily stays in this tool.
+from app.inference.pinned import (  # noqa: E402,F401
+    MODELS_JSON,
+    MODEL_ID,
+    class_names,
+    labels_path,
+    num_classes,
+    pinned_input_shape,
+    pinned_model_entry,
+    pinned_sha256,
+    verified_ir_path,
+)
+
+# `ir_path` and `pinned_input_shape` are the two names this module used to define
+# itself; they are aliases now, not re-readers.
+from app.inference.pinned import ir_path  # noqa: E402,F401
+
 
 def _models_config() -> dict[str, Any]:
     return json.loads(MODELS_JSON.read_text(encoding="utf-8"))
-
-
-def pinned_model_entry() -> dict[str, Any]:
-    entry = next(m for m in _models_config()["models"] if m["id"] == MODEL_ID)
-    if entry["role"] != "detector":
-        raise ValueError(f"{MODEL_ID} has role {entry['role']!r}, not 'detector'")
-    return entry
 
 
 def pinned_clip_entry() -> dict[str, Any]:
@@ -258,38 +272,13 @@ def pinned_clip_entry() -> dict[str, Any]:
     return entry
 
 
-def ir_path() -> Path:
-    return REPO_ROOT / pinned_model_entry()["ir_path"]
-
-
-def class_names() -> tuple[str, ...]:
-    """The pinned label list, in the order the model indexes its class block.
-
-    Read from `labels.txt` and never from a hardcoded tuple, so a re-export with a
-    different label set cannot be decoded against the old names.
-    """
-    path = REPO_ROOT / pinned_model_entry()["labels_path"]
-    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
-    return tuple(name for name in lines if name)
-
-
 def read_pinned_model() -> ov.Model:
     """The IR as an `ov.Model`, which is the only thing `describe_outputs` accepts.
 
-    Read from the recorded `ir_path`, and the file's bytes are checked against the
-    SHA-256 `config/models.json` records, so a swapped model is refused here rather
-    than decoded as though it were the pinned one.
+    Delegates the hash check to `app.inference.pinned.verified_ir_path`, so a swapped
+    model is refused by one implementation of that rule rather than two.
     """
-    entry = pinned_model_entry()
-    path = REPO_ROOT / entry["ir_path"]
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != entry["sha256"]:
-        raise ValueError(
-            f"{path} hashes to {digest}, not the {entry['sha256']} recorded in "
-            f"config/models.json. Refusing to describe or decode a model that is not "
-            f"the pinned one; run tools/verify_sources.py."
-        )
-    return ov.Core().read_model(str(path))
+    return ov.Core().read_model(str(verified_ir_path()))
 
 
 def describe_pinned_model() -> ModelOutputSpec:
@@ -483,25 +472,6 @@ def extract_frame(frame_index: int, out_path: Path | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------ inference
-
-
-def pinned_input_shape() -> tuple[int, int, int, int]:
-    """The pinned model's `[N, C, H, W]`, from `config/models.json`.
-
-    **Not** from `spec.shapes`, and the first version of this function got that wrong in
-    a way worth recording. `ModelOutputSpec.shapes` holds the **output** ports, and this
-    model's output is `[1, 84, 8400]` - so `spec.shapes[port_key(0)][-1]` is `8400`, and
-    letterboxing the frame to 8400x8400 produced a blob the runtime refused on all three
-    plugins with `The input tensor size is not equal to the model input type: got
-    [1,3,8400,8400] expecting [1,3,640,640]`. The model input is `[1, 3, 640, 640]` in
-    `config/models.json` and the spec does not carry it, so that is where it is read from.
-    The error was legible and the device reported as failed rather than as zero, which is
-    the behaviour that made the bug findable at all.
-    """
-    shape = tuple(int(v) for v in pinned_model_entry()["input_shape"])
-    if len(shape) != 4:
-        raise ValueError(f"config/models.json input_shape must be [N,C,H,W]; got {shape!r}")
-    return shape  # type: ignore[return-value]
 
 
 def detect(core: ov.Core, spec: ModelOutputSpec, model: ov.Model, image: np.ndarray,

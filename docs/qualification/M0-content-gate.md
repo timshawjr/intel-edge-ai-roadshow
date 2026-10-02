@@ -68,8 +68,46 @@ There is no shelf-to-basket *event* in any of the three clips.
 This was answered by decoding frames and looking at them, not by reading filenames. A
 labelled 4x3 contact sheet was built for each clip (12 evenly spaced frames each, native
 tile resolution, every tile stamped with its frame index and timestamp), plus a second
-denser pass over the regions where an event would be visible. Method and the harness are
-reproduced in `bench_report.md`; the observations are below.
+denser pass over the regions where an event would be visible — **72 frames in all**.
+
+**The harness is committed and re-runnable: `tools/build_contact_sheets.py`.** It writes
+the five sheets to `logs/contact_sheets/` and prints the exact frame indices it decoded.
+Its `CLIP_PASSES` table is the frame list transcribed from the lists below, and
+`tests/test_contact_sheets.py` parses those lists back out of this document and fails if
+the two ever disagree — so the frames cited here are the frames the tool decodes, and the
+sheets are the pictures these conclusions were read from.
+
+An earlier revision of this document said "Method and the harness are reproduced in
+`bench_report.md`". **No harness was in `bench_report.md`**, and §Reproduction there says
+the scripts were in a gitignored task report — so the one place in M0 a reader could not
+check anything was the one place this document promised they could. The tool now exists
+in this repository; `bench_report.md` names it rather than claiming to reproduce it.
+
+```
+$ .venv\Scripts\python.exe tools\build_contact_sheets.py
+WROTE logs\contact_sheets\retail_checkout_contact.jpg  12 frames [0, 308, 616, 923, 1231, 1539, 1847, 2155, 2463, 2770, 3078, 3386]  2560x1080
+WROTE logs\contact_sheets\retail_checkout_dense.jpg  12 frames [1400, 1500, 1560, 1620, 1680, 1740, 1800, 2000, 2200, 2400, 2600, 2900]  2560x1080
+WROTE logs\contact_sheets\store_aisle_alt_contact.jpg  12 frames [0, 356, 713, 1069, 1425, 1782, 2138, 2495, 2851, 3207, 3564, 3920]  2560x1077
+WROTE logs\contact_sheets\store_aisle_alt_dense.jpg  12 frames [900, 1000, 1069, 1140, 1200, 2400, 2495, 2560, 3100, 3207, 3270, 3400]  2560x1077
+WROTE logs\contact_sheets\queue_alt_contact.jpg  12 frames [0, 127, 253, 380, 507, 633, 760, 886, 1013, 1140, 1266, 1393]  2560x1080
+
+5 sheet(s) written, 0 warning(s). The frame lists above are the ones
+docs/qualification/M0-content-gate.md cites; this tool invents no frames of its own.
+```
+
+**What a contact sheet can and cannot establish.** It shows what appears in the frames
+looked at — a shelf, a basket, a room. It does **not** show an event sequence or an
+occlusion, which is why the dense passes exist and why every conclusion below is phrased
+about what appears in those frames and never about what the clip contains. Nothing in the
+tool runs a detector: a detection drawn on a twelve-frame grid would be a claim it has no
+standing to make.
+
+**One measured detail the tool depends on, recorded because the first version got it
+wrong.** `CAP_PROP_POS_FRAMES` read *after* `read()` is the position of the **next** frame,
+not the one delivered — on `retail_checkout.mp4`, set 1400 / read / get returns 1401. That
+version stamped every tile one frame high and reported 60 spurious seek warnings. The tool
+reads the position between the set and the read, and reports any genuine seek discrepancy
+as a warning rather than quietly stamping the wrong number.
 
 ### `retail_checkout` — 1920x1080, 29.97 fps, 3387 frames, 113.0129 s
 

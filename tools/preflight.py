@@ -1,4 +1,4 @@
-﻿r"""The preflight gate: one command, one word, and every row a presenter can check.
+r"""The preflight gate: one command, one word, and every row a presenter can check.
 
     .venv\Scripts\python.exe tools\preflight.py
 
@@ -108,7 +108,11 @@ from tools.build_sanity_fixture import (  # noqa: E402
     pinned_input_shape,
     pinned_model_entry,
 )
-from tools.qualify_m0 import TargetResult, render_table  # noqa: E402
+from tools.qualify_m0 import (  # noqa: E402
+    TargetResult,
+    _row_to_result,
+    render_table,
+)
 
 __all__ = [
     "LEVELS",
@@ -411,9 +415,16 @@ def _recorded_target_results(path: Path) -> list[TargetResult]:
     `TargetResult` fields are read, so the derived keys in each row
     (`caption`, `placed_on_requested_device`, `failed`) cannot be fed back in and shadow a
     computed property - which is the same discipline `_row_to_result` applies.
-    """
-    from dataclasses import fields as dataclass_fields
 
+    **The row rebuild is `qualify_m0._row_to_result`, imported, not a second copy.**
+    There were two implementations and they had already diverged: this one was defensive
+    (a malformed row was dropped) and qualify_m0's raised `KeyError`. Two readers of one
+    file, disagreeing about what a row is, is a gate that reports different numbers from
+    the report it is quoting - which is precisely the failure mode `render_table` is shared
+    to prevent. The leniency stays, and it now lives in one place: `_row_to_result` is
+    called and a row it refuses is dropped rather than repaired, because a repaired row
+    would carry a number this module did not measure.
+    """
     report = _load_recorded(path)
     if not isinstance(report, dict):
         return []
@@ -421,16 +432,9 @@ def _recorded_target_results(path: Path) -> list[TargetResult]:
     for row in report.get("rows") or ():
         if not isinstance(row, dict):
             continue
-        known = {f.name for f in dataclass_fields(TargetResult)}
-        if not known.issubset(row):
-            continue
-        kwargs = {name: row[name] for name in known}
-        kwargs["execution_devices"] = tuple(row["execution_devices"])
         try:
-            results.append(TargetResult(**kwargs))
-        except (TypeError, ValueError):
-            # A row that cannot be rebuilt is dropped rather than repaired: a repaired row
-            # would carry a number this module did not measure.
+            results.append(_row_to_result(row))
+        except (KeyError, TypeError, ValueError):
             continue
     return results
 
@@ -467,6 +471,18 @@ def _recorded_provenance_problem(path: Path) -> str | None:
     same IR and the same OpenVINO build. Both are checked here; a mismatch means the numbers
     describe a different runtime, and quoting them beside a live device row would be the
     exact "a real number on the wrong hardware" failure the project exists to prevent.
+
+    **The IR hash is read from the file and compared, not taken on trust.** The first
+    version read the recorded run's own boolean
+    `model_ir_sha256_matches_config_models_json` and never looked at the
+    `model_ir_sha256` sitting beside it in the same JSON, while the row further down told
+    a reader that the hash "was checked against config/models.json". Nothing checked it:
+    an `m0.json` that was hand-edited, or written by a run against a different IR, passed
+    provenance for as long as somebody left that flag `true`. A self-reported verdict
+    about a claim is not a verification of the claim - the hash is the claim, so the hash
+    is what is compared. The recorded `input_shape` is compared against the pinned shape
+    for the same reason: a matching hash with a different shape is a record of a run this
+    module never performed.
     """
     report = _load_recorded(path)
     if not isinstance(report, dict):
@@ -483,10 +499,18 @@ def _recorded_provenance_problem(path: Path) -> str | None:
             f"the recorded run used OpenVINO {report.get('openvino_runtime')!r} and this "
             f"process is {ov.__version__!r}"
         )
-    if not report.get("model_ir_sha256_matches_config_models_json", False):
+    recorded_hash = report.get("model_ir_sha256")
+    if recorded_hash != entry["sha256"]:
         problems.append(
-            f"the recorded run's IR hash does not match the sha256 in config/models.json "
-            f"for {entry['id']}"
+            f"the recorded run's IR hash {recorded_hash!r} is not the sha256 "
+            f"{entry['sha256']!r} that config/models.json pins for {entry['id']}"
+        )
+    recorded_shape = report.get("input_shape")
+    pinned_shape = list(pinned_input_shape())
+    if recorded_shape != pinned_shape:
+        problems.append(
+            f"the recorded run's input_shape is {recorded_shape!r} and config/models.json "
+            f"pins {pinned_shape!r}"
         )
     age = _recorded_age_days(path)
     if age is not None and age > RECORDED_RUN_MAX_AGE_DAYS:
@@ -721,9 +745,13 @@ def _check_recorded_qualification() -> list[Check]:
             "Recorded qualification run",
             f"{len(results)} rows read from "
             f"{_display_path(RECORDED_QUALIFICATION)}, written by "
-            f"tools/qualify_m0.py, last modified {age:.1f} days ago. The IR hash and the "
-            f"OpenVINO build in that file were checked against config/models.json and "
-            f"against this process before any of its numbers were read.",
+            f"tools/qualify_m0.py, last modified {age:.1f} days ago. Before any of its "
+            f"numbers were read, three things in that file were compared by this process: "
+            f"its `model_ir_sha256` against the sha256 config/models.json pins, its "
+            f"`input_shape` against the pinned shape, and its `openvino_runtime` against "
+            f"this process's runtime. The recorded run's own "
+            f"`model_ir_sha256_matches_config_models_json` flag is not read: a file's "
+            f"verdict about itself is not a verification of it.",
         ))
 
     if not results:
@@ -888,10 +916,19 @@ def _pdh_availability() -> tuple[TelemetryAvailability, Check]:
       (`VALUE_READS_REFUSED_REASON`, recorded by Task 3 from first-hand measurement: the
       native value-read entry points terminate the process with `0xC0000005` even with
       handles proven valid by `PdhGetCounterTimeBase`).
-    - The **counters themselves exist and are measurable** by a route M0 does not use.
-      That evidence is recorded, and it is the reason this is a `WARN` and not a `FAIL`: a
-      route failure is not a counter failure, and a `FAIL` here would tell a presenter the
-      NPU is broken when it compiled and ran 100 requests in front of them.
+    - The **counters themselves exist and read real percentages** on this machine, by a
+      route M0 does not use (CIM / `Get-Counter`). That evidence is recorded, and it is
+      the reason this is a `WARN` and not a `FAIL`: a route failure is not a counter
+      failure, and a `FAIL` here would tell a presenter the NPU is broken when it
+      compiled and ran 100 requests in front of them.
+    - **Attribution is NOT established**, so the route's numbers cannot be used either.
+      The inference process's PID does not appear as a counter instance, and the busiest
+      `engtype_Compute` / `engtype_Neural` instances belong to unrelated processes, so a
+      machine-wide peak on this machine is a fact about the machine and not about this
+      application. The 62% / 68% figure M0 quoted before that was withdrawn: it said the
+      counters read real percentages "under real OpenVINO load", which is the attribution
+      this paragraph withdraws. **No utilisation figure may be shown until M4 can
+      attribute it**, and the row text says so where a presenter will read it.
 
     Never `PASS`: a `PASS` on a value this process cannot read is a claim about a
     measurement that did not happen.
@@ -934,13 +971,16 @@ def _pdh_availability() -> tuple[TelemetryAvailability, Check]:
         f"pdh.dll loads and the counter opens ({pdh_available()[1]}), and the native "
         "value-read entry points are refused by default because they terminate this "
         "process with 0xC0000005 even with handles proven valid by "
-        "PdhGetCounterTimeBase. Recorded evidence that the counters do exist and are "
-        "measurable by a route M0 does not use: NPU engtype_Neural and GPU "
-        "engtype_Compute read real percentages through "
-        "Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine and Get-Counter under "
-        "real OpenVINO load (Task 3, see .superpowers/sdd/2026-10-01-m0-hardware-and-model-"
-        "qualification/task-3-fix-report.md). A route failure is not a counter failure, so "
-        "this is a WARN and not a FAIL: the NPU compiled and completed its requests. Spec "
+        "PdhGetCounterTimeBase. The counters themselves DO exist and read real "
+        "percentages on this machine by the CIM/Get-Counter route "
+        "(Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine and Get-Counter), "
+        "but a machine-wide peak there is NOT attributable to this process: this "
+        "process's PID never appears as a counter instance, and unrelated processes "
+        "hold the busiest engines. No utilisation figure may be shown until "
+        "attribution is solved. Measured evidence and the full method are in the "
+        "committed report docs/qualification/M0-qualification.md (Telemetry), section "
+        "'Unmet gates' item 2. A route failure is not a counter failure, so this is a "
+        "WARN and not a FAIL: the NPU compiled and completed its requests. Spec "
         "section 10 gives the validated provider to M4.",
     )
 

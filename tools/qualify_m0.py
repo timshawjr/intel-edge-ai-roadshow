@@ -165,6 +165,17 @@ def percentile(samples: Sequence[float], q: float) -> float:
     return values[min(rank, len(values)) - 1]
 
 
+#: Every timed field of `TargetResult`: measured as a float, and refused at 0.0.
+_TIMED_FIELDS = ("compile_seconds", "warmup_seconds", "latency_ms_p50",
+                 "latency_ms_p95", "latency_ms_min", "latency_ms_max",
+                 "requests_per_second")
+
+#: Every field of `TargetResult` that a real run must fill. `_failed` leaves all of them
+#: `None` with an `error`; a successful row must leave none of them `None`. Named once so
+#: the constructor's check and its error message cannot drift apart.
+_MEASURED_FIELDS = _TIMED_FIELDS + ("rss_bytes",)
+
+
 @dataclass(frozen=True)
 class TargetResult:
     """One device's qualification result, measured or explicitly not measured.
@@ -181,6 +192,16 @@ class TargetResult:
 
     `rss_bytes` is the host process's resident set. See the module docstring for why it
     is not accelerator memory.
+
+    **A row that is not a failure carries no unmeasured quantity at all.** `render_table`
+    prints `unavailable` for a `None`, which is the correct rendering - and a non-failed
+    row with a `None` in it would render as a *success* whose p95 column says
+    `unavailable` while every other column holds a real number. That is the one state in
+    this table where a reader is most likely to quote the numbers around the hole and read
+    the whole row as a result, so it is refused at construction instead of printed. The
+    rule is symmetric with AGENTS.md rule 15 in both directions: a failed row's numbers are
+    suppressed by the renderer (they may be populated and are ignored), and a
+    non-failed row's numbers may not be missing.
     """
 
     device_id: str
@@ -211,9 +232,7 @@ class TargetResult:
                 f"failure with no explanation, which is the one thing worse than a "
                 f"zero."
             )
-        for name in ("compile_seconds", "warmup_seconds", "latency_ms_p50",
-                     "latency_ms_p95", "latency_ms_min", "latency_ms_max",
-                     "requests_per_second"):
+        for name in _TIMED_FIELDS:
             value = getattr(self, name)
             if value is None:
                 continue
@@ -236,6 +255,24 @@ class TargetResult:
                 raise TypeError(f"rss_bytes must be an int; got {self.rss_bytes!r}")
             if self.rss_bytes <= 0:
                 raise ValueError(f"rss_bytes must be positive; got {self.rss_bytes}")
+        if self.error is None:
+            missing = [name for name in _MEASURED_FIELDS
+                       if getattr(self, name) is None]
+            if missing:
+                raise ValueError(
+                    f"{self.device_id}: this row is not a failure (error is None) but "
+                    f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} "
+                    f"unmeasured. A success with a hole in it renders as a success whose "
+                    f"p95 column reads 'unavailable' while the columns around it hold real "
+                    f"numbers, and that is the row a reader quotes whole. Use `error` with "
+                    f"`None` everywhere, or measure the field."
+                )
+            if self.requests <= 0:
+                raise ValueError(
+                    f"{self.device_id}: this row is not a failure (error is None) but "
+                    f"reports {self.requests} requests. A row that ran no request measured "
+                    f"nothing; say so in `error`."
+                )
 
     @property
     def placed_on_requested_device(self) -> bool:

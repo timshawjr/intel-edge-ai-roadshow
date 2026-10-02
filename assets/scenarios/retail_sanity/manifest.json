@@ -53,7 +53,7 @@
     }
   ],
   "roi": [],
-  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead, in tests/fixtures/retail_sanity/retail_sanity.json - that file does NOT exist yet; it is created in Task 6. This is a forward reference to planned work, not a record of an existing artifact.",
+  "roi_note": "Normalized ROIs and event annotations land in M1 with the retail stream. M0 annotates a single fixed frame instead, in tests/fixtures/retail_sanity/retail_sanity.json - that file exists and is committed, together with the JPEG it was drawn on (retail_000.jpg, frame 0 of retail_checkout.mp4 at native resolution), and tools/build_sanity_fixture.py evaluates the model against it read-only. This is a record of an existing artifact, not a forward reference to planned work; tests/test_verify_sources.py fails if this note stops agreeing with the tree.",
   "event_annotations": [],
   "content_gate": {
     "spec_requirement": "three 45-90 second clips per scenario pack",

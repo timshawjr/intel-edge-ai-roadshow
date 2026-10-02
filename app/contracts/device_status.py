@@ -13,8 +13,11 @@ Two rules in this module exist because of how badly a wrong device record shows 
 
 `device_type` is the OpenVINO plugin class - `CPU`, `GPU` or `NPU` - which is the same
 vocabulary as `device_id`, the field that actually identifies the device. It is
-deliberately not a processor family and never a hardcoded one; this machine is Lunar Lake,
-and nothing here may present a measurement as Panther Lake or Arrow Lake.
+deliberately not a processor family and never a hardcoded one. Where this repository's
+prose uses a family name (Lunar Lake / Core Ultra Series 2, for the machine whose CPU
+reports `Intel(R) Core(TM) Ultra 9 288V`), it is **derived from that CPU's own model
+string** rather than asserted independently of it - so nothing here may present a
+measurement as Panther Lake or Arrow Lake.
 
 DEVIATION, 2026-10-01, on the parent's ruling: this field used to be the stringified
 OpenVINO `DEVICE_TYPE` property, which measured `Type.INTEGRATED` for CPU, GPU and NPU

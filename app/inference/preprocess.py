@@ -37,8 +37,9 @@ Measured first-hand on this machine, through this module's own rule:
 The plan specified zeros, and the first version of this module implemented that. It was
 then measured, and the zeros were a train/serve distribution shift that the export was
 converted *against*: this model came from the Ultralytics pipeline, which letterboxes
-with 114. On a 1920x1080 frame into 640x640, 21.88% of the canvas is pad, and filling it
-with 0 rather than 114 moves the tensor by up to 0.447 in `float32` NCHW (114/255 =
+with 114. On a 1920x1080 frame into 640x640, **280 of the 640 rows are pad — 43.75% of the
+canvas**, 140 above and 140 below — and filling it with 0 rather than 114 moves the tensor
+by up to 0.447 in `float32` NCHW (114/255 =
 0.447; the reviewer's uint8-domain figure of 368.11 is the same difference unscaled).
 
 `pad_value` is therefore a parameter defaulting to `114`, and it is recorded **on the

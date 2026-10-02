@@ -7,9 +7,13 @@ Target machine: the CPU identifies itself as `Intel(R) Core(TM) Ultra 9 288V` an
 > **No SKU is claimed anywhere in this document.** Three hardware-identity records on this
 > machine disagree — `Win32_ComputerSystem` says `ASUSTeK COMPUTER INC. NUC14LNK LN`, the
 > hostname says `NUC14PROAI`, the PCI subsystem id says `SUBSYS_88F21043` — and none is
-> treated as the winner. See *Environment* below. The family name "Core Ultra Series 2 /
-> Lunar Lake" appears only as the CPU's own model string, never as a claim about a product
-> line the hardware does not report.
+> treated as the winner. See *Environment* below. Where the family name "Core Ultra Series
+> 2 / Lunar Lake" appears in this repository's code and prose, it is **derived from the
+> CPU's own model string** (`Intel(R) Core(TM) Ultra 9 288V`, a `Win32_Processor` reading),
+> not asserted independently of it: Intel's own naming places the Core Ultra 9 288V in the
+> Lunar Lake family, and the derivation is recorded so a reader can check it against the one
+> string it came from. No product-line claim is made that the CPU's model string does not
+> itself supply.
 
 > Nothing in this document is a target, a vendor claim, or a number copied from a
 > datasheet. Every figure below was produced by a command run in this repository and its
@@ -118,7 +122,9 @@ and the command is named.
 | source | committed? | what it backs |
 |---|---|---|
 | `logs/qualification/m0.json`, `logs/qualification/m0_sanity_fixture.json` | **no — `logs/` is gitignored** | the four-row compile/latency/placement table and the per-device fixture verdicts. On a fresh clone these files are **absent** and preflight's corresponding rows degrade to `WARN`. The numbers are reproduced here, in `bench_report.md` and in `docs/qualification/qualification-matrix.csv` precisely so that M0's headline evidence lives in a **tracked** file. |
-| `.superpowers/sdd/**` | **no — gitignored** | Task 3's 62% / 68% CIM utilisation measurement, which preflight's telemetry row cites as its evidence. That citation does not survive a fresh clone, and the figure is in any case **not reproducible by the session that wrote this document** — see *Telemetry*, below. |
+| `assets/models/` (the IR, the weights, the labels), `assets/media/` (the three clips) | **no — `assets/` is gitignored** | **Every artifact in the "Recorded artifacts" table above, and the `449 tests … OK` result pasted further down.** These are the *provisions* of the tree, not just its inputs: their absence does not degrade preflight to a `WARN`, it **fails the test suite itself**. Measured on a clean-clone simulation with `assets/` removed: `FAILED (errors=14, skipped=1)`, exit 1. So the green suite quoted in this document is **not reproducible on a fresh clone until `tools/provision_venv.py` has run**, and this table is the place a reader is told that. Nothing is re-downloaded at runtime; the artifacts are copied from the already-verified local cache. |
+| `.superpowers/sdd/**` | **no — gitignored** | nothing any committed artefact depends on any more. It held Task 3's 62% / 68% CIM utilisation measurement, which **preflight's telemetry row used to cite as its evidence**; that citation is **gone**. The row is now *weaker* about the figure than this report is: it states that the counters read real percentages by the CIM/Get-Counter route, that a machine-wide peak there is **not attributable to this process**, and that **no utilisation figure may be shown until attribution is solved** — pointing at this document, which is committed. The 62% / 68% attribution stays withdrawn; see *Telemetry*, below. |
+| Throwaway harnesses (pad A/B, utilisation sweep, w/h aspect) | **no — never written to disk** | the pad A/B table, the idle-vs-loaded utilisation table and the `w`/`h` aspect table in this document. These were produced by ad-hoc scripts that used this repository's own `app.inference.preprocess`, `app.inference.decode` and `tools.build_sanity_fixture`, wrote nothing into the tree, and are **not reproducible from the committed source**. Every figure they produced is pasted here verbatim, which is why each such table is a record and not a re-runnable claim. The footage review was the same kind of harness at M0 and is now `tools/build_contact_sheets.py`. |
 | re-measured in the Task 9 session, 2026-10-01 | yes, because it is pasted here | environment, media durations, device discovery, the letterbox pad A/B, the telemetry counter routes, and the footage review. |
 
 ## Environment
@@ -262,16 +268,28 @@ frame 2400  boxes 114=2 boxes 0=2 class sets IDENTICAL coords shifted 2/2
 
 Coordinates shift on **all six** frames tested; the class set differs on three of six.
 
-**A committed claim this measurement contradicts.** Both
+**A committed claim this measurement contradicted — and that is now corrected.** Both
 `tests/fixtures/retail_sanity/retail_sanity.json`'s `known_blind_spots` and the
-`tools/build_sanity_fixture.py` module docstring assert that *"Filling the band with `0` or
-with `255` instead of `114` still yields 2/2 here"* and that the fixture therefore does not
-discriminate the pad value. **That is true for 255 and false for 0**: with `pad_value=0` the
-fixture returns 1/2 and the verdict is `FAIL`. Both files are outside this task's write
-scope (`tests/` and `tools/`), so the correction is **recorded here and not applied**. It
-changes no M0 verdict — with the pad value actually in effect the fixture passes on all
-three devices — but the blind-spot entry is wrong about half its subject and should be
-fixed before anyone relies on it.
+`tools/build_sanity_fixture.py` module docstring asserted that *"Filling the band with `0`
+or with `255` instead of `114` still yields 2/2 here"* and that the fixture therefore does
+not discriminate the pad value. **That is true for 255 and false for 0**: with
+`pad_value=0` the fixture returns 1/2 and the verdict is `FAIL`, with the apple absent
+from the frame.
+
+**The correction was applied**, in commit `71cc58e`, in
+`tests/fixtures/retail_sanity/retail_sanity.json` and in the
+`tools/build_sanity_fixture.py` module docstring — the two files this measurement named.
+An earlier revision of this report said the correction was *"recorded here and not
+applied"* because `tests/` and `tools/` were outside that session's write scope; that
+described the state before `71cc58e` and no longer describes the tree. The measurement
+that motivated the correction is the `pad_value=0` row of the table above: **1/2 matched,
+`FAIL`**, not 2/2.
+
+The consequence is worth stating plainly, because it cuts the other way from what the old
+blind-spot entry claimed: **frame 0 _is_ one of the frames where the pad value changes a
+detection**, which makes it better evidence for the `114` default than the four benign
+frames an earlier A/B happened to try. Only the `255` variant needs a different frame to
+catch, and that is M1's job to find.
 
 The **A/B detection-set delta tool** that would settle the pad value properly across many
 frames and many scenes is **M1 work. Not built at M0.**
@@ -448,21 +466,27 @@ percentages by a route M0 does not use. Spec §7 therefore requires the NPU card
 **M4**. Preflight rates this `WARN`, which is the correct level: a `FAIL` would tell a
 presenter the NPU is broken when it compiled and completed 100 requests in front of them.
 
-### The 62% / 68% figure: quoted, and **not reproducible**
+### The 62% / 68% figure: **withdrawn**
 
-Preflight's telemetry row cites `.superpowers/sdd/.../task-3-fix-report.md` as the evidence
-for **NPU `engtype_Neural` peaking 62%** and **GPU `engtype_Compute` peaking 68%** under
-real load, cross-checked against `Get-Counter` at 61.81 / 51.54.
+Task 3 recorded **NPU `engtype_Neural` peaking 62%** and **GPU `engtype_Compute` peaking
+68%** under real load, cross-checked against `Get-Counter` at 61.81 / 51.54, and preflight's
+telemetry row used to cite that task's report file as its evidence for the counters being
+measurable.
 
-**Two problems, both recorded rather than papered over:**
+**Two problems, and both are now closed — in opposite directions:**
 
-1. **`.superpowers/` is gitignored.** The cited file does not exist on a fresh clone, so
-   preflight's evidence pointer is dead for anyone who has not run M0 in this working tree.
-   This is the durability gap this report exists to close: the method, the commands and the
-   numbers are reproduced in this document so the claim does not depend on an untracked file.
-2. **The session that wrote this report could not reproduce it, and found that a
+1. **`.superpowers/` is gitignored.** The cited file did not exist on a fresh clone, so
+   preflight's evidence pointer was dead for anyone who had not run M0 in this working
+   tree. **Fixed:** the row no longer cites it. It now states that the counters exist and
+   read real percentages on this machine by the CIM/Get-Counter route, that a machine-wide
+   peak there is **not attributable to this process**, and that **no utilisation figure may
+   be shown until attribution is solved** — pointing at this document, which is committed.
+   Note the direction: **the row is now weaker about the figure than it was**, because
+   withdrawing the attribution is what the measurement below required.
+2. **The session that wrote this report could not reproduce the figure, and found that a
    machine-wide peak on this machine is not attributable to this application's inference
-   at all.** Measured here, 2026-10-01.
+   at all.** Measured here, 2026-10-01. This is the finding that matters, and it is why
+   62% / 68% is **withdrawn** rather than merely unsourced.
 
 **Method.** A real inference load was put on the NPU and the GPU simultaneously — the
 pinned IR, a `[1,3,640,640]` blob, a continuous `infer` loop on both devices, with
@@ -705,14 +729,16 @@ WARN  Telemetry: in-process PDH GPU/NPU utilisation
       required entry points are bound), and the native value-read entry points
       are refused by default because they terminate this process with
       0xC0000005 even with handles proven valid by PdhGetCounterTimeBase.
-      Recorded evidence that the counters do exist and are measurable by a
-      route M0 does not use: NPU engtype_Neural and GPU engtype_Compute read
-      real percentages through
-      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine and Get-Counter
-      under real OpenVINO load (Task 3, see
-      .superpowers/sdd/2026-10-01-m0-hardware-and-model-
-      qualification/task-3-fix-report.md). A route failure is not a counter
-      failure, so this is a WARN and not a FAIL: the NPU compiled and
+      The counters themselves DO exist and read real percentages on this
+      machine by the CIM/Get-Counter route
+      (Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine and
+      Get-Counter), but a machine-wide peak there is NOT attributable to this
+      process: this process's PID never appears as a counter instance, and
+      unrelated processes hold the busiest engines. No utilisation figure may be
+      shown until attribution is solved. Measured evidence and the full method
+      are in the committed report docs/qualification/M0-qualification.md
+      (Telemetry), section 'Unmet gates' item 2. A route failure is not a
+      counter failure, so this is a WARN and not a FAIL: the NPU compiled and
       completed its requests. Spec section 10 gives the validated provider to
       M4.
 
@@ -825,9 +851,9 @@ worked around.
 
 | # | item | why it matters |
 |---|---|---|
-| A | **The pad blind-spot record is wrong about `pad_value=0`.** Both `tests/fixtures/retail_sanity/retail_sanity.json` and the `tools/build_sanity_fixture.py` docstring say both pad mutants still return 2/2. Measured here: **255 does, 0 does not** — pad 0 returns 1/2 and the fixture **FAILS**, with the apple absent from the frame. | The blind-spot list is what a future reader trusts when deciding what the fixture does and does not protect. It is currently wrong about half its subject. **Outside this task's write scope (`tests/`, `tools/`), so recorded and not applied.** |
-| B | **Preflight's telemetry row cites a gitignored file** for the 62% / 68% claim. | On a fresh clone the pointer is dead and the claim is unsourced. This report reproduces the method, the commands and the numbers, and records that the attribution is not supported. |
-| C | **`assets/scenarios/retail_sanity/manifest.json` says the fixture "does NOT exist yet… created in Task 6".** It exists. | A stale forward reference in a rights/asset manifest. Recorded; not corrected here. |
+| A | **The pad blind-spot record was wrong about `pad_value=0`, and has been corrected.** `tests/fixtures/retail_sanity/retail_sanity.json` and the `tools/build_sanity_fixture.py` docstring said both pad mutants still return 2/2. Measured: **255 does, 0 does not** — pad 0 returns 1/2 and the fixture **FAILS**, with the apple absent from the frame. | **Corrected in `71cc58e`**, in both named files. The blind-spot list is what a future reader trusts when deciding what the fixture does and does not protect, and it was wrong about half its subject. It no longer is; the remaining hole is the `255` mutant, which needs a different frame and is M1 work. |
+| B | **Preflight's telemetry row previously cited a gitignored file** for the 62% / 68% claim. | **Corrected.** The row no longer cites anything under `.superpowers/`; it now states that the counters read real percentages by the CIM/Get-Counter route, that a machine-wide peak there is **not attributable to this process** (the inference PID never appears as a counter instance, and unrelated processes hold the busiest engines), and that no utilisation figure may be shown until M4 solves attribution. It points at this document, which is committed. The 62% / 68% attribution stays withdrawn. |
+| C | **`assets/scenarios/retail_sanity/manifest.json` said the fixture "does NOT exist yet… created in Task 6".** | **Corrected.** The `roi_note` now records the fixture as an existing committed artifact, and `tests/test_verify_sources.py` fails if the note and the tree stop agreeing — including if the fixture is ever removed. |
 | D | **The `oven` false positive at 0.250770 is unquantified.** | It appears on the fixture frame and is deliberately unannotated. Its frequency, persistence and behaviour on other frames are **not measured**, and no precision/recall claim is made for it. |
 | E | **The `w`/`h` blind spot is open.** | A transposed `w`/`h` passes this fixture. Needs a different frame, not a tighter threshold. |
 | F | **No INT8 artifact, and none planned for V1.** | Listed in the matrix as `not tested` so its absence does not read as an oversight. |
@@ -843,5 +869,18 @@ worked around.
 - The gate reads **`Limited`**, exit 0, with both warnings named — and neither warning is
   a broken accelerator.
 - The model, the media, the decoder, the letterbox inverse, the fixture and the preflight
-  gate are all in place, verified, and reproducible from a clean checkout with one command.
+  gate are all in place and verified, and reproducible from a clean checkout in **two
+  commands, in this order**:
+  1. `.venv\Scripts\python.exe tools\provision_venv.py` — the only step needing network.
+     It copies the content-verified artifacts from the local cache into `assets/`, which
+     is gitignored. **Until this has run, nothing above is reproducible**: the IR and the
+     three clips are absent, the test suite fails (`errors=14, skipped=1`), and preflight
+     correctly reports **`Needs attention`**, exit 1. That is the correct reading of an
+     unprovisioned tree, not a defect.
+  2. `.venv\Scripts\python.exe tools\preflight.py` — the gate. Reads **`Limited`**, exit
+     0, with both warnings named.
+
+  An earlier revision of this line claimed "one command" from a clean checkout. That was
+  false: it silently counted provisioning as though it were part of the gate, and the gate
+  by itself reports `Needs attention` until the tree is provisioned.
 

@@ -305,7 +305,12 @@ class ThePadValueIsADecisionThatWasMeasured(unittest.TestCase):
     The plan specified zeros and the first version of this module implemented that. It
     was then measured, and zeros turned out to be a train/serve distribution shift the
     export was converted *against*: this model came from the Ultralytics pipeline, which
-    letterboxes with 114. On 1920x1080 into 640x640, 21.88% of the canvas is pad.
+    letterboxes with 114. On 1920x1080 into 640x640, 280 of the 640 rows are pad -
+    **43.75% of the canvas**, 140 top and 140 bottom.
+
+    The first version of this docstring said **21.88%**, which is 140/640: the *top band
+    alone*, presented as the whole canvas. The reports have always said 43.75% and the
+    M0 ledger ruled the ~22% reading wrong; this docstring was the copy that drifted.
 
     The number is now a decision with a measured consequence, so it is pinned here rather
     than left as a default that can drift silently. `0` stays reachable because the A/B

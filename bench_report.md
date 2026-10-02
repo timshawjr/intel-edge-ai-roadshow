@@ -16,14 +16,65 @@ given.
 
 Date: 2026-10-01
 Milestone: M0 (design §11)
-Verdict: **gate passed with two warnings.** `tools/preflight.py` reads **`Limited`**, exit 0.
-All three accelerators are real, each compiled the pinned IR and completed 100 timed
-requests, and each passed the hand-annotated detection fixture 2/2 with `EXECUTION_DEVICES`
-proving placement on the device that was asked for.
+Verdict: **`Limited` — two warnings, and the gate is honestly incomplete on two of its four
+clauses.** See the dated waiver immediately below. `tools/preflight.py` reads
+**`Limited`**, exit 0. All three accelerators are real, each compiled the pinned IR and
+completed 100 timed requests, and each passed the hand-annotated detection fixture 2/2 with
+`EXECUTION_DEVICES` proving placement on the device that was asked for.
 
 The two warnings, named: **in-process PDH GPU/NPU utilization is unavailable** (the value-read
 entry points terminate the process), and **the LUID-to-device mapping is derived rather than
 identified, with three hardware-identity records in disagreement and no SKU claimed**.
+
+## Waiver on the M0 gate — dated, and naming the two clauses that are not met
+
+**Recorded 2026-10-01, M0, by the M0 session. This waiver is a statement that the M0 gate
+is honestly incomplete, not that it was met.**
+
+Design §11's M0 gate has **four** clauses. **Two of them are unmet at M0:**
+
+| # | clause | M0 status |
+|---|---|---|
+| 1 | the pinned model is verified by content and hash | **MET** — `verify_sources.py`, 6 PASS / 0 FAIL; the IR hash, input shape and OpenVINO build of the recorded run are each compared against this machine before its numbers are quoted |
+| 2 | **observed device activity supports the assignment** | **NOT MET.** This is the utilisation attribution M0 could not establish. The counters read real percentages by the CIM/Get-Counter route, but the inference process's PID **never appears as a counter instance** and unrelated `pythonw.exe` processes hold the busiest `engtype_Compute` and `engtype_Neural` engines — measured: our PID 8428 held 0 of 469 samples while PIDs 15012 and 1844 held the busiest compute and neural engines. The earlier **62% / 68%** attribution is **withdrawn**. What *is* established is placement, and it rests only on `EXECUTION_DEVICES` re-read from each request's own compiled model after the first inference: `('CPU',)`, `('GPU.0',)`, `('NPU',)` on the device that was asked for, 100 timed requests each. |
+| 3 | **CPU fallback works** | **NOT OBSERVED.** The `[fallback]` marker has never fired because no device has ever failed. The fourth row of the table — an explicit CPU-only re-measurement of the same model at the same shape — shows the fallback *target* is healthy, and that is **not** the same claim. No failure has been injected. Observed failure injection is M6. |
+| 4 | the decoder produces correct detections on every device | **MET** — the hand-annotated fixture returns PASS 2/2 on CPU (re-run live by `preflight.py` in this run), GPU and NPU |
+
+`AGENTS.md` requires every preflight row to be `PASS`. Two rows are `WARN`, so
+**`tools/preflight.py` reads `Limited`, not `Ready`, and exit 0** — a deliberate decision
+to ship a booth on a partially-open gate rather than to delete a row.
+
+**Why `WARN` is the correct level for both, and `FAIL` would be wrong.**
+
+- The PDH row is `WARN` because **a route failure is not a counter failure.** `pdh.dll`
+  loads, the counter opens, and the wildcard expansion enumerates this machine's live
+  `GPU Engine` instances; what fails is the in-process *value read*, with a measured reason
+  (`0xC0000005` even with handles proven valid by `PdhGetCounterTimeBase`). A `FAIL` would
+  tell a presenter the NPU is broken when it compiled the pinned IR and completed 100 timed
+  requests in front of them.
+- The LUID row is `WARN` because the mapping is **derived from the engine taxonomy rather
+  than driver-exposed**, and preflight says so in those words — it never says "identified".
+  Adapter `0x00011232` (81 instances, `3D` only) is left **UNATTRIBUTED** rather than
+  swept onto the nearest device, which a prefix or range rule would have done.
+
+**What this waiver does not do.** It does not upgrade the verdict to "gate passed". The
+verdict below is `Limited` for that reason. The card the presenter sees still reads
+**"Utilization unavailable"**, never `0%`, and **no utilisation figure may be shown until
+M4 solves attribution** — the waiver is about the *gate's* level, not about the number
+becoming available.
+
+### Assets, and what a fresh clone does not have
+
+`assets/models/` and `assets/media/` are **gitignored**. `tools/provision_venv.py` (the
+only step needing network) copies the content-verified artifacts from the local cache into
+them.
+
+Until that has run, the tree is not merely unqualified — it is **not runnable as
+qualified**: measured with `assets/` removed, `unittest discover` gives
+`FAILED (errors=14, skipped=1)`, exit 1, and `preflight.py` reports
+**`Needs attention`**, exit 1. **The `Ran 449 tests … OK` result pasted in §7 below is
+therefore not reproducible on a fresh clone**, and the two-step reproduction
+(provision, *then* gate) is named rather than collapsed into "one command".
 
 ### 1. Source verification — content, never HTTP status
 
@@ -198,11 +249,13 @@ At 0: `person` 0.910445, `person` 0.622733, `oven` 0.255576 — the apple is gon
 Six frames, class set and coordinates at 114 vs 0: coordinates shift on **all six**; the
 class set differs on frames 0, 60 and 300 and is identical on 1200, 1800 and 2400.
 
-**A committed record this contradicts.** `tests/fixtures/retail_sanity/retail_sanity.json` and
-the `tools/build_sanity_fixture.py` docstring both say the pad mutants "still yield 2/2
-here". That is **true for 255 and false for 0** — pad 0 fails the fixture 1/2. Both files
-are outside this task's write scope, so the correction is **recorded, not applied**. The
-A/B detection-set delta tool that would settle it is **M1 work**.
+**A committed record this contradicted — now corrected.** `tests/fixtures/retail_sanity/retail_sanity.json`
+and the `tools/build_sanity_fixture.py` docstring both said the pad mutants "still yield
+2/2 here". That is **true for 255 and false for 0** — pad 0 fails the fixture 1/2. **The
+correction was applied in commit `71cc58e`**, in both named files. An earlier revision of
+this report said it was *"recorded, not applied — outside write scope"*, which described
+the pre-`71cc58e` tree and no longer does. The A/B detection-set delta tool that would
+settle the remaining `255` mutant is **M1 work**.
 
 ### 6. Telemetry counters — the honest result
 
@@ -214,10 +267,16 @@ returns 465 "valid-status" entries of 4328 with `p50 = 10`, `max = 2.7e16` (garb
 instance names. **Route failure, not counter failure** → the card reads
 **"Utilization unavailable", never 0%**, and the validated provider belongs to **M4**.
 
-**The 62% / 68% figure: quoted, and not reproducible.** Preflight's row cites a file under
-`.superpowers/sdd/`, which is **gitignored** and does not exist on a fresh clone, for
-**NPU `engtype_Neural` peaked 62%** and **GPU `engtype_Compute` peaked 68%** under real load
-(Get-Counter cross-check 61.81 / 51.54). Re-measuring it here, with an **idle baseline
+**The 62% / 68% figure: withdrawn.** Task 3 recorded **NPU `engtype_Neural` peaked 62%**
+and **GPU `engtype_Compute` peaked 68%** under real load (Get-Counter cross-check 61.81 /
+51.54), and **preflight's telemetry row used to cite** the task's report file under
+`.superpowers/sdd/` as its evidence — a **gitignored** path that does not exist on a fresh
+clone. **That citation is gone.** The row now states only that the counters read real
+percentages by the CIM/Get-Counter route, that a machine-wide peak there is **not
+attributable to this process**, and that **no utilisation figure may be shown until
+attribution is solved**. It is *weaker* about the figure than it was, which is the point.
+
+Re-measuring here, with an **idle baseline
 first**, real simultaneous NPU+GPU load (3643 inferences each in 40.01 s, `EXECUTION_DEVICES`
 `NPU` and `['GPU.0']`), and per-instance sampling:
 
@@ -324,12 +383,28 @@ acknowledged as not delivered on every screen, presenter line and export. Full r
 | 9 | Fallback under observed failure | **not run** — the `[fallback]` marker has never fired; unit-tested only |
 | 10 | AC status | **unavailable, permanently** — `Win32_Battery` returns 0 instances; Balanced power scheme recorded instead |
 | 11 | Hardware SKU | **unreconciled** — three disagreeing records, none named the winner |
-| 12 | The pad blind-spot record | **wrong about `pad_value=0`** (fails 1/2, not 2/2); recorded, not applied — outside write scope |
+| 12 | The pad blind-spot record | **corrected in `71cc58e`** — it was wrong about `pad_value=0` (fails 1/2, not 2/2); `retail_sanity.json` and the `build_sanity_fixture.py` docstring now say so. The remaining `255` hole is M1 |
 | 13 | `w`/`h` transposition | **open blind spot** — provably unseparable on this fixture; needs a different frame, not a tighter threshold |
 | 14 | The `oven` false positive at 0.250770 | **unquantified** — deliberately unannotated, no precision/recall claim made |
 
 **Reproduction.** All of §1–§3 and §7 come from `verify_sources.py`, `preflight.py` and
-`unittest discover`. §5, §6, §8 and §9 were produced by throwaway harnesses that used the
-repository's own `app.inference.preprocess`, `app.inference.decode`,
-`tools.build_sanity_fixture` and `cv2`; they wrote nothing into the repository. The full
-scripts are reproduced in the Task 9 report so any figure here can be re-derived.
+`unittest discover`.
+
+**§9 is now committed and re-runnable.** The footage review was the one part of M0 whose
+harness was not in this repository, and this file used to claim "the full scripts are
+reproduced in the Task 9 report" — a gitignored file, i.e. not reproduced here at all. The
+contact sheets are now built by **`tools/build_contact_sheets.py`**, which writes the five
+sheets to `logs/contact_sheets/` and prints the frame indices it decoded. §9's frame lists
+are its `CLIP_PASSES` table, and `tests/test_contact_sheets.py` fails if the two drift
+apart.
+
+**§5, §6 and §8 remain throwaway harnesses.** The pad A/B, the utilisation sweep and the
+`w`/`h` aspect check were produced by ad-hoc scripts that used this repository's own
+`app.inference.preprocess`, `app.inference.decode` and `tools.build_sanity_fixture`, wrote
+nothing into the tree, and are **not reproducible from committed source** — the Task 9
+report that held them is gitignored and was never a place a reader could look. Every figure
+those harnesses produced is pasted in full above, so the tables stand as records rather than
+as re-runnable claims. This is stated here rather than left for a reader to discover.
+
+**Nothing above is reproducible from a clean checkout without provisioning first.** See
+*Assets, and what a fresh clone does not have* below.

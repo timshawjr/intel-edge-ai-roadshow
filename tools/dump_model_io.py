@@ -256,14 +256,18 @@ def describe_model(model: Any, entry: dict[str, Any],
         record["fetch_api"] = _probe_fetch_api(model, compiled)
     record["fetch_note"] = (
         "MEASURED on the installed runtime by this tool; see fetch_api for the per-call "
-        "results. The two sides want DIFFERENT key types and neither accepts the obvious "
-        "one: InferRequest.infer accepts an int index, a port NAME, or a ConstOutput, "
-        "and REJECTS the Output port object; InferRequest.get_tensor accepts the Output "
-        "port object or a ConstOutput and REJECTS an int index, while "
-        "get_output_tensor(0) accepts the int. So the input for infer and the output for "
-        "get_tensor cannot both be keyed the same way, and a caller that assumes they "
-        "can finds out at runtime, on a booth. The port index app.inference.decode keys "
-        "on is a key this project assigns, not one OpenVINO accepts for either call."
+        "results, which name the MODEL each port object came from. The two sides want "
+        "DIFFERENT key types and neither accepts the obvious one: InferRequest.infer "
+        "accepts an int index, a port NAME, or a ConstOutput, and REJECTS the Output "
+        "port object of the IR model (the ov.Model read from the .xml) - but it ACCEPTS "
+        "the same port object taken from the ov.CompiledModel, so this is a statement "
+        "about which model the object belongs to and not a blanket prohibition on port "
+        "objects. InferRequest.get_tensor accepts the Output port object or a ConstOutput "
+        "and REJECTS an int index, while get_output_tensor(0) accepts the int. So the "
+        "input for infer and the output for get_tensor cannot both be keyed the same way, "
+        "and a caller that assumes they can finds out at runtime, on a booth. The port "
+        "index app.inference.decode keys on is a key this project assigns, not one "
+        "OpenVINO accepts for either call."
     )
 
     # An INDEPENDENT second derivation of the layout, written out here rather than

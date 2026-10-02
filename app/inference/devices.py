@@ -293,8 +293,13 @@ class DeviceRegistry:
     def full_name(self, device_id: str) -> str:
         """The discovered `FULL_DEVICE_NAME`.
 
-        Never a hardcoded family string. This machine is Lunar Lake (Core Ultra Series
-        2); a measurement from it must not be presented as Panther Lake or Arrow Lake.
+        Never a hardcoded family string. The family name in this repo's prose - Lunar
+        Lake, Core Ultra Series 2 - is **derived from the CPU's own model string**
+        (`Intel(R) Core(TM) Ultra 9 288V`, measured by `Win32_Processor`), not asserted
+        independently of it. This method returns whatever the plugin reports and nothing
+        else: a measurement from this machine must not be presented as Panther Lake or
+        Arrow Lake, and a family name that came from a driver string cannot survive a
+        machine swap.
         """
         return str(self._core.get_property(device_id, FULL_DEVICE_NAME))
 

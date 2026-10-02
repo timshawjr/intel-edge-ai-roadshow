@@ -17,6 +17,7 @@ Whether the *real* devices pass is `tools/qualify_m0.py --requests 100`, and the
 report carries its output verbatim.
 """
 
+import time
 import unittest
 
 from tools.qualify_m0 import (
@@ -309,6 +310,248 @@ class FullNameIsNotSilentlyTruncated(unittest.TestCase):
         self.assertEqual(payload["full_name"], long_name,
                          "the JSON record must carry the untruncated name, since that is "
                          "what a reader checks the table against")
+
+
+class PlacementIsReadFromTheRequestNotAssumed(unittest.TestCase):
+    """The `EXECUTION_DEVICES` read itself is the untested part (F7).
+
+    Everything above the placement line had a test and the placement line did not.
+    `qualify_target` was only ever called in the suite with an *invalid* `num_requests`,
+    so its whole happy path - compile, warmup, timed loop - was exercised zero times. A
+    mutant that replaced
+
+        normalise_execution_devices(
+            request.get_compiled_model().get_property("EXECUTION_DEVICES"))
+
+    with the silent fallback `placement = (device_id,)` left all 449 tests green. That is
+    the worst mutant in this file: it fabricates a *clean NPU row* for a run that never
+    touched an NPU, which is exactly what AGENTS.md rule 5 exists to forbid, and it would
+    be invisible in the one table the M0 report leads with.
+
+    So two tests, from opposite directions:
+
+    - **Hermetic, no hardware.** A fake core whose `get_property` reports a *different*
+      device than the one requested. `qualify_target` must return a row that is **not**
+      placed on the requested device and that renders `[fallback]`. The fake reports
+      `'CPU'`; if the mutant is installed, the row claims to be on `'NPU'` and is
+      rendered as a clean success. This runs on a machine with no NPU at all, which is
+      the point: the guard must not need an NPU to fire.
+    - **Real, CPU, `num_requests=1`.** The happy path end to end against the pinned
+      model, asserting the placement is the device that was asked for. This is the first
+      and only test that runs `qualify_target` successfully, so it is also what stops a
+      later edit from breaking the timed loop in a way nothing notices.
+    """
+
+    def _fake_spec(self):
+        from app.inference.devices import TargetSpec
+        from tools.build_sanity_fixture import pinned_input_shape
+        return TargetSpec(device_id="NPU", model_path="fake.xml",
+                          input_shape=pinned_input_shape())
+
+    class _FakeCompiledModel:
+        """`ov.CompiledModel`'s shape: `create_infer_request` on the compiled model, and
+        `EXECUTION_DEVICES` read back from it through the request's own compiled model."""
+
+        def __init__(self, reported):
+            self._reported = reported
+            self.infer_calls = 0
+            self.request = PlacementIsReadFromTheRequestNotAssumed._FakeRequest(self)
+
+        def get_property(self, name):
+            assert name == "EXECUTION_DEVICES", f"unexpected property {name!r}"
+            return self._reported
+
+        def create_infer_request(self):
+            return self.request
+
+    class _FakeRequest:
+        def __init__(self, compiled):
+            self._compiled = compiled
+
+        def infer(self, feeds):
+            # A real, if tiny, cost. Without it the timed loop measures a few hundred
+            # nanoseconds and the fake row renders `0.00 ms` in every latency column -
+            # which is the exact number this project must never show, appearing in a test
+            # that has nothing to do with it.
+            time.sleep(0.002)
+            self._compiled.infer_calls += 1
+
+        def get_compiled_model(self):
+            return self._compiled
+
+    class _FakeCore:
+        """A core that compiles instantly and reports whatever it was built with."""
+
+        def __init__(self, reported=("CPU",)):
+            self.compiled = PlacementIsReadFromTheRequestNotAssumed._FakeCompiledModel(
+                reported)
+
+        def get_property(self, device_id, name):
+            return "Intel(R) AI Boost"
+
+        def read_model(self, path):
+            return path
+
+        def compile_model(self, model, device_id):
+            return self.compiled
+
+    def test_a_core_that_reports_another_device_gives_a_fallback_row(self):
+        from tools.qualify_m0 import qualify_target
+        import numpy as np
+        core = self._FakeCore(reported=("CPU",))
+        result = qualify_target(core, self._fake_spec(), np.zeros((8, 8, 3), np.uint8), 2)
+        self.assertFalse(result.failed, f"the happy path failed: {result.error}")
+        self.assertEqual(result.execution_devices, ("CPU",),
+                         "the placement must be what the compiled model reported, not "
+                         "what was asked for")
+        self.assertFalse(result.placed_on_requested_device)
+        table = render_table([result]).lower()
+        self.assertIn(FALLBACK_MARKER, table,
+                      "a row that ran on the wrong device must be flagged, or a NPU row "
+                      "carrying CPU numbers reads as a clean NPU result")
+        self.assertIn("asked for npu", table.lower())
+
+    def test_a_core_that_reports_the_requested_device_gives_a_clean_row(self):
+        from tools.qualify_m0 import qualify_target
+        import numpy as np
+        core = self._FakeCore(reported=("NPU",))
+        result = qualify_target(core, self._fake_spec(), np.zeros((8, 8, 3), np.uint8), 2)
+        self.assertFalse(result.failed, f"the happy path failed: {result.error}")
+        self.assertTrue(result.placed_on_requested_device)
+        self.assertNotIn(FALLBACK_MARKER, render_table([result]).lower())
+
+    def test_the_bare_string_shape_is_normalised_the_way_the_npu_reports_it(self):
+        """Measured: the NPU plugin returns the bare string `'NPU'`, not `['NPU']`.
+
+        A silent `tuple()` on that would yield `('N', 'P', 'U')` and render as a
+        three-device row. `normalise_execution_devices` exists for exactly this, so the
+        fake core reports the measured shape.
+        """
+        from tools.qualify_m0 import qualify_target
+        import numpy as np
+        core = self._FakeCore(reported="NPU")
+        result = qualify_target(core, self._fake_spec(), np.zeros((8, 8, 3), np.uint8), 2)
+        self.assertEqual(result.execution_devices, ("NPU",))
+        self.assertTrue(result.placed_on_requested_device)
+
+    def test_the_placement_read_happens_after_the_first_inference(self):
+        """AGENTS.md rule 5: the reading must follow a real inference, not precede one.
+
+        Before the warmup, `EXECUTION_DEVICES` is a claim about a placement that has not
+        happened. The fake compiled model counts the inferences, so this asserts the order
+        rather than the comment describing it.
+        """
+        from tools.qualify_m0 import qualify_target
+        import numpy as np
+        core = self._FakeCore(reported=("NPU",))
+        seen_at_read = []
+
+        class _Counting(PlacementIsReadFromTheRequestNotAssumed._FakeCompiledModel):
+            def get_property(self, name):
+                seen_at_read.append(self.infer_calls)
+                return super().get_property(name)
+
+        core.compiled = _Counting("NPU")
+        qualify_target(core, self._fake_spec(), np.zeros((8, 8, 3), np.uint8), 3)
+        self.assertTrue(seen_at_read, "EXECUTION_DEVICES was never read at all")
+        self.assertGreaterEqual(seen_at_read[0], 1,
+                                "placement was read before any inference ran")
+
+    def test_a_real_cpu_run_reports_the_device_it_was_asked_for(self):
+        """The happy path, for real, against the pinned model.
+
+        `num_requests=1` plus one warmup: this is the shortest run that is genuinely a
+        measurement, and it is the only test in the suite that executes
+        `qualify_target`'s full body - compile, warmup, timed loop, placement read, rss.
+        """
+        import openvino as ov
+        from app.inference.devices import TargetSpec
+        from tools.build_sanity_fixture import ir_path, pinned_input_shape
+        from tools.qualify_m0 import qualify_target
+
+        if "CPU" not in tuple(ov.Core().available_devices):
+            self.skipTest("no CPU plugin on this machine")
+        spec = TargetSpec(device_id="CPU", model_path=ir_path(),
+                          input_shape=pinned_input_shape())
+        result = qualify_target(ov.Core(), spec, _frame(), 1)
+        self.assertFalse(result.failed, f"a real CPU run failed: {result.error}")
+        self.assertEqual(result.execution_devices, ("CPU",))
+        self.assertTrue(result.placed_on_requested_device)
+        self.assertEqual(result.requests, 1)
+        for name in ("compile_seconds", "warmup_seconds", "latency_ms_p50",
+                     "latency_ms_p95", "latency_ms_min", "latency_ms_max",
+                     "requests_per_second", "rss_bytes"):
+            self.assertIsNotNone(getattr(result, name), f"{name} was not measured")
+
+
+class UnavailableIsNeverZeroForAnyRow(unittest.TestCase):
+    """The `unavailable` guard on the row that carries M0's headline numbers (F8).
+
+    `_fmt`'s whole job is `None -> "unavailable"`, and the brief's own test only covered
+    it on a **failed** row, where `render_table` short-circuits every numeric column to
+    `UNAVAILABLE` without calling `_fmt` at all. So the guard had no test: changing
+    `return UNAVAILABLE` to `return "0.00" + suffix` left the suite green.
+
+    The mutant is reachable and it is the single thing AGENTS.md rule 15 forbids. A
+    `TargetResult` with `error=None` and `latency_ms_p95=None` is a row that rendered
+    `PASS` and printed `0.00 ms` in the p95 column of the table the M0 report leads
+    with. `TargetResult` now refuses to be built in that state (see the constructor), and
+    the render guard is pinned independently below so that either half failing is
+    visible.
+    """
+
+    def _success_with_a_hole(self, **overrides):
+        kwargs = dict(device_id="NPU", full_name="Intel(R) AI Boost", compile_seconds=1.69,
+                      warmup_seconds=0.01, requests=100, latency_ms_p50=5.27,
+                      latency_ms_p95=8.54, latency_ms_min=4.09, latency_ms_max=17.51,
+                      requests_per_second=168.83, execution_devices=("NPU",),
+                      rss_bytes=503975936, error=None)
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_a_non_failed_row_with_a_missing_p95_cannot_be_constructed(self):
+        with self.assertRaises(ValueError) as caught:
+            TargetResult(**self._success_with_a_hole(latency_ms_p95=None))
+        self.assertIn("latency_ms_p95", str(caught.exception))
+
+    def test_a_non_failed_row_with_no_measurements_at_all_cannot_be_constructed(self):
+        with self.assertRaises(ValueError):
+            TargetResult(device_id="NPU", full_name="Intel(R) AI Boost",
+                         compile_seconds=None, warmup_seconds=None, requests=100,
+                         latency_ms_p50=None, latency_ms_p95=None, latency_ms_min=None,
+                         latency_ms_max=None, requests_per_second=None,
+                         execution_devices=("NPU",), rss_bytes=None, error=None)
+
+    def test_a_non_failed_row_with_zero_requests_cannot_be_constructed(self):
+        """Minor 17: `requests == 0` on a success is a row that measured nothing."""
+        with self.assertRaises(ValueError) as caught:
+            TargetResult(**self._success_with_a_hole(requests=0))
+        self.assertIn("requests", str(caught.exception))
+
+    def test_the_formatter_itself_never_returns_zero_for_a_missing_value(self):
+        """`_fmt` in isolation, which is what the mutant changed.
+
+        `render_table` cannot cover this on its own: it only reaches `_fmt` on a
+        non-failed row, and those can no longer carry a `None` - so if the guard ever
+        moves again, only this assertion sees it.
+        """
+        from tools.qualify_m0 import _fmt, _fmt_bytes
+        self.assertEqual(_fmt(None, " ms"), UNAVAILABLE)
+        self.assertEqual(_fmt_bytes(None), UNAVAILABLE)
+        self.assertNotIn("0.00", _fmt(None, " ms"))
+
+    def test_a_row_that_cannot_carry_a_hole_still_renders_unavailable_if_one_arrives(self):
+        """The renderer guard, reached through a record the constructor no longer allows.
+
+        The renderer is the last line of defence and is deliberately not dependent on the
+        constructor: a hand-built object with `object.__setattr__` (or a future field) can
+        still carry a `None`, and `unavailable` is what must appear.
+        """
+        row = TargetResult(**self._success_with_a_hole())
+        object.__setattr__(row, "latency_ms_p95", None)
+        table = render_table([row])
+        self.assertIn(UNAVAILABLE, table)
+        self.assertNotIn("0.00 ms", table)
 
 
 def _frame():

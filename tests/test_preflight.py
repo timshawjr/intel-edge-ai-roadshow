@@ -416,5 +416,91 @@ class RecordedNumbersAreLabelledAsRecorded(unittest.TestCase):
         self.assertGreater(len(out.splitlines()), 5)
 
 
+class TheProvenanceRowActuallyVerifiesTheHash(unittest.TestCase):
+    """A file's verdict about itself is not a verification of it (F3).
+
+    `_recorded_provenance_problem` originally read the recorded run's own boolean
+    `model_ir_sha256_matches_config_models_json` and never opened the `model_ir_sha256`
+    that sits beside it in the same JSON. `model_ir_sha256` **is present in the file**, so
+    the comparison was available and simply not made. The consequence is the specific
+    failure this gate exists to prevent: a stale, hand-edited or foreign `m0.json` passes
+    provenance as long as somebody keeps that one flag `true`, and the row above then
+    tells a presenter "The IR hash and the OpenVINO build in that file were checked
+    against config/models.json" - which was half true. The OpenVINO half *was* checked;
+    the IR-hash half was not.
+
+    These tests write real JSON to a temp file and call the real check, so they fail
+    against the old implementation rather than merely describing the new one.
+    """
+
+    def _report(self, **overrides):
+        import json
+        import tempfile
+        from pathlib import Path
+        import openvino as ov
+        from tools.build_sanity_fixture import pinned_input_shape, pinned_model_entry
+
+        entry = pinned_model_entry()
+        payload = {
+            "generated_by": "tools/qualify_m0.py",
+            "openvino_runtime": str(ov.__version__),
+            "model_id": entry["id"],
+            "model_ir_sha256": entry["sha256"],
+            # The flag the old implementation trusted, kept true in every case below.
+            "model_ir_sha256_matches_config_models_json": True,
+            "input_shape": list(pinned_input_shape()),
+            "rows": [],
+        }
+        payload.update(overrides)
+        path = Path(tempfile.mkdtemp()) / "m0.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _problem(self, path):
+        from tools.preflight import _recorded_provenance_problem
+        return _recorded_provenance_problem(path)
+
+    def test_a_matching_hash_and_shape_has_no_provenance_problem(self):
+        self.assertIsNone(self._problem(self._report()))
+
+    def test_a_wrong_ir_hash_is_caught_even_when_the_recorded_flag_says_it_matches(self):
+        problem = self._problem(self._report(model_ir_sha256="0" * 64))
+        self.assertIsNotNone(problem, "a stale IR hash passed provenance on the flag alone")
+        self.assertIn("IR hash", problem)
+
+    def test_a_missing_ir_hash_is_caught_rather_than_trusted(self):
+        path = self._report()
+        import json
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["model_ir_sha256"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertIsNotNone(self._problem(path))
+
+    def test_a_mismatched_input_shape_is_caught(self):
+        problem = self._problem(self._report(input_shape=[1, 3, 320, 320]))
+        self.assertIsNotNone(problem)
+        self.assertIn("input_shape", problem)
+
+    def test_a_missing_input_shape_is_caught(self):
+        path = self._report()
+        import json
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["input_shape"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertIsNotNone(self._problem(path))
+
+    def test_the_self_reported_flag_is_never_the_thing_checked(self):
+        """A record that lies *optimistically* about itself is the dangerous one.
+
+        With the flag flipped false and the real hash matching, the row must still pass -
+        otherwise the gate is reading a claim rather than the bytes, in the other
+        direction. With the flag flipped true and the hash wrong, it must still fail. Both
+        halves together say the flag is not consulted.
+        """
+        path = self._report(model_ir_sha256_matches_config_models_json=False)
+        self.assertIsNone(self._problem(path),
+                          "the row trusted the record's own false verdict")
+
+
 if __name__ == "__main__":
     unittest.main()

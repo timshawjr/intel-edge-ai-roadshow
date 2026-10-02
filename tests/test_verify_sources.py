@@ -246,3 +246,35 @@ class RecordedContentGateAgreesWithThePack(unittest.TestCase):
             config["content_gate"]["status"], pack["content_gate"]["status"]
         )
         self.assertIn("unmet", config["content_gate"]["status"])
+
+    def test_the_roi_note_does_not_claim_the_fixture_is_still_a_forward_reference(self):
+        """A note that outran the work it described, in an asset manifest.
+
+        `roi_note` said the annotation "does NOT exist yet; it is created in Task 6" and
+        called itself "a forward reference to planned work, not a record of an existing
+        artifact". The file existed, it was committed, and it is what
+        `tools/build_sanity_fixture.py` evaluates against. A stale forward reference in a
+        *rights/asset* manifest is worse than in a comment, because a manifest is a record
+        somebody downstream reads as fact.
+
+        So the assertion is not "the note says the right thing" - it is that the note and
+        the tree agree. If the fixture is ever removed, this fails and the note has to be
+        rewritten with it, which is the correct moment to have this conversation.
+        """
+        fixture = REPO_ROOT / "tests" / "fixtures" / "retail_sanity" / "retail_sanity.json"
+        pack = json.loads(PACK_MANIFEST.read_text(encoding="utf-8"))
+        note = pack["roi_note"]
+        self.assertTrue(fixture.exists(),
+                        "the annotated frame this manifest points at is gone; fix the "
+                        "manifest and the fixture together, not just the test")
+        self.assertIn("retail_sanity.json", note)
+        self.assertNotIn("does NOT exist", note)
+        self.assertNotIn("does not exist", note)
+        self.assertNotIn("created in Task", note,
+                         "a forward reference to planned work has no business in a "
+                         "committed manifest once the work is done")
+        # And the frame it was drawn on, since a JSON naming a missing JPEG is a fixture
+        # that cannot be checked by anybody.
+        image = fixture.parent / json.loads(fixture.read_text(encoding="utf-8"))["image"]
+        self.assertTrue(image.exists(), f"{image} is named by the fixture and is absent")
+        self.assertIn(str(fixture.relative_to(REPO_ROOT)).replace("\\", "/"), note)
