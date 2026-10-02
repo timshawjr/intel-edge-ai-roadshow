@@ -693,14 +693,29 @@ class DescribeOutputsAgainstThePinnedIR(unittest.TestCase):
         # M-5: the note used to describe only get_tensor. Task 7 needs the INPUT side
         # too, and the two sides accept different key types - infer REJECTS the port
         # object it is handed while get_tensor REJECTS the int.
+        #
+        # Every key names the MODEL its port came from (`ir_` vs `compiled_`), because the
+        # distinction is load-bearing: `infer` accepts an int index AND the *compiled*
+        # model's port object, and rejects only the *IR* model's. A record that does not
+        # say which model each result came from reads as a blanket ban on port objects,
+        # which is wrong - and that misreading has already misled two people.
         fetch = self.recorded["fetch_api"]
-        self.assertEqual(fetch["infer_input_output_port_object"], "rejected: TypeError")
+        self.assertEqual(fetch["infer_input_ir_output_port_object"], "rejected: TypeError")
+        self.assertTrue(fetch["infer_input_compiled_port_object"].startswith("accepted"))
         self.assertTrue(fetch["infer_input_int_index"].startswith("accepted"))
         self.assertTrue(fetch["infer_input_port_name"].startswith("accepted"))
-        self.assertTrue(fetch["infer_input_const_output"].startswith("accepted"))
         self.assertEqual(fetch["get_tensor_output_int_index"], "rejected: TypeError")
-        self.assertTrue(fetch["get_tensor_output_output_port_object"].startswith("accepted"))
+        self.assertTrue(
+            fetch["get_tensor_output_ir_output_port_object"].startswith("accepted"))
+        self.assertTrue(
+            fetch["get_tensor_output_compiled_port_object"].startswith("accepted"))
         self.assertTrue(fetch["get_output_tensor_int_index"].startswith("accepted"))
+        # No unlabelled port-object key may reappear: it is the ambiguity itself.
+        for key in fetch:
+            self.assertNotIn(
+                "_output_port_object", key.replace("_ir_output_port_object", "")
+                                       .replace("_compiled_port_object", ""),
+                f"{key!r} does not say which model its port came from")
         self.assertIn("different key types", self.recorded["fetch_note"].lower())
         self.assertIn("infer", self.recorded["fetch_note"])
 
