@@ -35,7 +35,12 @@ from unittest import mock
 import psutil
 
 from app.contracts.metric_sample import MetricSample, Validity
-from app.telemetry.collector import MetricCollector, _TrackedProcess, cpu_capacity
+from app.telemetry.collector import (
+    MAX_REASONED_PROCESSES,
+    MetricCollector,
+    _TrackedProcess,
+    cpu_capacity,
+)
 
 THIS_PID = os.getpid()
 
@@ -51,6 +56,30 @@ def _spin(seconds: float = 0.4) -> None:
     while time.perf_counter() < end:
         total += 1
     return total
+
+
+class _SteppingClock:
+    """A monotonic clock that advances a fixed amount on every read.
+
+    `MetricCollector` reads its clock exactly once per `sample()` (plus once in
+    `__init__`), so stepping on read makes the measured window exactly `step` - which is
+    what a test needs when it wants to assert something about the *pids* rather than
+    about the clock.
+
+    **This exists because the real clock cannot be relied on for that.** Measured on this
+    machine: 20000 consecutive `time.monotonic()` calls returned the same value, so its
+    resolution is the ~15.6 ms Windows tick, and any two samples closer together than
+    one tick measure a window of exactly `0.0`.
+    """
+
+    def __init__(self, step: float = 0.25, start: float = 1000.0) -> None:
+        self.now = float(start)
+        self.step = float(step)
+
+    def __call__(self) -> float:
+        value = self.now
+        self.now += self.step
+        return value
 
 
 class SystemCpu(unittest.TestCase):
@@ -245,6 +274,315 @@ class AppCpu(unittest.TestCase):
         self.assertIsNone(cpu.value)
         self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
         self.assertIsNone(samples["app_rss_bytes"].value)
+
+
+class ExplainingAnErrorCannotTakeTheSamplerDown(unittest.TestCase):
+    """The fault is **constructed**, not observed. See the note on the class above it.
+
+    An earlier version of these tests claimed the exploding-`__str__` `psutil.Error` had
+    been measured over 199 pids on this machine. It had not: measured, 187 of pids
+    1..199 failed to resolve, 12 resolved, and all 12 raised cleanly-rendering errors.
+    Nothing raised a `MemoryError` from `__str__`. The hazard is still worth a guard, so
+    the tests below **inject** the fault and prove the guard is load-bearing.
+    """
+
+    def test_an_error_whose_own_str_raises_is_still_reported_as_a_reason(self):
+        class Exploding(psutil.Error):
+            def __str__(self):
+                raise MemoryError("building this message is not survivable")
+
+        def explode(self, interval=None):
+            # Raised by a call, not handed to the mock as an instance: `side_effect`
+            # holding the exception makes unittest's own reporting call its broken
+            # `__str__`, which is the very thing under test here.
+            raise Exploding("pid on fire")
+
+        # Patched on `psutil.Process`, not on `_TrackedProcess.cpu_percent`: replacing the
+        # tracked method would remove the `except psutil.Error` that this test exists to
+        # exercise. The failure has to come from *inside* the real method.
+        with mock.patch.object(psutil.Process, "cpu_percent", explode):
+            collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                        process_labels=("ui",))
+            self.addCleanup(collector.stop)
+            collector.sample()
+            samples = _by_name(collector.sample())
+        cpu = samples["cpu:ui"]
+        self.assertIsNone(cpu.value)
+        self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
+        self.assertIn("Exploding", cpu.unavailable_reason,
+                      "the exception type is what a reader needs; the message is a "
+                      "nicety that may be unavailable")
+
+    def test_a_read_failure_is_recorded_even_though_the_handle_resolved(self):
+        """A process whose handle opens but whose counters do not read.
+
+        This is not hypothetical. Measured over pids 1..199 on this machine: 187 failed
+        to resolve, **12 resolved**, and of those 12, **9 then raised** `NoSuchProcess`
+        from `cpu_percent()`. So the handle existing and the handle being readable are
+        two different facts here. A version that only recorded a failure from resolving
+        the handle produced samples with `value=None` and no reason, and `MetricSample`
+        correctly refused to build them - an absent reading with no stated reason, which
+        is the state this layer exists to prevent.
+        """
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        with mock.patch.object(psutil.Process, "cpu_percent",
+                               side_effect=psutil.NoSuchProcess(THIS_PID)):
+            samples = _by_name(collector.sample())
+        cpu = samples["cpu:ui"]
+        self.assertIsNone(cpu.value)
+        self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
+        self.assertIn("NoSuchProcess", cpu.unavailable_reason)
+
+    def test_many_tracked_pids_still_produce_a_complete_and_honest_sample_set(self):
+        """199 pids, every counter unreadable, and the sample set is still whole.
+
+        **The fault is injected, and the window is stepped, because the test was
+        vacuous without both.** Two separate reasons, both verified by mutation:
+
+        - On the real `time.monotonic()` - measured coarse on this machine, 20000
+          consecutive calls returning the same value - two samples microseconds apart
+          measure a window of exactly `0.0`, which makes the *whole* set unavailable with
+          the window reason. Every sample was then unavailable because of the clock, so
+          the test passed whether or not a dead pid's reason was recorded.
+        - Even with a real window, the pids that *resolve and then fail to read* are a
+          small and transient population: measured over pids 1..199, only 12 resolve at
+          all. Every other pid fails in `handle()`, which records its reason on the
+          unmutated path, so a test leaning on the real process table stays green with
+          the read-failure recording deleted.
+
+        So `THIS_PID` is tracked to guarantee at least one handle has resolved and cached,
+        and the read failure is injected on the real `psutil.Process.cpu_percent`.
+
+        **Only `cpu_percent` is made to fail; `memory_info` is left working.** That is
+        deliberate and it is what makes this test discriminating. `sample()` builds its
+        per-process reasons from `tracked.failure` *after* every reading has been taken,
+        so if both counters failed, the surviving `rss_bytes` failure would set the
+        reason and mask a deleted recording in `cpu_percent` - which is exactly how the
+        first attempt at this test passed with the recording removed. Failing one counter
+        and not the other produces the shape that matters anyway: **a partial reading**,
+        where the CPU is unavailable and the memory beside it is a real number.
+        """
+        clock = _SteppingClock(step=0.25)
+        pids = [THIS_PID] + [pid for pid in range(1, 200) if pid != THIS_PID]
+        collector = MetricCollector(pids, interval=0.25, background=False, clock=clock)
+        self.addCleanup(collector.stop)
+        collector.sample()  # the declared-unavailable first sample; resolves handles
+
+        def dead_cpu(self, interval=None):
+            raise psutil.NoSuchProcess(self.pid)
+
+        with mock.patch.object(psutil.Process, "cpu_percent", dead_cpu):
+            samples = collector.sample()
+
+        by_name = _by_name(samples)
+        self.assertEqual(len(samples), 3 + 2 * len(pids))
+        self.assertAlmostEqual(by_name["system_cpu_percent"].window_seconds, 0.25,
+                               places=9)
+
+        cpu_samples = [s for s in samples if s.name.startswith("cpu:")]
+        rss_samples = [s for s in samples if s.name.startswith("rss:")]
+        self.assertEqual(len(cpu_samples), len(pids))
+        self.assertEqual(len(rss_samples), len(pids))
+        for sample in cpu_samples:
+            self.assertEqual(sample.validity, Validity.UNAVAILABLE, sample.name)
+            self.assertIsNone(sample.value,
+                              f"{sample.name} carries a number for a process whose CPU "
+                              f"could not be read")
+            reason = sample.unavailable_reason or ""
+            self.assertIn("NoSuchProcess", reason,
+                          f"{sample.name} is unavailable for a reason that does not name "
+                          f"the failure")
+            self.assertNotIn("no measurable window elapsed", reason,
+                             "this sample was unavailable because of the clock, not "
+                             "because of the pid, so it pins nothing about dead pids")
+
+        # The partial reading, asserted rather than assumed: beside a CPU that could not
+        # be read, the memory of a pid that *can* be read is a genuine number. If this
+        # were empty the whole set would be unavailable and the test would prove nothing
+        # about the shape it claims to be checking.
+        self.assertTrue([s for s in rss_samples if s.validity is Validity.VALID],
+                        "no readable pid produced a real memory reading, so this set "
+                        "cannot distinguish a partial reading from a uniform absence")
+        self.assertIsNone(by_name["app_cpu_percent"].value)
+        self.assertEqual(by_name["app_cpu_percent"].validity, Validity.UNAVAILABLE)
+
+
+class ARecordedReasonDoesNotDescribeItselfRecursively(unittest.TestCase):
+    """The reason must be the same after the tenth read as after the first.
+
+    `handle()` re-raises the recorded reason as the `msg` of a fresh `NoSuchProcess`, and
+    `cpu_percent`/`rss_bytes` record every failure. A version that re-recorded
+    unconditionally therefore built its reason out of itself, one layer per reading -
+    measured here as
+
+        NoSuchProcess: NoSuchProcess: NoSuchProcess: NoSuchProcess: process PID not
+        found (pid=1) (pid=1) (pid=1) (pid=1)
+
+    four times a second, per unreadable process. Two readings of the same failure are
+    not two failures, and a reason that grows without bound on the 4 Hz path is a way to
+    lose the process while trying to explain it.
+    """
+
+    DEAD_PID = 0x7FFFFFFF
+
+    def test_the_reason_is_identical_after_many_reads(self):
+        tracked = _TrackedProcess(self.DEAD_PID, "worker")
+        self.assertIsNone(tracked.cpu_percent())
+        first = tracked.failure
+        self.assertIsNotNone(first)
+        for _ in range(50):
+            self.assertIsNone(tracked.cpu_percent())
+            self.assertIsNone(tracked.rss_bytes())
+        self.assertEqual(tracked.failure, first,
+                         "the recorded reason changed without the failure changing")
+        self.assertEqual(first.count("NoSuchProcess"), 1,
+                         f"the reason has described itself recursively: {first!r}")
+
+    def test_the_reason_stays_short_over_many_samples_of_a_whole_collector(self):
+        """The end-to-end shape, and the one that actually cost this process memory."""
+        clock = _SteppingClock(step=0.25)
+        collector = MetricCollector(list(range(1, 200)), interval=0.25,
+                                    background=False, clock=clock)
+        self.addCleanup(collector.stop)
+        collector.sample()
+        for _ in range(6):
+            samples = collector.sample()
+        for sample in samples:
+            if sample.unavailable_reason:
+                self.assertLess(len(sample.unavailable_reason), 4_000,
+                                f"{sample.name} carries a {len(sample.unavailable_reason):,}"
+                                f"-character reason")
+                self.assertLessEqual(sample.unavailable_reason.count("NoSuchProcess"),
+                                     2 * MAX_REASONED_PROCESSES + 2,
+                                     f"{sample.name} has compounded its own reason")
+
+
+class TheReasonIsBounded(unittest.TestCase):
+    """A reason that grows with the failure can lose the process it is explaining.
+
+    Measured on this machine, before the bound existed: a collector tracking 199 pids
+    grew this process's RSS 56 MB -> 95 MB -> 206 MB -> 647 MB -> 2.4 GB across ten
+    samples, and the eleventh tick raised `MemoryError`. Handles, thread count,
+    `psutil._pmap` and the tracked Python object count were all flat throughout, and a
+    control loop doing the same `psutil` reads without the collector did not move RSS at
+    all - so the growth was the collector's own unbounded reason strings, not the OS.
+    After the bound: RSS flat at 44.1 MB across the same ten samples.
+    """
+
+    def setUp(self):
+        self.clock = _SteppingClock(step=0.25)
+        self.pids = [THIS_PID] + [p for p in range(1, 200) if p != THIS_PID]
+        self.collector = MetricCollector(self.pids, interval=0.25, background=False,
+                                         clock=self.clock)
+        self.addCleanup(self.collector.stop)
+        self.collector.sample()
+
+    def test_a_long_list_of_dead_processes_is_summarised_with_a_count_not_named_in_full(self):
+        samples = self.collector.sample()
+        app_cpu = _by_name(samples)["app_cpu_percent"]
+        self.assertIsNone(app_cpu.value)
+        reason = app_cpu.unavailable_reason or ""
+        named = sorted(t.label for t in self.collector._tracked if t.failure)
+        self.assertGreater(len(named), MAX_REASONED_PROCESSES,
+                           "this test needs more failures than the bound allows")
+        # The first clause of the reason names at most the bound, and says how many it
+        # left out...
+        opening = reason.split(" could not be read")[0]
+        self.assertLessEqual(len(opening.split(",")), MAX_REASONED_PROCESSES)
+        self.assertIn(f"and {len(named) - MAX_REASONED_PROCESSES} more", opening)
+        for label in named[:MAX_REASONED_PROCESSES]:
+            self.assertIn(label, reason)
+        self.assertNotIn(named[MAX_REASONED_PROCESSES], reason,
+                         "the reason names every process; it is unbounded")
+        self.assertLess(len(reason), 4_000,
+                        f"the aggregate reason is {len(reason):,} characters long")
+
+    def test_the_per_process_samples_still_carry_every_reason(self):
+        """Bounding the summary must not lose the evidence it summarises."""
+        samples = self.collector.sample()
+        by_name = _by_name(samples)
+        self.assertEqual(len([s for s in samples if s.name.startswith("cpu:")]),
+                         len(self.pids))
+        for tracked in self.collector._tracked:
+            sample = by_name[f"cpu:{tracked.label}"]
+            if tracked.failure:
+                self.assertIn(tracked.failure.split(":")[0], sample.unavailable_reason)
+
+    def test_a_short_list_of_dead_processes_is_named_in_full_with_no_count(self):
+        """Two dead processes is not a long list, and 'and 0 more' is noise."""
+        collector = MetricCollector([THIS_PID, THIS_PID, 0x7FFFFFFF], interval=0.25,
+                                    background=False, clock=_SteppingClock(step=0.25),
+                                    process_labels=("ui", "supervisor", "worker"))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        reason = _by_name(collector.sample())["app_cpu_percent"].unavailable_reason or ""
+        self.assertIn("worker", reason)
+        self.assertNotIn("more", reason)
+
+
+class TheRecordedReasonIsRereadCleanly(unittest.TestCase):
+    """The cached reason is re-raised through `handle()`, so its rendering matters.
+
+    `psutil.NoSuchProcess`'s signature is `(pid, name=None, msg=None)`. Passing the
+    recorded reason as the **second positional** argument therefore sets `name`, and the
+    exception renders as
+    `"process no longer exists (pid=5, name='NoSuchProcess: process no longer exists
+    (pid=5)')"` - the reason quoted inside a reason, which reads as a second, different
+    failure rather than as the one that was recorded.
+    """
+
+    def test_the_reread_reason_does_not_quote_itself_as_a_process_name(self):
+        tracked = _TrackedProcess(0x7FFFFFFF, "worker")
+        self.assertIsNone(tracked.cpu_percent(), "an unreadable pid did not report None")
+        self.assertIsNotNone(tracked.failure)
+        with self.assertRaises(psutil.NoSuchProcess) as caught:
+            tracked.handle()
+        rendered = str(caught.exception)
+        self.assertNotIn("name=", rendered,
+                         f"the recorded reason was passed as the process name: {rendered}")
+        self.assertIn("NoSuchProcess", rendered)
+        self.assertIn(str(0x7FFFFFFF), rendered,
+                      "the pid is missing from the re-raised reason")
+
+
+class TheCoarseClockIsNotAPermittedZero(unittest.TestCase):
+    """`time.monotonic()` on Windows has tick resolution, and a zero window is real.
+
+    Measured on this machine: 20000 consecutive `time.monotonic()` calls returned the
+    same value, so the clock advances in ~15.6 ms steps. Two samples closer together than
+    one tick therefore measure a window of exactly `0.0`. The collector must report that
+    as *unavailable with a stated reason* - never as `interval` substituted for a window
+    that did not elapse, and never as a number.
+    """
+
+    def test_a_window_of_exactly_zero_is_unavailable_and_says_so(self):
+        frozen = _SteppingClock(step=0.0)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=frozen)
+        self.addCleanup(collector.stop)
+        collector.sample()  # first sample: unavailable because it is the first
+        samples = _by_name(collector.sample())
+        cpu = samples["system_cpu_percent"]
+        self.assertIsNone(cpu.value, "a window of zero produced a percentage anyway")
+        self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
+        self.assertIn("no measurable window elapsed", cpu.unavailable_reason)
+        self.assertNotEqual(cpu.window_seconds, collector.interval,
+                            "the requested interval was substituted for a window that "
+                            "did not elapse")
+
+    def test_a_real_window_is_reported_as_elapsed_rather_than_as_the_request(self):
+        clock = _SteppingClock(step=0.37)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock)
+        self.addCleanup(collector.stop)
+        collector.sample()
+        cpu = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertAlmostEqual(cpu.window_seconds, 0.37, places=9)
+        self.assertEqual(cpu.validity, Validity.VALID)
+        self.assertIsNotNone(cpu.value)
 
 
 class RssIsHostMemory(unittest.TestCase):

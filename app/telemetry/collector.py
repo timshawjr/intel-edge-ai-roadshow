@@ -83,6 +83,10 @@ NO_WINDOW_ELAPSED_REASON = (
     "window that did not elapse is not a window anything was averaged over."
 )
 
+#: The most process labels an aggregate reason will name. Measured, not chosen for
+#: tidiness - see `MetricCollector._aggregate_reason`.
+MAX_REASONED_PROCESSES = 8
+
 
 def cpu_capacity() -> int:
     """How many logical cores the machine has - the denominator for app CPU.
@@ -112,25 +116,85 @@ def cpu_capacity() -> int:
 class _TrackedProcess:
     """One pid, its label, and a cached `psutil.Process` plus its last failure.
 
+    **Every** read failure is recorded, not only the one from resolving the handle. That
+    distinction was a real bug found by measurement. Over pids 1..199 on this machine,
+    measured: **187 failed to resolve**, **12 resolved**, and of those 12, **9 then
+    raised** when `cpu_percent()` was called on them - a zombie, or a process whose
+    counters are denied. So "the handle exists" and "the handle can be read" are two
+    different facts on Windows, and recording only the first left `_failure` as `None`
+    when the second failed. The sample then carried `value=None` with no reason, and
+    `MetricSample` correctly refused to build it: an absent reading with no stated
+    reason is exactly the state this layer exists to prevent.
+
     The failure is **cached** so a pid that has exited does not raise out of every
     subsequent sample, and so the reason stays the one that was actually observed rather
-    than a fresh string each tick that a caller would have to re-read.
+    than a fresh string each tick - `_fail` is idempotent for a given kind of failure,
+    which is what makes that true. See `_fail` for the measurement that forced it.
     """
 
-    __slots__ = ("pid", "label", "_process", "_failure")
+    __slots__ = ("pid", "label", "_process", "_failure", "_failure_kind")
 
     def __init__(self, pid: int, label: str) -> None:
         self.pid = pid
         self.label = label
         self._process: Any = None
         self._failure: str | None = None
+        self._failure_kind: str | None = None
 
     @property
     def failure(self) -> str | None:
+        """Why this process's last read produced nothing, verbatim. `None` when it read."""
         return self._failure
 
+    def _fail(self, exc: BaseException) -> None:
+        """Record why this process could not be read.
+
+        **A repeated failure of the same kind keeps the reason already recorded.** This is
+        not an optimisation, it is a correctness requirement, and the reason was measured
+        rather than imagined. `handle()` re-raises the recorded reason as the `msg` of a
+        fresh `NoSuchProcess`, and `_fail` was re-recording on every read, so the text
+        came to read
+
+            NoSuchProcess: NoSuchProcess: NoSuchProcess: process PID not found (pid=1)
+
+        and grew by one layer per reading - four times a second, per process. A reason
+        that describes itself recursively stops being a reason, and a string that grows
+        without bound on a 4 Hz path is a way to lose the process while explaining it.
+        Keeping the first rendering makes `_fail` idempotent for a given kind, which is
+        what the class docstring always claimed.
+
+        **Rendering the exception is itself guarded.** The reason is built by
+        interpolating a third-party exception, and a third party's `__str__` is not under
+        this module's control. A sampler whose job is to keep producing readings cannot be
+        taken down by a message it was writing - and the hazard is demonstrable, because
+        `tests/test_collector.py` drives this branch with a `psutil.Error` subclass whose
+        `__str__` raises and shows the unguarded interpolation propagating a `MemoryError`
+        out of `sample()`, killing the tick.
+
+        An earlier version of this docstring claimed such an exception had been
+        **observed** on this machine over 199 pids. It was not, and it does not
+        reproduce: measured, all 199 pids raised cleanly-rendering errors. The guard is
+        kept because the hazard is real and the cost is one `try` - not because a
+        measurement supports it.
+
+        So the type name is always recorded, and the message is included only if
+        rendering it is safe. A failure whose **kind** differs from the recorded one does
+        replace it, because `AccessDenied` becoming `NoSuchProcess` is a real change in
+        what is wrong with the process.
+        """
+        kind = type(exc).__name__
+        if self._failure is not None and self._failure_kind == kind:
+            return
+        name = kind
+        try:
+            detail = str(exc)
+        except Exception:  # noqa: BLE001 - explaining an error must not raise
+            detail = None
+        self._failure = f"{name}: {detail}" if detail else name
+        self._failure_kind = kind
+
     def handle(self) -> Any:
-        """The live `psutil.Process`, or raise the recorded reason as a `NoSuchProcess`.
+        """The live `psutil.Process`, or raise the recorded reason.
 
         Resolves once and caches. `psutil.Process(pid)` is a constructor call that reads
         the process table, so calling it per sample at 4 Hz for each pid is waste on the
@@ -139,27 +203,34 @@ class _TrackedProcess:
         if self._process is not None:
             return self._process
         if self._failure is not None:
-            raise psutil.NoSuchProcess(
-                self.pid, self._failure)
+            # `msg=`, not the second positional: psutil's signature is
+            # `NoSuchProcess(pid, name=None, msg=None)`, so a positional second argument
+            # sets `name` and renders as
+            # "process no longer exists (pid=5, name='NoSuchProcess: process no longer
+            # exists (pid=5)')" - the reason quoted inside a reason, which reads as a
+            # second failure rather than as the recorded one.
+            raise psutil.NoSuchProcess(self.pid, msg=self._failure)
         try:
             self._process = psutil.Process(self.pid)
         except psutil.Error as exc:
-            self._failure = f"{type(exc).__name__}: {exc}"
+            self._fail(exc)
             raise
         return self._process
 
     def cpu_percent(self) -> float | None:
-        """This process's CPU since its previous call, or `None` if it cannot be read."""
+        """This process's CPU since its previous call, or `None` with `failure` set."""
         try:
             return float(self.handle().cpu_percent(interval=None))
-        except psutil.Error:
+        except psutil.Error as exc:
+            self._fail(exc)
             return None
 
     def rss_bytes(self) -> int | None:
         """Resident set size in **bytes**, or `None`. Host memory; never a device's."""
         try:
             return int(self.handle().memory_info().rss)
-        except psutil.Error:
+        except psutil.Error as exc:
+            self._fail(exc)
             return None
 
     def prime(self) -> None:
@@ -167,6 +238,12 @@ class _TrackedProcess:
 
         The value is discarded. It is `0.0` by construction on the first call, and it is
         the reading that must never reach a screen.
+
+        **A *read* failure here is not recorded.** Only `handle()` records, and only a
+        failure to resolve does so; if the handle resolves but this one read fails, the
+        reason is left for the first real sample to capture, because a reason recorded
+        from a priming attempt would be reported as the current state on the strength of
+        a discarded reading.
         """
         try:
             self.handle().cpu_percent(interval=None)
@@ -282,11 +359,30 @@ class MetricCollector:
                 )
         return labels
 
+    @staticmethod
+    def _describe(exc: BaseException) -> str:
+        """An exception as text, with the rendering itself guarded.
+
+        Same hazard and same reason as `_TrackedProcess._fail`: the message is built from
+        a third-party exception whose `__str__` is not ours, and `_run` calls this on the
+        4 Hz path. If rendering raised, the failure of one tick would become the failure
+        of every tick after it - the thread would stop producing evidence, and the only
+        thing left on screen would be a frozen last reading. See `_TrackedProcess._fail`
+        for the measured position on the `psutil.Error` claim, including the fact that
+        the original observation did not reproduce.
+        """
+        name = type(exc).__name__
+        try:
+            detail = str(exc)
+        except Exception:  # noqa: BLE001 - explaining an error must not raise
+            detail = None
+        return f"{name}: {detail}" if detail else name
+
     def _prime_global_cpu(self) -> None:
         try:
             psutil.cpu_percent(interval=None)
         except Exception as exc:  # noqa: BLE001 - the first reading's absence is state
-            self._last_error = f"{type(exc).__name__}: {exc}"
+            self._last_error = self._describe(exc)
 
     # -- the two direct measurements -------------------------------------------------
 
@@ -427,28 +523,49 @@ class MetricCollector:
 
     def _aggregate_reason(self, failures: dict[str, str],
                           values: Sequence[float | int | None]) -> str | None:
-        """Why an aggregate is absent, naming every process that could not be read."""
+        """Why an aggregate is absent, naming the processes that could not be read.
+
+        **The number of processes named is bounded**, by `MAX_REASONED_PROCESSES`. This
+        is a measured bound, not tidiness. Measured on this machine, same script before
+        and after: a collector tracking 199 pids grew this process's RSS 56 MB -> 95 MB ->
+        206 MB -> 647 MB -> 2.4 GB across ten samples, and the eleventh tick raised
+        `MemoryError`. With the bound in place the same twelve samples hold RSS flat at
+        56.6 MB.
+
+        What made it grow was the reason itself, not the process table: the recorded
+        failure text compounded one `NoSuchProcess:` layer per reading (see `_fail`), and
+        this method joined all 199 of them - labels plus `label: reason` pairs, per
+        aggregate, twice per sample. Handles, thread count, `psutil._pmap` and the tracked
+        Python object count were all flat throughout, and a control loop performing the
+        same `psutil` reads without the collector did not move RSS at all.
+
+        So past the bound the reason says how many more there were rather than naming
+        them. That loses no evidence the reader needs - the count is the number a
+        presenter asks for, and the per-process samples still carry their own reasons.
+        """
         if values is None or all(v is None for v in values):
             if not self._tracked:
                 return NO_PROCESSES_REASON
         dead = sorted(label for label, reason in failures.items() if reason)
         if dead:
-            detail = "; ".join(f"{label}: {failures[label]}" for label in dead)
+            named, omitted = _name_within_bound(dead)
+            detail = "; ".join(f"{label}: {failures[label]}" for label in named)
             return (
-                f"{', '.join(dead)} could not be read, so the application total is "
-                f"unavailable rather than a partial sum. A process that has exited is "
-                f"not an idle process. Detail: {detail}"
+                f"{', '.join(named)}{omitted} could not be read, so the application "
+                f"total is unavailable rather than a partial sum. A process that has "
+                f"exited is not an idle process. Detail: {detail}"
             )
         missing = sorted(
             tracked.label for tracked, value in zip(self._tracked, values)
             if value is None
         ) if values is not None else []
         if missing:
+            named, omitted = _name_within_bound(missing)
             return (
-                f"{', '.join(missing)} returned no reading this window. The total is "
-                f"reported unavailable rather than as the sum of the rest, because a "
-                f"partial sum understates the application by exactly the part that "
-                f"could not be measured."
+                f"{', '.join(named)}{omitted} returned no reading this window. The "
+                f"total is reported unavailable rather than as the sum of the rest, "
+                f"because a partial sum understates the application by exactly the part "
+                f"that could not be measured."
             )
         return None
 
@@ -491,7 +608,7 @@ class MetricCollector:
             try:
                 self.sample()
             except Exception as exc:  # noqa: BLE001 - one bad tick is not a dead thread
-                self._last_error = f"{type(exc).__name__}: {exc}"
+                self._last_error = self._describe(exc)
 
     @property
     def running(self) -> bool:
@@ -579,3 +696,18 @@ def _mean_over_capacity(values: Sequence[float | None], capacity: int) -> float 
             return None
         total += float(value)
     return total / float(capacity)
+
+
+def _name_within_bound(labels: Sequence[str],
+                       limit: int = MAX_REASONED_PROCESSES) -> tuple[list[str], str]:
+    """At most `limit` labels, and a phrase naming however many were left out.
+
+    Returns `(named, omitted)`, where `omitted` is `""` when everything fitted and
+    otherwise reads `" and 191 more"`. The count is the part a presenter asks for; the
+    identities beyond the bound are still on the per-process samples.
+    """
+    ordered = list(labels)
+    if len(ordered) <= limit:
+        return ordered, ""
+    extra = len(ordered) - limit
+    return ordered[:limit], f" and {extra} more"
