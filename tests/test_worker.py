@@ -472,6 +472,96 @@ class TheOrderOfThePlacementRead(unittest.TestCase):
         self.assertIn("get_output_tensor:0", request.calls)
 
 
+class TheRequestTravelsWithTheConfirmation(unittest.TestCase):
+    """Review finding M-5: the pair could not be checked because only half was carried.
+
+    `infer_once(Stub("CPU"), frame, cfg("NPU"))` returned `error=None`,
+    `execution_devices=('CPU',)` and a latency. **That is honest** - it says `('CPU',)`,
+    not `('NPU',)`, and the reviewer cleared placement on that basis. The gap was that
+    nothing forced a consumer to compare the confirmation against the request: with only
+    `execution_devices` on the record, and `app/` having no caller of `is_device` outside
+    its own definition, a card would have to know to perform the comparison itself.
+
+    So `requested_device` is a field of the record and `fell_back` is the comparison. A
+    fallback stays a legitimate, reportable state - what it can no longer be is invisible.
+    """
+
+    def setUp(self):
+        _require_ir()
+
+    def test_a_fallback_carries_both_halves_of_the_pair_and_says_it_fell_back(self):
+        result = infer_once(_StubRequest(placement=("CPU",)), _frame(0, image=_real_frame()),
+                            _cfg("NPU"))
+        self.assertIsNone(result.error, result.error)
+        self.assertEqual(result.requested_device, "NPU")
+        self.assertEqual(result.execution_devices, ("CPU",),
+                         "the confirmed placement was misreported")
+        self.assertTrue(result.fell_back,
+                        "an NPU request answered by the CPU did not report a fallback")
+
+    def test_a_confirmed_placement_is_not_a_fallback(self):
+        result = infer_once(_StubRequest(placement=("NPU",)), _frame(0, image=_real_frame()),
+                            _cfg("NPU"))
+        self.assertEqual(result.requested_device, "NPU")
+        self.assertFalse(result.fell_back)
+
+    def test_the_pair_is_compared_through_the_normaliser_not_by_string_equality(self):
+        """The NPU reports the bare string, so `== 'NPU'` on a tuple would be wrong."""
+        result = infer_once(_StubRequest(placement="NPU"), _frame(0, image=_real_frame()),
+                            _cfg("NPU"))
+        self.assertEqual(result.execution_devices, ("NPU",))
+        self.assertFalse(result.fell_back,
+                         "a bare-string placement was compared as a character tuple")
+
+    def test_a_failure_keeps_the_requested_device_and_reports_no_fallback(self):
+        """'The NPU was asked for and would not run' must survive to the screen."""
+        result = infer_once(None, _frame(0, image=_real_frame()),
+                            _cfg(device="NOT_A_DEVICE"))
+        self.assertIsNotNone(result.error)
+        self.assertEqual(result.requested_device, "NOT_A_DEVICE",
+                         "the failure forgot what it was trying to do")
+        self.assertEqual(result.execution_devices, ())
+        self.assertIsNone(result.fell_back,
+                          "a failure cannot be a fallback; nothing ran anywhere")
+
+    def test_a_record_without_a_request_cannot_claim_a_fallback(self):
+        result = InferenceResult(frame=_frame(), detections=(), latency_ms=1.0,
+                                 execution_devices=("CPU",), error=None)
+        self.assertIsNone(result.requested_device)
+        self.assertIsNone(result.fell_back,
+                          "with nothing requested there is nothing to have fallen back from")
+
+    def test_the_serialised_result_carries_the_pair_and_the_verdict(self):
+        import json
+
+        payload = InferenceResult(frame=_frame(), detections=(), latency_ms=1.0,
+                                  execution_devices=("CPU",), error=None,
+                                  requested_device="NPU").to_json()
+        self.assertEqual(payload["requested_device"], "NPU")
+        self.assertEqual(payload["execution_devices"], ["CPU"])
+        self.assertTrue(payload["fell_back"])
+        json.dumps(payload)
+
+    def test_a_blank_requested_device_is_refused(self):
+        with self.assertRaises(ValueError):
+            InferenceResult(frame=_frame(), detections=(), latency_ms=1.0,
+                            execution_devices=("CPU",), error=None,
+                            requested_device="  ")
+
+    def test_a_real_run_on_every_device_agrees_with_its_request(self):
+        """On this machine all three are present, so nothing should fall back."""
+        for device_id in DEVICE_IDS:
+            if device_id not in _available_devices():
+                continue
+            with self.subTest(device=device_id):
+                result = infer_once(None, _frame(0, image=_real_frame()), _cfg(device_id))
+                self.assertIsNone(result.error, result.error)
+                self.assertEqual(result.requested_device, device_id)
+                self.assertFalse(result.fell_back,
+                                 f"asked for {device_id}, ran on "
+                                 f"{result.execution_devices}")
+
+
 class TheWorkerLoop(unittest.TestCase):
     """`run_worker` drains its queue, keeps going through a bad frame, and stops."""
 

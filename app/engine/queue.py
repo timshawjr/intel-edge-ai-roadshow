@@ -80,7 +80,11 @@ class BoundedFrameQueue:
         self._condition = threading.Condition(threading.Lock())
         if clock is None:
             import time as _time
-            clock = _time.monotonic
+            # `perf_counter`, not `monotonic`: measured on this machine `monotonic` returned a
+            # single distinct value in 20 000 consecutive calls, so a deadline of
+            # "now + 1 ms" could not be represented. The residual overshoot is the
+            # wait itself, not this clock; see `get`.
+            clock = _time.perf_counter
         self._clock = clock
 
     # -- capacity -------------------------------------------------------------------
@@ -156,9 +160,54 @@ class BoundedFrameQueue:
         """The oldest queued frame, or `None`.
 
         `None` is returned when the queue is empty at the deadline, and when it is empty
-        **and closed**. It never blocks past `timeout`, so a caller with a UI thread
-        behind it cannot hang; and a blocked getter is released by `close()` rather than
-        waiting out the remainder of its timeout.
+        **and closed**. It never blocks *indefinitely*, so a caller with a UI thread behind
+        it cannot hang; and a blocked getter is released by `close()` rather than waiting
+        out the remainder of its timeout. That is the brief's requirement and it holds.
+
+        **1. The deadline used `time.monotonic`, which cannot represent a deadline here.**
+        Measured on this machine: 20 000 consecutive `time.monotonic()` calls returned a
+        **single** distinct value, so its resolution is the ~16 ms Windows tick, and a
+        deadline of "now + 1 ms" had nowhere to land. `time.perf_counter` returned 19 024
+        distinct values in the same 20 000 calls. The clock is now `perf_counter`.
+
+        **2. That was not the whole cause, and the residual is measured rather than
+        denied.** `threading.Condition.wait` on this platform has a floor of its own.
+        Measured here, no queue involved, 60 runs per row:
+
+            Condition.wait( 1.0 ms) -> p50 15.39 ms   min  1.06   max 26.20
+            Condition.wait( 5.0 ms) -> p50 15.85 ms   min  5.06   max 20.27
+            Condition.wait(20.0 ms) -> p50 32.83 ms   min 20.08   max 35.96
+            Event.wait(     1.0 ms) -> p50 15.63 ms
+            sleep(          1.0 ms) -> p50  1.77 ms   <- fine-grained, for contrast
+
+        So the overshoot is the wait, not the clock: `sleep` honours 1 ms to within
+        0.77 ms while any wait-based primitive returns no earlier than ~15 ms for the
+        same request. Slicing cannot help - every wait has the same floor - so no
+        implementation of a condition variable here can honour a 1 ms deadline. The
+        honest statement is the bound below, not "never blocks past `timeout`".
+
+        **`get`'s measured overshoot on an empty queue.** Five repeats of 60 runs, p50 of
+        each, reported as a range because it varies by a couple of milliseconds run to
+        run:
+
+            timeout   1.0 ms -> 15.38 - 15.58 ms
+            timeout   5.0 ms -> 16.11 - 16.38 ms
+            timeout  20.0 ms -> 32.80 - 33.30 ms
+            timeout  50.0 ms -> 64.04 - 66.01 ms
+
+        The clock change is nevertheless real and not cosmetic: reverting it to
+        `time.monotonic` moves the 1 ms row's p50 from ~1.4 ms to ~15.9 ms in-process.
+        The absolute numbers above are from a quiet standalone process; inside a busy
+        suite they are better, and that variance is why the test asserts a bound rather
+        than an exact figure.
+
+        A caller needing a tighter deadline than ~15 ms should poll `depth` rather than
+        sleep on a condition variable.
+
+        **An injected clock that does not advance will block indefinitely.** That is
+        correct for a clock the caller controls - the deadline is only meaningful in terms
+        of the clock being used - but it means a frozen clock must not be used with a
+        non-zero timeout in a test that expects `get` to return. `close()` releases it.
         """
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise TypeError(f"timeout must be a number of seconds; got {timeout!r}")

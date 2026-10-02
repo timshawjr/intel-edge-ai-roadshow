@@ -463,13 +463,15 @@ class ARecordedReasonDoesNotDescribeItselfRecursively(unittest.TestCase):
 class TheReasonIsBounded(unittest.TestCase):
     """A reason that grows with the failure can lose the process it is explaining.
 
-    Measured on this machine, before the bound existed: a collector tracking 199 pids
-    grew this process's RSS 56 MB -> 95 MB -> 206 MB -> 647 MB -> 2.4 GB across ten
-    samples, and the eleventh tick raised `MemoryError`. Handles, thread count,
-    `psutil._pmap` and the tracked Python object count were all flat throughout, and a
-    control loop doing the same `psutil` reads without the collector did not move RSS at
-    all - so the growth was the collector's own unbounded reason strings, not the OS.
-    After the bound: RSS flat at 44.1 MB across the same ten samples.
+    **The pre-fix numbers are history and are not reproducible from HEAD.** They came from
+    an instrumented run at 199 tracked pids, ten samples, RSS 56.2 -> 2411.9 MB and a
+    `MemoryError` on the eleventh tick. `app/telemetry/collector.py` records the same run
+    in full and says the same thing about verifiability. What *is* reproducible from HEAD
+    is that the bound holds: 199 pids over twelve samples holds RSS flat at ~56.6 MB, and
+    the reviewer independently measured 400 pids over 30 samples at 56.6 -> 57.4 MB, flat
+    from sample 2, with the aggregate reason constant at 673 characters. An earlier
+    version of this docstring quoted 44.1 MB for the same experiment, which disagreed with
+    the module and was a different run's starting point rather than the settled value.
     """
 
     def setUp(self):
@@ -546,6 +548,268 @@ class TheRecordedReasonIsRereadCleanly(unittest.TestCase):
         self.assertIn("NoSuchProcess", rendered)
         self.assertIn(str(0x7FFFFFFF), rendered,
                       "the pid is missing from the re-raised reason")
+
+
+class ThePrimingFailureSurvivesConstruction(unittest.TestCase):
+    """Review finding M-3: `_last_error` was reset *after* the prime that set it.
+
+    `__init__` primed `psutil.cpu_percent` and then, two lines later, assigned
+    `self._last_error = None`, discarding the reason. Instrumented by the reviewer: after
+    the prime `_last_error` held `'RuntimeError: prime exploded'` and by the end of
+    `__init__` it was `None`. So the one place the collector records "my very first
+    reading could not be taken" threw the reason away before anyone could read it.
+    """
+
+    def test_a_failure_during_the_priming_read_is_still_recorded_after_construction(self):
+        def boom(*args, **kwargs):
+            raise RuntimeError("prime exploded")
+
+        with mock.patch.object(psutil, "cpu_percent", boom):
+            collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                        process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        self.assertIsNotNone(collector.last_error,
+                             "the reason the prime failed was discarded by __init__")
+        self.assertIn("prime exploded", collector.last_error)
+        self.assertIn("RuntimeError", collector.last_error)
+
+    def test_a_clean_construction_reports_no_error(self):
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        self.assertIsNone(collector.last_error,
+                          "a collector that read everything fine invented an error")
+
+
+class AZeroWindowIsNotAPlaceholderDuration(unittest.TestCase):
+    """Review finding M-4: `window_seconds=1.0` was a fabricated number.
+
+    The intent was disclosed and the sample was `UNAVAILABLE`, but `window_seconds` is
+    documented as a real claim about the interval a reading was averaged over. `1.0` was
+    neither measured nor measured-over - and with `interval=1.0` the placeholder became
+    numerically indistinguishable from a genuine window, so a reader could not tell a
+    fabricated duration from a measured one. The measured `0.0` is now carried instead:
+    nothing was measured, over no window.
+    """
+
+    def test_a_zero_window_is_reported_as_zero_and_not_as_a_placeholder(self):
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=_SteppingClock(step=0.0))
+        self.addCleanup(collector.stop)
+        collector.sample()  # first: unavailable because it is the first
+        samples = _by_name(collector.sample())
+        cpu = samples["system_cpu_percent"]
+        self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
+        self.assertEqual(cpu.window_seconds, 0.0,
+                         "a placeholder duration was published on a sample that has no "
+                         "measurement to average over")
+
+    def test_the_placeholder_cannot_be_mistaken_for_a_real_one_second_window(self):
+        """The case that motivated it: `interval=1.0` made the placeholder look real."""
+        collector = MetricCollector([THIS_PID], interval=1.0, background=False,
+                                    clock=_SteppingClock(step=0.0))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        cpu = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertEqual(cpu.validity, Validity.UNAVAILABLE)
+        self.assertNotEqual(cpu.window_seconds, 1.0,
+                            "the unavailable sample's window is indistinguishable from a "
+                            "real 1.0 s window")
+        self.assertEqual(cpu.window_seconds, 0.0)
+
+    def test_a_measured_sample_still_refuses_a_zero_window(self):
+        """The relaxation must not let a real reading claim it was measured over nothing."""
+        with self.assertRaises(ValueError):
+            MetricSample(name="system_cpu_percent", value=1.0, unit="percent",
+                         provider="psutil", device_scope=None, process_scope=(),
+                         window_seconds=0.0, sampled_at=100.0, validity=Validity.VALID)
+
+
+class TheAccessorsCannotStealTheTick(unittest.TestCase):
+    """Review finding I-2: a card calling an accessor corrupted the next `sample()`.
+
+    `psutil.cpu_percent(interval=None)` is a delta since *its previous call*. The two
+    accessors were public and read the primitives directly, so calling one between two
+    `sample()` calls consumed the window: `sample()` then integrated the microseconds
+    since the accessor's read while still labelling the figure with the **full** tick's
+    `window_seconds`. A residual over ~0 s is a wrong number, and `window_seconds` and
+    `validity=valid` made it look like a real one - the exact shape this project exists
+    to prevent.
+
+    Measured before the fix, 30 reads per row, 0.3 s of sleep between reads:
+
+        A) sample() only             values: [19.8, 22.2, 23.1]  windows: [0.343, ...]
+        B) accessor called mid-tick  values: [ 0.0,  0.0,  0.0]  windows: [0.343, ...]
+
+    The windows are identical; the numbers are not the same measurement.
+    """
+
+    def test_the_tick_is_measured_once_however_many_readers_ask(self):
+        """The structural claim: one `psutil` read serves the accessor and the sample.
+
+        Comparing the two *numbers* is not enough on its own - two reads microseconds
+        apart can coincidentally return the same figure, and a test that passes for the
+        wrong reason is the failure mode this project keeps hitting. So the count of
+        `psutil` calls is asserted directly, and the equality is asserted on top.
+        """
+        clock = _SteppingClock(step=0.25)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock, process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+
+        real = psutil.cpu_percent
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(psutil, "cpu_percent", spy):
+            direct = collector.system_cpu_percent()
+            reported = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertEqual(len(calls), 1,
+                         f"the tick was read {len(calls)} times; every read after the "
+                         f"first integrates the microseconds since it rather than the "
+                         f"tick's window")
+        self.assertEqual(reported.value, direct)
+
+    def test_the_system_accessor_returns_the_same_number_the_next_sample_reports(self):
+        clock = _SteppingClock(step=0.25)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock, process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        _spin(0.3)
+        direct = collector.system_cpu_percent()
+        reported = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertEqual(reported.value, direct,
+                         "the accessor and the sample disagree about the same tick; one "
+                         "of them read the machine and the other read the gap since")
+
+    def test_the_app_accessor_returns_the_same_number_the_next_sample_reports(self):
+        clock = _SteppingClock(step=0.25)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock, process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        direct = collector.app_cpu_percent()
+        reported = _by_name(collector.sample())["app_cpu_percent"]
+        self.assertEqual(reported.value, direct)
+
+    def test_repeated_accessor_calls_do_not_drift_the_sample(self):
+        clock = _SteppingClock(step=0.25)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock, process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        _spin(0.3)
+        first = collector.system_cpu_percent()
+        for _ in range(5):
+            self.assertEqual(collector.system_cpu_percent(), first,
+                             "a second read of the same tick returned a different number")
+        self.assertEqual(_by_name(collector.sample())["system_cpu_percent"].value, first)
+
+    def test_the_reported_window_is_the_one_the_reading_was_taken_over(self):
+        """A reading taken early in the tick must not be labelled with a wider window."""
+        taken_at = []
+        clock = _SteppingClock(step=0.25)
+
+        class _Recording(_SteppingClock):
+            def __call__(self):
+                value = super().__call__()
+                taken_at.append(value)
+                return value
+
+        clock = _Recording(step=0.25)
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock, process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        clock.step = 1.5          # a long tick
+        collector.system_cpu_percent()
+        reported = _by_name(collector.sample())["system_cpu_percent"]
+        # The accessor took the reading; sample() must report the window that reading
+        # covered, not the whole of the tick that has since elapsed.
+        self.assertAlmostEqual(reported.window_seconds, 0.25, places=9,
+                               msg="the window was widened after the reading was taken")
+
+    def test_an_accessor_on_a_fresh_collector_reads_rather_than_returning_none(self):
+        """Before any sample, there is no tick to cache, so it must still measure."""
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    process_labels=("ui",))
+        self.addCleanup(collector.stop)
+        _spin(0.3)
+        self.assertIsNotNone(collector.system_cpu_percent())
+        self.assertIsNotNone(collector.app_cpu_percent())
+
+
+class ARecoveredProcessIsNotBlamed(unittest.TestCase):
+    """Review finding I-1: a stale failure named a process that was reading fine.
+
+    `_TrackedProcess.failure` is deliberately sticky - it caches the reason a pid died so
+    the reason does not change every tick - which is right for a dead pid and wrong for a
+    recovered one. `sample()` built its reason list from `tracked.failure` alone, so once
+    a pid had failed once it was named in every subsequent aggregate reason, including
+    the ones where it produced a real number. Constructed by the reviewer:
+
+        reason: dead, recovered, ui could not be read...
+        cpu:recovered -> 0.0 valid
+        cpu:ui        -> 0.0 valid
+
+    The aggregate value was honest - `None`, because one pid genuinely failed. The
+    **reason** was not.
+    """
+
+    LIVE = THIS_PID
+    GONE = 0x7FFFFFFF
+
+    def _collector(self):
+        collector = MetricCollector([self.LIVE, self.GONE], interval=0.25,
+                                    background=False, clock=_SteppingClock(step=0.25),
+                                    process_labels=("recovered", "dead"))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        return collector
+
+    @staticmethod
+    def _deny_live(_self, interval=None):
+        raise psutil.NoSuchProcess(THIS_PID)
+
+    def test_a_process_that_recovered_is_not_named_in_a_later_samples_reason(self):
+        collector = self._collector()
+
+        # One window where the live process cannot be read.
+        with mock.patch.object(psutil.Process, "cpu_percent", self._deny_live):
+            failed = _by_name(collector.sample())
+        self.assertIsNone(failed["cpu:recovered"].value)
+
+        # It recovers; the dead one does not.
+        recovered = _by_name(collector.sample())
+        self.assertEqual(recovered["cpu:recovered"].validity, Validity.VALID,
+                         "this test needs the process to have recovered")
+        self.assertIsNotNone(recovered["cpu:recovered"].value)
+        self.assertIsNone(recovered["app_cpu_percent"].value,
+                          "the dead process should still make the total unavailable")
+
+        reason = recovered["app_cpu_percent"].unavailable_reason or ""
+        self.assertIn("dead", reason, "the genuinely dead process is not named")
+        self.assertNotIn("recovered", reason,
+                         f"a process that read {recovered['cpu:recovered'].value} in this "
+                         f"same sample is named in the reason: {reason!r}")
+
+    def test_the_recovered_process_reason_is_cleared_from_its_own_sample_too(self):
+        collector = self._collector()
+        with mock.patch.object(psutil.Process, "cpu_percent", self._deny_live):
+            collector.sample()
+        recovered = _by_name(collector.sample())
+        self.assertEqual(recovered["cpu:recovered"].validity, Validity.VALID)
+        self.assertIsNone(recovered["cpu:recovered"].unavailable_reason,
+                          "a measured sample carries a reason from a window that has "
+                          "already closed")
+        self.assertIsNone(recovered["rss:recovered"].unavailable_reason
+                          if recovered["rss:recovered"].validity is Validity.UNAVAILABLE
+                          else None)
 
 
 class TheCoarseClockIsNotAPermittedZero(unittest.TestCase):

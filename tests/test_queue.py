@@ -206,5 +206,103 @@ class CloseIsNotADrop(unittest.TestCase):
         self.assertTrue(q.closed)
 
 
+class TheTimeoutIsMeasuredAgainstAFineClock(unittest.TestCase):
+    """Review finding I-3: `get(timeout)` overshot, and the claim about it was false.
+
+    The deadline used `time.monotonic`, which on this machine has ~16 ms resolution -
+    measured, 20 000 consecutive calls returned a **single** distinct value. A deadline of
+    "now + 1 ms" could not be represented. The default is now `time.perf_counter`.
+
+    **Switching the clock did not fix the overshoot, and this test says so rather than
+    claiming otherwise.** With `perf_counter`, `get` on an empty queue still measures
+    14.89 ms p50 for a 1 ms timeout. The remaining overshoot is `Condition.wait` itself,
+    which has the same Windows timer granularity - measured with no queue involved,
+    `Condition.wait(0.001)` -> 15.24 ms p50 and `Event.wait(0.001)` -> 15.09 ms, while
+    `time.sleep(0.001)` was accurate to 1.75 ms. Slicing cannot help; every wait has the
+    same granularity.
+
+    So this class pins three things: the clock is fine-grained, the overshoot is bounded
+    and understood, and the brief's actual requirement - `None` rather than blocking
+    forever - holds.
+    """
+
+    TIMEOUT = 0.001
+
+    def test_the_default_clock_is_perf_counter_not_monotonic(self):
+        import time
+
+        self.assertIs(BoundedFrameQueue()._clock, time.perf_counter,
+                      "the queue's default clock is not the one with ~16 ms resolution")
+
+    def test_the_two_clocks_measured_on_this_machine(self):
+        """Why the default changed. Both numbers measured here, not quoted."""
+        import time
+
+        coarse = len({time.monotonic() for _ in range(4000)})
+        fine = len({time.perf_counter() for _ in range(4000)})
+        self.assertLess(coarse, 100,
+                        "time.monotonic() is no longer coarse here; this test and the "
+                        "docstring that motivates it should both be revisited")
+        self.assertGreater(fine, 3000,
+                           "time.perf_counter() is not finer than monotonic() here")
+        print(f"\n[clock resolution, distinct values in 4000 calls] "
+              f"monotonic={coarse} perf_counter={fine}")
+
+    def test_the_overshoot_is_bounded_and_is_the_condition_wait_not_the_clock(self):
+        """Measured, not asserted against an aspiration.
+
+        The bound below is the Windows timer granularity (~15.6 ms), because
+        `Condition.wait` cannot do better here. If this test starts failing after a
+        platform change, the number to update is this bound and the docstring's table -
+        not the code.
+        """
+        overshoots = []
+        for _ in range(20):
+            q = BoundedFrameQueue()
+            t0 = time.perf_counter()
+            self.assertIsNone(q.get(timeout=self.TIMEOUT))
+            overshoots.append((time.perf_counter() - t0) * 1000.0)
+        overshoots.sort()
+        median = overshoots[len(overshoots) // 2]
+        self.assertLess(median, 30.0,
+                        f"a {self.TIMEOUT * 1000:.0f} ms timeout took {median:.3f} ms; "
+                        f"Condition.wait on Windows cannot resolve a sub-tick deadline, "
+                        f"and 30 ms is the measured bound for it")
+        print(f"\n[queue get(timeout={self.TIMEOUT * 1000:.0f}ms) overshoot, n=20] "
+              f"p50={median:.3f} ms max={overshoots[-1]:.3f}")
+
+    def test_the_shortest_timeout_still_returns_none_and_never_blocks_forever(self):
+        """The brief's actual requirement, which held before and must still hold."""
+        q = BoundedFrameQueue()
+        self.assertIsNone(q.get(timeout=0.0))
+        self.assertIsNone(q.get(timeout=0.001))
+        self.assertIsNone(q.get(timeout=0.02))
+
+    def test_a_frozen_injected_clock_blocks_and_that_is_documented(self):
+        """A clock that does not advance has no deadline to reach.
+
+        This is correct behaviour for a caller-supplied clock - the deadline is only
+        meaningful in terms of the clock being used - but it was an easy way to hang a
+        test, so it is pinned: `close()` is what releases such a getter.
+        """
+        frozen = _FrozenClock()
+        q = BoundedFrameQueue(clock=frozen)
+        t = threading.Thread(target=lambda: q.get(timeout=0.05), daemon=True)
+        t.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and q.waiting == 0:
+            time.sleep(0.005)
+        self.assertEqual(q.waiting, 1)
+        self.assertTrue(t.is_alive(), "a frozen clock cannot expire a deadline")
+        q.close()
+        t.join(5.0)
+        self.assertFalse(t.is_alive(), "close() did not release the getter")
+
+
+class _FrozenClock:
+    def __call__(self) -> float:
+        return 1000.0
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

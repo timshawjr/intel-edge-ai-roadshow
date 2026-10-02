@@ -5,21 +5,36 @@ rather than preferences:
 
 **1. `DeviceRegistry.describe()` cannot be on this path.** Measured at **3.3-3.8 s** -
 one memoised Windows PnP enumeration. At `interval = 0.25` the whole budget for a sample
-is 250 ms, and the measured cost of a full sample here is **~0.2 ms**. So this module
+is 250 ms, and the measured cost of a full sample here is **0.028 ms with one tracked pid
+and 0.047 ms with two** (200 runs each, p50, timed with `perf_counter`). So this module
 does not import `app.inference.devices`, `openvino`, or `app.telemetry.pdh` at all:
 device discovery is a **startup** cost, paid once by whoever builds the device panel, and
 a collector that reached for it would stall the telemetry thread for four seconds every
 time the panel was rebuilt. `tests/test_collector.py` reads this module's own source and
 fails if any of those names appears.
 
+An earlier version of this paragraph put the sample cost at "~0.2 ms", which was an order
+of magnitude too high; the measured figures are above.
+
 **2. `psutil`'s first `cpu_percent()` returns `0.0`, and that zero is not a measurement.**
 Measured here: `psutil.cpu_percent(interval=None)` returns exactly `0.0` on the first call
-after import, then `51.3` on the second. There is no previous sample, so there is no
-delta, and `psutil` reports nothing as `0.0` rather than as "no measurement". A booth
-card showing "CPU 0%" during that first sample is stating the opposite of the truth.
-This module therefore **primes at construction**, discards the priming value, and marks
-the very first `sample()` as `UNAVAILABLE` with a stated reason rather than publishing
-that zero.
+after import. There is no previous sample, so there is no delta, and `psutil` reports
+nothing as `0.0` rather than as "no measurement". A booth card showing "CPU 0%" during
+that first sample is stating the opposite of the truth. This module therefore **primes at
+construction**, discards the priming value, and marks the very first `sample()` as
+`UNAVAILABLE` with a stated reason rather than publishing that zero.
+
+The second call's value depends entirely on the machine's load, and this module used to
+quote one without saying what the load was. Measured here, 8 logical cores, 300 ms
+windows, five readings each:
+
+    idle                   9.8 - 21.4   (the collector and the test harness are work)
+    one core saturated    19.7 - 25.0   (one native busy loop)
+    four cores saturated  54.6 - 60.4   (four native busy loops; 4/8 = 50%)
+
+A single core of eight is 12.5% of the machine, so the "51.3 on the second call" this
+module previously quoted - 51.3% of 8 cores being 4.1 cores busy - described roughly four
+saturated cores, not one. The load is now stated with every figure.
 
 **3. A process that died is not an idle process.** `psutil.Process(pid)` raises
 `NoSuchProcess` for a pid that has exited. A dead worker process is exactly the thing an
@@ -53,6 +68,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import psutil
@@ -111,6 +127,23 @@ def cpu_capacity() -> int:
             f"The app CPU cannot be normalised against it."
         )
     return count
+
+
+@dataclass(frozen=True)
+class _Tick:
+    """One tick's raw readings, and the window they were taken over.
+
+    Frozen because it is a record of a measurement, and a measurement that can be edited
+    after it was taken is not one. `window` is the elapsed time between the previous
+    tick and the moment these readings were taken, which is the interval `psutil`
+    actually integrated over.
+    """
+
+    now: float
+    window: float
+    system_cpu: float | None
+    per_process_cpu: list[float | None]
+    per_process_rss: list[int | None]
 
 
 class _TrackedProcess:
@@ -292,18 +325,20 @@ class MetricCollector:
         self._clock = clock
         self._capacity = cpu_capacity()
 
-        # psutil's global counter needs a previous sample before it means anything, so
-        # it is primed here rather than discovered by the first caller. This reading is
-        # discarded and never published: it is 0.0 by construction.
+        self._lock = threading.Lock()
+        self._tick: _Tick | None = None
+        self._latest: tuple[MetricSample, ...] = ()
+        self._samples_taken = 0
+        # M-3: the reset comes **before** `_prime_global_cpu()`. It used to come two
+        # lines after it, which silently discarded the reason the prime had recorded: an
+        # instrumented run showed `_last_error` holding 'RuntimeError: prime exploded'
+        # immediately after the prime and `None` by the end of `__init__`.
+        self._last_error: str | None = None
         self._prime_global_cpu()
         for tracked in self._tracked:
             tracked.prime()
         self._window_started_at = float(self._clock())
 
-        self._lock = threading.Lock()
-        self._latest: tuple[MetricSample, ...] = ()
-        self._samples_taken = 0
-        self._last_error: str | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         if background:
@@ -386,20 +421,54 @@ class MetricCollector:
 
     # -- the two direct measurements -------------------------------------------------
 
-    def system_cpu_percent(self) -> float | None:
-        """CPU across **all** logical cores, `0`-`100`, or `None` when unreadable.
+    def _readings(self) -> "_Tick":
+        """This tick's raw readings, taken once and then reused. Caller holds the lock.
 
-        Measured on this machine over a 250 ms window while one core was saturated:
-        `51.3`. `psutil.cpu_percent` is documented and measured to return `0.0` on its
-        first call, which is why the priming value is taken in `__init__` and discarded.
+        `psutil.cpu_percent(interval=None)` is a **delta since its previous call**, so the
+        second reader of a tick does not re-measure the machine - it measures the
+        microseconds since the first reader. That is not a rounding detail: a value read
+        over ~0 s and a value read over the tick's real window are different claims, and
+        the second one is the wrong one.
 
-        `None` - never `0.0` - is returned when `psutil` raises. A CPU reading is not
-        available; it is not zero.
+        So there is exactly one reading per tick, whoever asks first. The time the
+        readings were taken is recorded with them, because the window has to be the
+        interval `psutil` actually integrated over - not a wider one measured
+        afterwards.
         """
+        if self._tick is not None:
+            return self._tick
+        now = float(self._clock())
+        system = self._raw_system_cpu()
+        per_process_cpu = [tracked.cpu_percent() for tracked in self._tracked]
+        per_process_rss = [tracked.rss_bytes() for tracked in self._tracked]
+        self._tick = _Tick(now=now, window=max(0.0, now - self._window_started_at),
+                           system_cpu=system, per_process_cpu=per_process_cpu,
+                           per_process_rss=per_process_rss)
+        return self._tick
+
+    @staticmethod
+    def _raw_system_cpu() -> float | None:
+        """The one direct `psutil` system-CPU read. `None` if it cannot be taken."""
         try:
             return float(psutil.cpu_percent(interval=None))
         except Exception:  # noqa: BLE001 - unavailable is a result, not a crash
             return None
+
+    def system_cpu_percent(self) -> float | None:
+        """CPU across **all** logical cores, `0`-`100`, or `None` when unreadable.
+
+        **This returns the current tick's reading, and takes it at most once.** A card
+        that calls this between two `sample()` calls gets the figure `sample()` will
+        report, not a second measurement over the microseconds since that figure was
+        taken. See `_readings`.
+
+        `None` - never `0.0` - when `psutil` cannot be read. A CPU reading that is not
+        available is not zero.
+
+        The docstring's example figures were wrong and are corrected in the module
+        header; see the measured numbers there.
+        """
+        return self._readings().system_cpu
 
     def app_cpu_percent(self) -> float | None:
         """The summed CPU of every tracked pid, normalised to **0-100% of the machine**.
@@ -413,30 +482,27 @@ class MetricCollector:
         unknown, not zero, and a partial sum reported as the application's total is a
         number that understates by exactly the part that failed - which is the part an
         operator most needs to see.
+
+        **Like `system_cpu_percent`, this reads at most once per tick** and then returns
+        the cached reading, so calling it cannot corrupt the next `sample()`.
         """
-        if not self._tracked:
-            return None
-        total = 0.0
-        for tracked in self._tracked:
-            value = tracked.cpu_percent()
-            if value is None:
-                return None
-            total += float(value)
-        return total / float(self._capacity)
+        return _mean_over_capacity(self._readings().per_process_cpu, self._capacity)
 
     # -- the sample set --------------------------------------------------------------
 
     def sample(self) -> tuple[MetricSample, ...]:
         """One full set of readings, in a fixed order.
 
-        **Each pid is read exactly once per sample, and every figure is derived from
-        those same readings.** `psutil`'s `cpu_percent(interval=None)` is a delta since
-        *its previous call*, so calling it twice for one pid would consume the window:
-        the aggregate would be computed from a second, near-zero delta and the *next*
-        sample's window would start from there too. An earlier version called
-        `tracked.cpu_percent()` for the per-process list and then again inside
-        `app_cpu_percent()`, which silently corrupted both. The readings are therefore
-        taken once, into locals, and the aggregate is computed from them.
+        **Each pid is read exactly once per tick, and every figure is derived from those
+        same readings.** `psutil`'s `cpu_percent(interval=None)` is a delta since *its
+        previous call*, so a second reader of the same tick does not re-measure the
+        machine - it measures the microseconds since the first reader. An earlier version
+        called `tracked.cpu_percent()` for the per-process list and then again inside
+        `app_cpu_percent()`, which silently corrupted both; and because the two accessors
+        were public, a card calling one between ticks corrupted the next `sample()` the
+        same way while still reporting a plausible-looking number under the tick's full
+        `window_seconds`. All of them now share `_readings()`, so whoever asks first
+        takes the measurement and everyone reports the same one.
 
         **The very first sample after construction is `UNAVAILABLE`, and says why.**
         Priming happens in `__init__`, so the first real reading covers only the
@@ -448,31 +514,46 @@ class MetricCollector:
         `window_seconds` is the **measured** elapsed time since the previous sample, not
         the requested `interval`. If the thread falls behind, the window says so, and a
         reader can tell a 250 ms average from a 2 s one. A window of exactly zero - only
-        reachable with an injected clock - is reported unavailable rather than
-        substituted with `interval`, because a declared window that did not elapse is a
-        window the number was not averaged over.
+        reachable with an injected clock, since the default clock on this machine has
+        ~16 ms resolution - is reported unavailable rather than substituted with
+        `interval`, because a declared window that did not elapse is a window the number
+        was not averaged over.
         """
         with self._lock:
-            now = float(self._clock())
-            window = now - self._window_started_at
+            tick = self._readings()
+            self._tick = None  # the next tick measures afresh
+            now = tick.now
+            window = tick.window
             first = self._samples_taken == 0
-            # Every reading happens once, here.
-            system = self.system_cpu_percent()
-            per_process_cpu = [tracked.cpu_percent() for tracked in self._tracked]
-            per_process_rss = [tracked.rss_bytes() for tracked in self._tracked]
             self._window_started_at = now
             self._samples_taken += 1
 
+            per_process_cpu = tick.per_process_cpu
+            per_process_rss = tick.per_process_rss
+            system = tick.system_cpu
             app_cpu = _mean_over_capacity(per_process_cpu, self._capacity)
             app_rss = _sum_or_none(per_process_rss)
             labels = tuple(tracked.label for tracked in self._tracked)
-            failures = {tracked.label: tracked.failure for tracked in self._tracked
-                        if tracked.failure is not None}
+
+            # I-1: a failure is only a fact about *this* sample. `_TrackedProcess.failure`
+            # is sticky by design - it caches the reason a pid died so the reason does
+            # not change each tick - so it is not evidence that the pid failed now. The
+            # current readings are, and a pid that read a number this sample is not named
+            # in this sample's reason.
+            cpu_failures = {tracked.label: tracked.failure
+                            for tracked, value in zip(self._tracked, per_process_cpu)
+                            if value is None and tracked.failure is not None}
+            rss_failures = {tracked.label: tracked.failure
+                            for tracked, value in zip(self._tracked, per_process_rss)
+                            if value is None and tracked.failure is not None}
 
             unusable = (first or window <= 0.0)
             window_note = FIRST_WINDOW_REASON if first else (
                 NO_WINDOW_ELAPSED_REASON if window <= 0.0 else None)
-            reported_window = window if window > 0.0 else 1.0
+            # M-4: when no window elapsed, the reported window is the measured `0.0`, not
+            # a placeholder. `MetricSample` permits a zero window only on an UNAVAILABLE
+            # sample, and the sample carrying it is always one.
+            reported_window = window
 
             samples: list[MetricSample] = [
                 self._percent_sample(
@@ -487,13 +568,15 @@ class MetricCollector:
                     reported_window, sampled_at=now, process_scope=labels,
                     device_scope=None,
                     reason=self._reason(window_note,
-                                        self._aggregate_reason(failures, per_process_cpu))),
+                                        self._aggregate_reason(cpu_failures,
+                                                               per_process_cpu))),
                 self._bytes_sample(
                     "app_rss_bytes", app_rss if not unusable else None,
                     reported_window, sampled_at=now, process_scope=labels,
                     device_scope=None,
                     reason=self._reason(window_note,
-                                        self._aggregate_reason(failures, per_process_rss))),
+                                        self._aggregate_reason(rss_failures,
+                                                               per_process_rss))),
             ]
             for index, tracked in enumerate(self._tracked):
                 scope = (tracked.label,)
@@ -503,14 +586,14 @@ class MetricCollector:
                     reported_window, sampled_at=now, process_scope=scope,
                     device_scope=None,
                     reason=self._reason(window_note,
-                                        failures.get(tracked.label))))
+                                        cpu_failures.get(tracked.label))))
                 samples.append(self._bytes_sample(
                     f"rss:{tracked.label}",
                     per_process_rss[index] if not unusable else None,
                     reported_window, sampled_at=now, process_scope=scope,
                     device_scope=None,
                     reason=self._reason(window_note,
-                                        failures.get(tracked.label))))
+                                        rss_failures.get(tracked.label))))
 
             self._latest = tuple(samples)
             return self._latest
@@ -526,18 +609,34 @@ class MetricCollector:
         """Why an aggregate is absent, naming the processes that could not be read.
 
         **The number of processes named is bounded**, by `MAX_REASONED_PROCESSES`. This
-        is a measured bound, not tidiness. Measured on this machine, same script before
-        and after: a collector tracking 199 pids grew this process's RSS 56 MB -> 95 MB ->
-        206 MB -> 647 MB -> 2.4 GB across ten samples, and the eleventh tick raised
-        `MemoryError`. With the bound in place the same twelve samples hold RSS flat at
-        56.6 MB.
+        is a measured bound, not tidiness.
 
-        What made it grow was the reason itself, not the process table: the recorded
-        failure text compounded one `NoSuchProcess:` layer per reading (see `_fail`), and
-        this method joined all 199 of them - labels plus `label: reason` pairs, per
-        aggregate, twice per sample. Handles, thread count, `psutil._pmap` and the tracked
-        Python object count were all flat throughout, and a control loop performing the
-        same `psutil` reads without the collector did not move RSS at all.
+        **The "before" figures below are not reproducible from this commit** and are
+        recorded as history, not as something to re-run: they came from an instrumented
+        pre-fix run on 199 tracked pids, over ten samples, in which the recorded failure
+        text compounded one `NoSuchProcess:` layer per reading and this method joined all
+        199 of them twice per sample. RSS went
+
+            56.2 -> 57.0 -> 57.5 -> 58.7 -> 59.9 -> 67.9 -> 95.0 -> 206.7 -> 647.1 -> 2411.9 MB
+
+        and the eleventh tick raised `MemoryError`. **A reader cannot verify that from
+        HEAD**, and should not be invited to try.
+
+        **What is reproducible from HEAD** is that the bound holds. Measured after the
+        fix, same script, 199 tracked pids, twelve samples:
+
+            55.8 -> 56.5 -> 56.5 -> ... -> 56.6 MB      (flat)
+
+        and independently by the reviewer at 400 pids over 30 samples: RSS 56.6 -> 57.4 MB,
+        flat from sample 2, with the aggregate reason constant at 673 characters. The
+        post-fix figure to quote is **~56.6 MB flat**; an earlier version of this
+        docstring and the matching test quoted 44.1 MB for the same experiment, which was
+        a different run's starting point rather than the settled value.
+
+        What made it grow was the reason itself, not the process table: handles, thread
+        count, `psutil._pmap` and the tracked Python object count were all flat
+        throughout, and a control loop performing the same `psutil` reads without the
+        collector did not move RSS at all (flat at 17.6 MB over ten rounds).
 
         So past the bound the reason says how many more there were rather than naming
         them. That loses no evidence the reader needs - the count is the number a

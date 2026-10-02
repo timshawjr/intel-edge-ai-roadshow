@@ -101,6 +101,9 @@ class MetricSample:
     interval between the two reads it was computed from; for a gauge like `rss`, how
     often the gauge is read. Either way it is **carried**, because "NPU 41%" and "NPU
     41% averaged over 4 hours" are different claims and only the first is on the card.
+    It is **zero only on an `UNAVAILABLE` sample**, where it means nothing was measured
+    over any window - a placeholder duration would be a fabricated number on a record
+    whose whole point is that it carries no number.
 
     `sampled_at` is monotonic-clock seconds, matching `FramePacket.captured_at`, so a
     metric reading and the frame it was measured beside can be placed on one timeline.
@@ -139,11 +142,25 @@ class MetricSample:
         object.__setattr__(self, "process_scope", labels)
 
         window = _require_finite("window_seconds", self.window_seconds)
-        if window <= 0.0:
+        if window < 0.0:
             raise ValueError(
-                f"{self.name}: window_seconds must be > 0; got {window}. A reading with "
-                f"no window says nothing about what it averages over, which is half the "
-                f"claim a rate makes."
+                f"{self.name}: window_seconds must be >= 0; got {window}. A negative "
+                f"window is not a window."
+            )
+        if window <= 0.0 and self.validity is not Validity.UNAVAILABLE:
+            # **Zero is permitted only where there is nothing to average over.** A
+            # measured reading carries the interval it was averaged over, so a zero there
+            # is a claim that the number was measured over no time, which is not a thing
+            # that happens. An UNAVAILABLE reading has no number to average, so the one
+            # honest window for it is `0.0` - "nothing was measured" - rather than a
+            # placeholder standing in for a duration that never elapsed. The collector
+            # used to publish `1.0` here, which was a fabricated duration on a sample
+            # whose value was honestly absent, and with `interval=1.0` the placeholder was
+            # numerically indistinguishable from a real window.
+            raise ValueError(
+                f"{self.name}: a measured reading must carry window_seconds > 0; got "
+                f"{window}. Use validity=Validity.UNAVAILABLE with window_seconds=0.0 "
+                f"to say that nothing was measured."
             )
         object.__setattr__(self, "window_seconds", window)
         sampled_at = _require_finite("sampled_at", self.sampled_at)

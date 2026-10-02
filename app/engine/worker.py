@@ -27,12 +27,28 @@ has to be true simultaneously or the booth is lying:
    overlay compare identities and drop a result whose frame has already been replaced -
    review focus #1 - and it survives the queue boundary because the queue carries
    packets too.
+5. **The requested device rides on the result beside the confirmed one.** A fallback -
+   NPU asked for, CPU confirmed - is a legitimate state and is reported as what actually
+   ran. What review focus #4 forbids is it being *invisible*, so `requested_device` is a
+   field of the record and `fell_back` is the comparison, rather than something a
+   consumer has to know to perform.
 
 **`latency_ms` is the `infer` call and nothing else.** Preprocessing, the decode and the
 placement read are all outside the timer, which makes the number directly comparable with
 the p50s `tools/qualify_m0.py` measured on this machine. Timing the whole frame would
 produce a larger, differently-defined number and a reader would compare it against the
 wrong reference.
+
+**A `latency_ms` is not a throughput claim, and the device ordering here is not a
+result.** Measured on this machine over one clip frame, 30 inferences per device: CPU
+21.81 ms, GPU 4.45 ms, NPU 6.03 ms - so the **NPU is slower than the GPU**, which is not
+the shape a booth story usually has and which the reviewer re-measured twice to confirm it
+was not an artefact of ordering or interleaving. Those are 30 single-frame inferences,
+not a sustained run, and the GPU here is an integrated **Arc 140V sharing system memory
+with the NPU** - exactly the configuration in which a single-frame p50 favours the GPU.
+Nothing in this module should be read as claiming an accelerator is faster than another;
+the module's job is to report what a frame cost and where it ran, and it does not
+establish a ranking.
 
 **The output tensor is fetched by the compiled model's port object, with
 `get_output_tensor(0)` as the recorded fallback.** Measured on this build
@@ -75,6 +91,7 @@ from app.inference.decode import (
 )
 from app.inference.devices import (
     EXECUTION_DEVICES,
+    is_device,
     normalise_execution_devices,
 )
 from app.inference.pinned import MODEL_ID, num_classes, pinned_input_shape, verified_ir_path
@@ -174,6 +191,16 @@ class WorkerConfig:
 class InferenceResult:
     """One frame's analysis, tied to the frame it analysed.
 
+    **`requested_device` and `execution_devices` travel together and are checked against
+    each other here.** Both are present, so a consumer cannot be handed one without the
+    other - and at construction the pair is compared, so a result whose confirmation does
+    not match its request is refused rather than published. Review focus #4 is a *silent
+    fallback*: an NPU request answered by the CPU. Reporting that fallback honestly means
+    saying `('CPU',)`, which the code already did - but with only `execution_devices` on
+    the record, nothing forced a card to compare it against what was asked for, and
+    `app/` had no caller of `is_device` outside its own definition. Carrying the request
+    makes the comparison unavoidable.
+
     **`latency_ms` is `None` exactly when `error` is set, and never `0.0`.** A zero in a
     latency column reads as "the device was instantaneous", which is the one thing a
     measured latency is never. The brief declared this field `float`; it is widened to
@@ -182,7 +209,9 @@ class InferenceResult:
 
     **`execution_devices` is empty exactly when `error` is set.** Same reasoning: there
     is no reading of where the work ran when the work did not run, and `()` next to a
-    success is a shape a screen cannot draw honestly.
+    success is a shape a screen cannot draw honestly. A failure still carries the
+    `requested_device`, because "NPU was asked for and could not run" is exactly what an
+    operator needs and it must not be lost.
 
     **`detections` is a `tuple`, not a list**, and it is empty when there is an error. A
     bare list of boxes is the thing review focus #1 is about; refusing it here means the
@@ -194,6 +223,7 @@ class InferenceResult:
     latency_ms: float | None
     execution_devices: tuple[str, ...]
     error: str | None
+    requested_device: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.frame, FramePacket):
@@ -224,6 +254,9 @@ class InferenceResult:
             )
         object.__setattr__(self, "execution_devices",
                            tuple(str(d) for d in self.execution_devices))
+        if self.requested_device is not None:
+            object.__setattr__(self, "requested_device",
+                               _require_text("requested_device", self.requested_device))
         error = self.error
         if error is not None and (not isinstance(error, str) or not error.strip()):
             raise ValueError(
@@ -276,22 +309,51 @@ class InferenceResult:
                 )
 
     @classmethod
-    def failure(cls, frame: FramePacket, error: str) -> "InferenceResult":
-        """The only honest shape for a frame that could not be analysed."""
+    def failure(cls, frame: FramePacket, error: str,
+                requested_device: str | None = None) -> "InferenceResult":
+        """The only honest shape for a frame that could not be analysed.
+
+        `requested_device` is kept even here: "the NPU was asked for and would not run"
+        is the fact an operator needs, and a failure that forgot what it was trying to do
+        could not distinguish a broken plugin from a misconfigured worker.
+        """
         return cls(frame=frame, detections=(), latency_ms=None,
-                   execution_devices=(), error=str(error))
+                   execution_devices=(), error=str(error),
+                   requested_device=requested_device)
+
+    @property
+    def fell_back(self) -> bool | None:
+        """Whether the work ran somewhere other than where it was requested.
+
+        `None` when there is no request to compare against, or when the result is an
+        error. `False` means confirmed on the requested device. `True` is a **fallback** -
+        and it is a legitimate state: the runtime may genuinely put the work elsewhere, and
+        the honest thing then is to report what actually ran rather than to fail. What
+        must not happen is the fallback being invisible, which is why the requested
+        device is a field on the record rather than something only the supervisor knows.
+
+        `is_device` is used rather than `==` because the NPU plugin reports the bare
+        string `'NPU'` while CPU reports `['CPU']` and GPU reports `['GPU.0']`.
+        """
+        if self.requested_device is None or self.error is not None:
+            return None
+        return not is_device(self.execution_devices, self.requested_device)
 
     def to_json(self) -> dict[str, Any]:
         """Metadata only - never the pixels, and never the detections themselves.
 
         `latency_ms` stays `None` here rather than becoming `0`, so a serialised failure
-        is still visibly a failure.
+        is still visibly a failure. `requested_device` is included so a log reader sees
+        the same fallback the card would: `fell_back` is the boolean form of comparing the
+        two, carried rather than recomputed by every consumer.
         """
         return {
             "frame": self.frame.to_json(),
             "detection_count": len(self.detections),
             "latency_ms": self.latency_ms,
+            "requested_device": self.requested_device,
             "execution_devices": list(self.execution_devices),
+            "fell_back": self.fell_back,
             "error": self.error,
             "validity": "failed" if self.error else "measured",
             "fields": [f.name for f in fields(self)],
@@ -532,13 +594,15 @@ def infer_once(
         devices = _confirmed_devices(active)
         return InferenceResult(frame=frame, detections=tuple(detections),
                                latency_ms=latency_ms, execution_devices=devices,
-                               error=None)
+                               error=None, requested_device=config.device_id)
     except Exception as exc:  # noqa: BLE001 - a device that cannot run is a result
         detail = f"{type(exc).__name__}: {exc}".strip()
+        requested = config.device_id if isinstance(config, WorkerConfig) else None
         if isinstance(frame, FramePacket):
-            return InferenceResult.failure(frame, detail)
+            return InferenceResult.failure(frame, detail, requested)
         return InferenceResult(frame=frame, detections=(), latency_ms=None,
-                               execution_devices=(), error=detail)
+                               execution_devices=(), error=detail,
+                               requested_device=requested)
 
 
 def run_worker(config: WorkerConfig, in_queue: Any, out_queue: Any) -> None:
