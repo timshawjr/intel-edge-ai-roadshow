@@ -1,4 +1,5 @@
 # Provisioned artifacts and runtime data, not source.
+artifacts/
 .venv/
 cache/
 logs/

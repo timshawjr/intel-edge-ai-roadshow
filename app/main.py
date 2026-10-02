@@ -1,0 +1,873 @@
+"""`app.main` - the entry point, the startup gate, the self-test and the headless run.
+
+Four things live here, and each is a place where a quiet lie is easiest:
+
+## 1. The startup gate
+
+`assert_no_simulation_in_release(release, providers)` is the AGENTS.md rule 14 gate. It
+raises `SystemExit` when a release build has a simulated provider registered, and it
+**names the provider it refused** - "release mode refused to start" with no name sends
+somebody to the wrong subsystem, which at a trade show costs more than the failure.
+
+Matching is on an **explicit set plus four prefixes** (`simulated`, `mock`, `fake`,
+`stub`), never on a substring. Substring matching would catch more names and would also
+be wrong in a way that matters: a real provider whose name merely contained one of those
+words would shut down the application, and the person diagnosing that would not be
+looking at a simulation at all.
+
+`REGISTERED_PROVIDERS` is what this build actually registers: `psutil`, and nothing else.
+`app.telemetry.pdh` is deliberately absent, because the counter read is not usable in
+this process and registering an unusable provider would be a claim that something is
+being measured when it is not.
+
+## 2. `--selftest`
+
+Runs preprocess, infer, decode, track, event and render-metadata with **no network and no
+display**, prints `PASS`, and exits 0. Two properties are load-bearing:
+
+- **It works with nothing provisioned.** A machine with no model and no clip must get a
+  truthful answer rather than a crash, so a missing artefact is a stage `skipped` **with
+  its reason stated**. A skip is never counted as a run: the summary separates the two
+  verdicts, and the stage-reporting test in `tests/test_main.py` asserts that the
+  separation survives. Named without its `def` form on purpose - shipped docstrings are
+  scanned for `test_*` citations and a cited name must be one
+  `tests/test_retail_measurements.py` can resolve, and that scanner walks a fixed list of
+  M1 modules that does not include this one.
+- **It opens no socket and no display.** `--selftest` never imports `PySide6.QtGui`; the
+  "render-metadata" stage is the `UiBridge`'s formatting and overlay construction, not a
+  window. A self-test that needed a display would be untestable in CI and would tell an
+  operator less than a stage list does.
+
+The M1 verification block in AGENTS.md names `.venv\\Scripts\\python.exe -m app.main
+--selftest` as a gate, so this is the command a person runs before a booth.
+
+## 3. `--headless`
+
+Runs the whole pipeline against the provisioned clip on the requested device, offscreen,
+and writes a JSON summary. The summary's construction is in `build_run_summary`, which is a
+**pure function of its arguments** and is therefore testable without a clip, a device or
+Qt - the tests use it directly, and the real run only supplies evidence about the
+numbers.
+
+Three properties of the summary exist because their absence would be a lie:
+
+- an unmeasured figure is `null`, never `0`;
+- `device.requested` and `device.confirmed` are **separate keys**, and `fell_back` is
+  `null` rather than `False` when there is no confirmation at all (an unproven route has
+  not fallen back, it has not been shown); and
+- every event carries its `dedup_key`, so a count can be checked against a replay.
+
+## 4. The windowed run
+
+The live booth: the real `Main.qml`, the real supervisor, the real collector, with the
+frames fed from `ClipSource` on a background thread and everything crossing into Qt
+through signals (AGENTS.md rule 11). `--windowed` is not the default because a headless
+CI run and a booth are different jobs, and `--selftest` is the one that must always work.
+
+**Startup is announced, not assumed.** `DeviceRegistry.describe()` costs **3.3-3.8 s** cold
+here - one memoised PowerShell PnP enumeration - so it runs once, before the window
+opens, and the operator is told that is what is happening rather than being shown a blank
+screen. Nothing on a per-frame or per-sample path may call it.
+
+## What this module does not do
+
+It does not open a network connection, it does not resolve a device name to a plugin
+itself (`Supervisor` refuses `AUTO`/`HETERO`/`MULTI` at the config boundary), and it does
+not read `config/*.json` directly - the model facts come from `app.inference.pinned`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+import time
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+__all__ = [
+    "REGISTERED_PROVIDERS",
+    "SIMULATED_PROVIDER_PREFIXES",
+    "assert_no_simulation_in_release",
+    "build_parser",
+    "build_run_summary",
+    "main",
+    "run_headless",
+    "run_selftest",
+]
+
+#: The providers this build registers. **The single source of truth for the release gate.**
+#: `psutil` is the only one: it produces the CPU and RSS samples the cards show, and its
+#: values are read through `MetricCollector.sample()`.
+#:
+#: `app.telemetry.pdh` is **not** here, and its absence is deliberate. The PDH counter read
+#: is not usable in this process - measured, it terminates the process with `0xC0000005` -
+#: so registering it would claim a measurement that never happens. The GPU and NPU cards
+#: say "Utilization unavailable" because nothing is registered to produce a value for them.
+REGISTERED_PROVIDERS: tuple[str, ...] = ("psutil",)
+
+#: Prefixes that mark a provider as simulated. Prefixes, not substrings; see the module
+#: note for why that distinction is the whole point of the gate.
+SIMULATED_PROVIDER_PREFIXES: tuple[str, ...] = ("simulated", "mock", "fake", "stub")
+
+
+def _is_simulated(provider: str) -> bool:
+    """Whether `provider` is a simulated source, by name.
+
+    `name.startswith(prefix)` and nothing else. A real provider whose name happened to
+    *contain* one of the four words would otherwise be shut down at startup, and the
+    person diagnosing that would not find a simulation anywhere.
+    """
+    text = str(provider).strip().lower()
+    return text.startswith(SIMULATED_PROVIDER_PREFIXES)
+
+
+def assert_no_simulation_in_release(release: bool, providers: Sequence[str]) -> None:
+    """Refuse to start a release build with a simulated provider registered.
+
+    Raises `SystemExit`, naming every offending provider. Returns normally otherwise -
+    including for an empty provider list, which is a build that measures nothing and says
+    so, not a build that simulates something.
+    """
+    if not release:
+        return
+    offenders = [str(p) for p in providers if _is_simulated(p)]
+    if not offenders:
+        return
+    raise SystemExit(
+        "refusing to start in release mode: simulated provider(s) registered: "
+        f"{', '.join(offenders)}. A release build must publish only measured figures "
+        f"(AGENTS.md rule 14). Unregister the provider, or run without --release."
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The self-test.
+# --------------------------------------------------------------------------------------
+
+def _stage(name: str, fn, *, needs: Sequence[str] = ()) -> dict[str, Any]:
+    """Run one self-test stage and record what happened, never raising.
+
+    `needs` names provisions the stage cannot run without. A missing provision is
+    `skipped` **with its reason**, which is a different record from `ran` - a self-test that
+    reported a skip as a pass would be the failure this module exists to prevent.
+    """
+    missing = _missing_provisions(needs)
+    if missing:
+        return {"verdict": "skipped", "reason": missing,
+                "detail": "nothing was exercised"}
+    try:
+        detail = fn()
+    except Exception as exc:  # noqa: BLE001 - a stage failure is a result, not a crash
+        return {"verdict": "failed", "reason": f"{type(exc).__name__}: {exc}",
+                "detail": "the stage raised"}
+    return {"verdict": "ran", "reason": "", "detail": str(detail)}
+
+
+def _missing_provisions(needs: Sequence[str]) -> str:
+    """A stated reason for each unmet provision, or `""` when all are met."""
+    missing: list[str] = []
+    for need in needs:
+        if need == "ir":
+            try:
+                from app.inference.pinned import verified_ir_path
+
+                verified_ir_path()
+            except Exception as exc:  # noqa: BLE001 - a provision check, not a stage
+                missing.append(f"the pinned IR is unusable: {exc}")
+        elif need == "clip":
+            from app.engine.retail_config import RETAIL_CHECKOUT_CLIP
+
+            if not Path(RETAIL_CHECKOUT_CLIP).exists():
+                missing.append(f"{RETAIL_CHECKOUT_CLIP} is not provisioned")
+        elif need == "cpu":
+            try:
+                import openvino as ov
+
+                if "CPU" not in ov.Core().available_devices:
+                    missing.append("no CPU plugin on this machine")
+            except ImportError:
+                missing.append("openvino is not importable")
+    return "; ".join(missing)
+
+
+def _selftest_preprocess() -> str:
+    from app.inference.pinned import pinned_input_shape
+    from app.inference.preprocess import preprocess_bgr
+    import numpy as np
+
+    _, _, height, width = pinned_input_shape()
+    blob, letterbox = preprocess_bgr(np.zeros((1080, 1920, 3), np.uint8), width, height)
+    return (f"letterbox {width}x{height} pad={letterbox.pad_value} "
+            f"scaled={letterbox.scaled_w}x{letterbox.scaled_h}")
+
+
+def _selftest_infer() -> str:
+    """One real inference on the CPU plugin, with the placement read after it."""
+    from app.engine.worker import WorkerConfig, infer_once
+    from app.inference.pinned import MODEL_ID, pinned_input_shape
+
+    _, _, height, width = pinned_input_shape()
+    config = WorkerConfig(device_id="CPU", model_id=MODEL_ID, input_width=width,
+                          input_height=height, conf_threshold=0.25, iou_threshold=0.45)
+    import numpy as np
+
+    from app.contracts.frame import FramePacket
+
+    frame = FramePacket(session_id="selftest", scenario_id="selftest", stream_id="A",
+                        frame_id=0, source_pts=0.0, source_loop_id=0,
+                        captured_at=0.0, decoded_at=0.0, width=1920, height=1080,
+                        image=np.zeros((1080, 1920, 3), np.uint8))
+    result = infer_once(None, frame, config)
+    if result.error is not None:
+        raise RuntimeError(result.error)
+    return (f"{result.latency_ms:.2f} ms on confirmed "
+            f"{list(result.execution_devices)}")
+
+
+def _selftest_decode_track_event() -> str:
+    """The pure half of the path: decode a synthetic tensor, track it, count an event."""
+    from app.contracts.frame import FramePacket
+    from app.engine.events import RetailEventMachine
+    from app.engine.retail_config import retail_sanity_manifest
+    from app.engine.tracker import Tracker
+    from app.inference.decode import Detection
+    from app.inference.pinned import class_names
+    import numpy as np
+
+    manifest = retail_sanity_manifest()
+    tracker = Tracker(iou_threshold=manifest.iou_threshold)
+    machine = RetailEventMachine(manifest, class_names=class_names())
+    # A person-shaped box inside COUNTER_BAND, held for the dwell the pack requires.
+    person_id = class_names().index("person")
+    emitted = 0
+    for step in range(40):
+        now = step / 10.0
+        frame = FramePacket(session_id="selftest", scenario_id=manifest.id,
+                            stream_id="A", frame_id=step, source_pts=now,
+                            source_loop_id=0, captured_at=now, decoded_at=now,
+                            width=1920, height=1080,
+                            image=np.zeros((1080, 1920, 3), np.uint8))
+        detection = Detection(class_id=person_id, score=0.9,
+                              box=(200.0, 300.0, 700.0, 900.0))
+        for track in tracker.update([detection], now=now):
+            emitted += len(machine.observe(track, frame))
+    if emitted == 0:
+        raise RuntimeError(
+            "the synthetic presence produced no zone_occupancy event, so the event "
+            "machine is not reachable by this self-test. That is a real failure and not "
+            "a skip: the pack's own guard proves the same configuration fires on real "
+            "footage."
+        )
+    return f"{emitted} zone_occupancy event(s) from a synthetic presence"
+
+
+def _selftest_render_metadata() -> str:
+    """The UI layer's formatting and overlay construction, with no window.
+
+    This is the "render" half of `--selftest` and it deliberately does **not** build a
+    `QGuiApplication`: a self-test that needed a display would not be runnable in CI, and
+    the stage that can be checked without one is the stage that checks whether numbers
+    render as `unavailable` instead of `0`.
+    """
+    from app.ui.bridge import UNAVAILABLE_TEXT, UiBridge
+
+    bridge = UiBridge()
+    if bridge.display_text("system_cpu_percent") != UNAVAILABLE_TEXT:
+        raise RuntimeError(
+            "a fresh UiBridge rendered a metric as something other than "
+            f"{UNAVAILABLE_TEXT!r}; a cold-start card must read unavailable"
+        )
+    if bridge.device_confirmed is not None:
+        raise RuntimeError("a fresh UiBridge claimed a confirmed device before anything ran")
+    return ("unavailable renders as unavailable, and no device is claimed before an "
+            "inference confirms one")
+
+
+def run_selftest() -> dict[str, Any]:
+    """Run every self-test stage and return the summary. **Never raises.**
+
+    `display` is always `None` in the returned summary and is asserted to be by the
+    tests: the self-test opens no window.
+    """
+    started = time.perf_counter()
+    stages = {
+        "preprocess": _stage("preprocess", _selftest_preprocess),
+        "infer": _stage("infer", _selftest_infer,
+                         needs=("ir", "cpu")),
+        "decode-track-event": _stage("decode-track-event", _selftest_decode_track_event,
+                                     needs=("cpu",)),
+        "render-metadata": _stage("render-metadata", _selftest_render_metadata),
+    }
+    failed = [name for name, stage in stages.items() if stage["verdict"] == "failed"]
+    return {
+        "stages": stages,
+        "display": None,
+        "network": "none",
+        "providers": list(REGISTERED_PROVIDERS),
+        "failed": failed,
+        "ok": not failed,
+        "seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+# --------------------------------------------------------------------------------------
+# The run summary.
+# --------------------------------------------------------------------------------------
+
+def _percentile(values: Sequence[float], fraction: float) -> float | None:
+    """A nearest-rank percentile, or `None` for an empty sequence.
+
+    **No interpolation.** `p95` of 20 samples is the 19th of the 20 samples that were
+    taken; a smoothed percentile is a number no measurement produced, which is the shape
+    this project refuses everywhere else.
+    """
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def _sample_payload(sample: Any) -> dict[str, Any]:
+    """One `MetricSample` as a JSON-ready dict, with `None` kept as `None`.
+
+    The record's own fields decide the payload's shape; nothing here substitutes a
+    number for an absent reading, and `validity` and `unavailable_reason` travel with the
+    value so a reader can tell a number from an absence without inferring it.
+    """
+    return {
+        "value": sample.value,
+        "unit": sample.unit,
+        "provider": sample.provider,
+        "validity": sample.validity.value,
+        "window_seconds": sample.window_seconds,
+        "reason": sample.unavailable_reason,
+        "process_scope": list(sample.process_scope),
+    }
+
+
+def build_run_summary(
+    *,
+    device_requested: str,
+    state: str,
+    confirmed: Sequence[str],
+    frames_submitted: int,
+    frames_analysed: int,
+    drops: int,
+    elapsed_s: float,
+    frame_ages_ms: Sequence[float],
+    events: Sequence[Any],
+    samples: Sequence[Any],
+    extra_errors: Sequence[str] = (),
+) -> dict[str, Any]:
+    """The headless run's summary, as a pure function of what was measured.
+
+    Every optional figure is `None` when it was not measured. `device.requested` and
+    `device.confirmed` are separate, and `fell_back` is `None` - not `False` - when there
+    is no confirmation at all: an unproven route has not fallen back, it has **not been
+    shown**, and `False` there would read as "running where you asked".
+    """
+    from app.inference.devices import is_device
+
+    confirmed_tuple = tuple(str(d) for d in confirmed)
+    fell_back: bool | None = None
+    if confirmed_tuple:
+        fell_back = not is_device(confirmed_tuple, device_requested)
+
+    analysed = int(frames_analysed)
+    fps = (analysed / float(elapsed_s)) if analysed > 0 and elapsed_s > 0 else None
+
+    return {
+        "device": {
+            "requested": device_requested,
+            "confirmed": list(confirmed_tuple),
+            "fell_back": fell_back,
+            "state": state,
+        },
+        "frames_submitted": int(frames_submitted),
+        "frames_analysed": analysed,
+        "drops": int(drops),
+        "elapsed_s": round(float(elapsed_s), 3),
+        "ai_fps": round(fps, 4) if fps is not None else None,
+        "frame_age_ms": {
+            "p50": _percentile(frame_ages_ms, 0.50),
+            "p95": _percentile(frame_ages_ms, 0.95),
+            "samples": len(frame_ages_ms),
+            "method": "nearest rank, no interpolation",
+        },
+        "metrics": {sample.name: _sample_payload(sample) for sample in samples},
+        "events": [
+            {
+                "kind": event.kind,
+                "class_name": event.class_name,
+                "track_id": event.track_id,
+                "source_loop_id": event.source_loop_id,
+                "at_frame_id": event.at_frame_id,
+                "at_time": round(float(event.at_time), 4),
+                "dedup_key": event.dedup_key,
+            }
+            for event in events
+        ],
+        "event_counts": _count_events(events),
+        "errors": [str(text) for text in extra_errors],
+    }
+
+
+def _count_events(events: Sequence[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for event in events:
+        counts[event.kind] = counts.get(event.kind, 0) + 1
+    return counts
+
+
+# --------------------------------------------------------------------------------------
+# The headless run.
+# --------------------------------------------------------------------------------------
+
+def run_headless(*, device: str = "CPU", seconds: float = 5.0,
+                 source: str = "loop", scenario: str = "retail",
+                 scenario_id: str = "selftest-headless",
+                 session_id: str = "headless") -> dict[str, Any]:
+    """Run the whole pipeline offscreen and return the summary.
+
+    Frames come from `ClipSource` at its own analysis rate; inference runs in the spawned
+    worker the `Supervisor` owns; tracking and the event machine run in this process on
+    `Tracker.current_tracks()` - **only current tracks**, because a coasted track's box is
+    the last one seen and counting it would place an object where nobody observed it.
+
+    A loop reset calls `Tracker.reset()` **and** `RetailEventMachine.reset(loop_id)`, per
+    spec section 9: the tracker's ids deliberately do not rewind, so a rewind of the clip
+    cannot complete a pending presence belonging to the previous pass.
+    """
+    from app.contracts.frame import FramePacket
+    from app.engine.events import RetailEventMachine
+    from app.engine.retail_config import RETAIL_CHECKOUT_CLIP, retail_sanity_manifest
+    from app.engine.source import ClipSource
+    from app.engine.tracker import Tracker
+    from app.inference.pinned import class_names
+    from app.supervisor.runner import Supervisor
+
+    missing = _missing_provisions(("clip", "ir", "cpu"))
+    if missing:
+        raise RuntimeError(f"cannot run the real pipeline headless: {missing}")
+
+    manifest = retail_sanity_manifest()
+    tracker = Tracker(iou_threshold=manifest.iou_threshold)
+    machine = RetailEventMachine(manifest, class_names=class_names())
+
+    supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
+                            scenario_id=scenario_id,
+                            conf_threshold=manifest.conf_threshold,
+                            iou_threshold=manifest.iou_threshold)
+    clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
+                      session_id=session_id, scenario_id=scenario_id, target_fps=15.0)
+    # Started before the clock starts. A `Supervisor` that was never started refuses
+    # every `submit` **without counting a drop** (see `submit`), so a run that forgot
+    # this line would report zero submitted, zero drops and `state == "pending"` - a
+    # summary that looks like a slow machine rather than a run that never happened.
+    supervisor.start()
+    started = time.perf_counter()
+    seen_loops: set[int] = {0}
+    submitted = 0
+    try:
+        while time.perf_counter() - started < float(seconds):
+            frame = clip.read()
+            if frame is None:
+                if source == "once" or not clip.restart():
+                    break
+                loop_id = clip.loop_id
+                if loop_id not in seen_loops:
+                    seen_loops.add(loop_id)
+                    tracker.reset()
+                    machine.reset(loop_id)
+                frame = clip.read()
+                if frame is None:
+                    break
+            if supervisor.submit(frame):
+                submitted += 1
+            _fold_result(supervisor, tracker, machine)
+        # Drain what is already analysed before the clock is read, so the summary's
+        # frame counts and the events they produced describe the same instant.
+        _drain(supervisor, tracker, machine, seconds=2.0)
+    finally:
+        plan = supervisor.route_plan()
+        clip.close()
+        supervisor.stop()
+
+    elapsed = time.perf_counter() - started
+    return build_run_summary(
+        device_requested=plan.requested_device(supervisor.stream_id) or device,
+        state=plan.state,
+        confirmed=plan.confirmed_devices(supervisor.stream_id),
+        frames_submitted=supervisor.frames_submitted,
+        frames_analysed=supervisor.frames_analysed,
+        drops=supervisor.drops,
+        elapsed_s=elapsed,
+        frame_ages_ms=supervisor.frame_ages_ms(),
+        events=tuple(machine.events),
+        samples=supervisor.last_samples,
+        extra_errors=tuple(plan.errors),
+    )
+
+
+def _fold_result(supervisor: Any, tracker: Any, machine: Any) -> None:
+    """Fold the newest result into the tracker and the event machine.
+
+    Reads `latest_result()` rather than connecting to a signal, because this loop is the
+    consumer and the supervisor is its only producer; a signal would add a thread hop per
+    frame for no gain. The Qt-facing path (`run_windowed`) does use signals, because there
+    the consumer is a different thread.
+    """
+    result = supervisor.latest_result()
+    if result is None or result.error is not None:
+        return
+    frame = result.frame
+    if machine.loop_id is None:
+        machine.reset(frame.source_loop_id)
+    now = frame.captured_at
+    # `current_tracks()`, never `update()`'s return value: only a track matched by this
+    # frame is evidence that its object is present now.
+    for track in tracker.update(result.detections, now=now):
+        machine.observe(track, frame)
+
+
+def _drain(supervisor: Any, tracker: Any, machine: Any, *, seconds: float) -> None:
+    """Wait for the worker to finish what has already been submitted.
+
+    Bounded by `seconds`, because a wedged worker must not hang a validation run. The
+    loop is what makes the counts and the events describe the same instant: an event
+    emitted after the last `_fold_result` would be counted without its frame.
+    """
+    deadline = time.perf_counter() + float(seconds)
+    last = supervisor.frames_analysed
+    while time.perf_counter() < deadline:
+        _fold_result(supervisor, tracker, machine)
+        current = supervisor.frames_analysed
+        if current == last:
+            time.sleep(0.02)
+            continue
+        last = current
+
+
+# --------------------------------------------------------------------------------------
+# The windowed run.
+# --------------------------------------------------------------------------------------
+
+def run_windowed(*, device: str = "CPU", scenario: str = "retail",
+                 source: str = "loop", session_id: str = "booth") -> int:
+    """The live booth. Returns the process exit code.
+
+    **Device discovery happens here, before the window opens**, and it is announced:
+    `DeviceRegistry.describe()` costs 3.3-3.8 s cold on this machine, and a booth operator
+    needs to be told that is what is happening rather than shown a black screen. It is
+    never called again.
+    """
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QFontDatabase
+    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQuick import QQuickWindow
+
+    from app.engine.retail_config import RETAIL_CHECKOUT_CLIP, retail_sanity_manifest
+    from app.engine.source import ClipSource
+    from app.engine.tracker import Tracker
+    from app.inference.pinned import class_names
+    from app.supervisor.runner import Supervisor
+    from app.ui.bridge import ThemeTokens, UiBridge
+    from app.ui.provider import FrameImageProvider
+
+    print(f"[startup] discovering devices (~3.8 s cold on this machine); "
+          f"this runs once", flush=True)
+    _describe_devices()
+
+    import openvino as ov  # noqa: F401 - imported for the Core handle below
+
+    application = _gui_application()
+    # The booth font. Measured: 411 families under the `windows` plugin and 0 under
+    # `offscreen`, so the family is registered explicitly rather than relied on.
+    _register_font(QFontDatabase)
+
+    manifest = retail_sanity_manifest()
+    tracker = Tracker(iou_threshold=manifest.iou_threshold)
+    from app.engine.events import RetailEventMachine
+
+    machine = RetailEventMachine(manifest, class_names=class_names())
+
+    bridge = UiBridge(application)
+    theme = ThemeTokens(application)
+    supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
+                            scenario_id=manifest.id,
+                            conf_threshold=manifest.conf_threshold,
+                            iou_threshold=manifest.iou_threshold)
+    clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
+                      session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
+
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("frames", FrameImageProvider(bridge))
+    context = engine.rootContext()
+    context.setContextProperty("Theme", theme)
+    context.setContextProperty("bridge", bridge)
+
+    # Telemetry and route reach the UI through signals (AGENTS.md rule 11). Every setter
+    # here is a no-op on a widget from the wrong thread; the bridge is in the UI thread
+    # and these are queued connections because the emitters are not.
+    supervisor.state_changed.connect(lambda plan: _on_route(bridge, plan))
+    supervisor.error_raised.connect(lambda text: _append_error(bridge, text))
+    supervisor.result_ready.connect(
+        lambda result: _on_result(bridge, tracker, machine, result))
+
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "ui" / "Main.qml")))
+    roots = engine.rootObjects()
+    if not roots:
+        print("[startup] Main.qml produced no root objects; refusing to open a blank "
+              "window", file=sys.stderr, flush=True)
+        supervisor.stop()
+        clip.close()
+        return 2
+
+    supervisor.start()
+    _start_feeders(bridge, supervisor, clip, tracker, machine)
+    _start_telemetry(bridge, supervisor, application)
+
+    window = roots[0]
+    exit_code = application.exec()
+    supervisor.stop()
+    clip.close()
+    return int(exit_code)
+
+
+def _gui_application():
+    """The `QGuiApplication`, created here so `--selftest` never imports QtGui."""
+    from PySide6.QtGui import QGuiApplication
+
+    application = QGuiApplication.instance() or QGuiApplication(sys.argv)
+    return application
+
+
+def _register_font(database: Any) -> None:
+    """Register the booth font explicitly, and say so when it cannot be found."""
+    root = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Fonts" / "arial.ttf"
+    if root.exists() and database.addApplicationFont(str(root)) < 0:
+        print(f"[startup] could not register {root}; the screen will fall back to "
+              f"whatever family the renderer offers", file=sys.stderr, flush=True)
+
+
+def _describe_devices() -> None:
+    """One `DeviceRegistry.describe()`, at startup, for the console log.
+
+    The statuses are printed, not displayed: the compute cards take their availability
+    from the telemetry layer, and this call cannot produce a utilisation figure.
+    """
+    try:
+        import openvino as ov
+
+        from app.inference.devices import DeviceRegistry
+
+        for status in DeviceRegistry(ov.Core()).describe():
+            if status.available:
+                print(f"[device] {status.device_id}: {status.full_name} "
+                      f"(driver {status.driver_version or 'unreported'})", flush=True)
+            else:
+                print(f"[device] {status.device_id}: unavailable - "
+                      f"{status.unavailable_reason}", file=sys.stderr, flush=True)
+    except Exception as exc:  # noqa: BLE001 - a discovery failure is not a startup abort
+        print(f"[startup] device discovery failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _on_route(bridge: Any, plan: Any) -> None:
+    """Publish a route plan to the bridge. Runs on the supervisor's reader thread.
+
+    **A signal, not `invokeMethod`.** The bridge lives in the UI thread and the emitter
+    does not, so Qt queues the call automatically - which is AGENTS.md rule 11, satisfied
+    by construction rather than by remembering to pass a connection type.
+    `QMetaObject.invokeMethod` needs the exact registered type name and a wrong one fails
+    **silently**: the call is dropped and the UI never updates, which is a stall with no
+    diagnostic anywhere.
+    """
+    stream = next(iter(plan.requested), None)
+    bridge.routeArrived.emit({
+        "requested": plan.requested_device(stream) if stream else None,
+        "confirmed": list(plan.confirmed_devices(stream)) if stream else [],
+        "state": plan.state,
+        "errors": list(plan.errors),
+    })
+
+
+def _append_error(bridge: Any, text: str) -> None:
+    """Publish one stated reason. Reader thread."""
+    bridge.errorArrived.emit(str(text))
+
+
+def _on_result(bridge: Any, tracker: Any, machine: Any, result: Any) -> None:
+    """Fold one result into tracker, events and overlay. Reader thread.
+
+    `tracker.update(...)` runs here and **only current tracks** are published, so a coasted
+    track never reaches the overlay. The filter is the bridge's `set_overlay` for the
+    in-process path; this path publishes the already-filtered list rather than
+    republishing the raw one, so there is exactly one filter and both paths go through the
+    same rule - `Tracker.current_tracks()`.
+    """
+    if result.error is not None:
+        return
+    frame = result.frame
+    if machine.loop_id is None:
+        machine.reset(frame.source_loop_id)
+    now = frame.captured_at
+    events = []
+    for track in tracker.update(result.detections, now=now):
+        events.extend(machine.observe(track, frame))
+    bridge.frameArrivedFromWorker.emit(
+        _frame_payload(frame, tracker, events))
+
+
+def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any]) -> dict[str, Any]:
+    return {
+        "identity": list(frame.identity),
+        "width": frame.width,
+        "height": frame.height,
+        "boxes": [
+            {"track_id": t.track_id, "class_id": t.class_id,
+             "x": t.box[0] / frame.width, "y": t.box[1] / frame.height,
+             "w": (t.box[2] - t.box[0]) / frame.width,
+             "h": (t.box[3] - t.box[1]) / frame.height,
+             "confirmed": bool(t.confirmed)}
+            for t in tracker.current_tracks()
+        ],
+        "events": [
+            {"kind": e.kind, "class_name": e.class_name, "track_id": e.track_id,
+             "dedup_key": e.dedup_key}
+            for e in events
+        ],
+    }
+
+
+def _start_feeders(bridge: Any, supervisor: Any, clip: Any, tracker: Any,
+                   machine: Any) -> None:
+    """One thread: decode at the clip's rate and submit. Nothing touches a widget."""
+    import threading
+
+    def feed() -> None:
+        while True:
+            if supervisor.route_plan().state == "failed":
+                return
+            frame = clip.read()
+            if frame is None:
+                if not clip.restart():
+                    return
+                continue
+            supervisor.submit(frame)
+            time.sleep(0.005)
+
+    thread = threading.Thread(target=feed, name="frame-feed", daemon=True)
+    thread.start()
+
+
+def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
+    """A 2 Hz timer on the UI thread that takes one whole sample set.
+
+    **On the UI thread, deliberately.** The collector has its own background thread for
+    `psutil`, so calling `samples()` from here costs about 0.04 ms - measured - and doing
+    it on the UI thread means no widget is touched from another one. At 2 Hz this is not
+    a measurable load, and it keeps the whole UI-update path on one thread.
+    """
+    from PySide6.QtCore import QTimer
+
+    def tick() -> None:
+        # One whole sample set, through `sample()` and never through an accessor. The
+        # accessors share one frozen `_Tick` with `sample()`; reading one between samples
+        # moves the tick earlier for everybody and can flip the booth's own sample to
+        # UNAVAILABLE with no other visible cause.
+        bridge.samplesArrived.emit(tuple(supervisor.samples()))
+
+    timer = QTimer(application)
+    timer.timeout.connect(tick)
+    timer.start(500)
+
+
+# --------------------------------------------------------------------------------------
+# The CLI.
+# --------------------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI the brief specifies. Nothing else is accepted."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.main",
+        description="Intel Edge AI Roadshow - retail stream (M1).",
+    )
+    parser.add_argument("--scenario", default="retail",
+                        choices=("retail",),
+                        help="the scenario pack to run. Only `retail` ships in M1.")
+    parser.add_argument("--device", default="CPU",
+                        choices=("CPU", "GPU", "NPU"),
+                        help="the explicitly requested compile target. No AUTO, no "
+                             "HETERO, no MULTI: they hide where the work ran.")
+    parser.add_argument("--source", default="loop",
+                        choices=("loop", "once"),
+                        help="loop the clip, or stop at the end of one pass.")
+    parser.add_argument("--selftest", action="store_true",
+                        help="run every stage with no network and no display, then exit.")
+    parser.add_argument("--headless", action="store_true",
+                        help="run the full pipeline offscreen and print the summary.")
+    parser.add_argument("--windowed", action="store_true",
+                        help="open the QML booth screen (the default when nothing else "
+                             "is asked for).")
+    parser.add_argument("--seconds", type=float, default=5.0,
+                        help="how long a headless run lasts.")
+    parser.add_argument("--json", dest="json", default=None,
+                        help="write the run summary to this path as JSON.")
+    parser.add_argument("--release", action="store_true",
+                        help="refuse to start with a simulated provider registered.")
+    return parser
+
+
+def _write_json(path: str | None, payload: Any) -> None:
+    if not path:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """The process entry point. Returns the exit code."""
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    assert_no_simulation_in_release(release=bool(args.release),
+                                    providers=REGISTERED_PROVIDERS)
+
+    if args.selftest:
+        summary = run_selftest()
+        for name, stage in summary["stages"].items():
+            marker = {"ran": "ok", "skipped": "skip", "failed": "FAIL"}[stage["verdict"]]
+            detail = stage["detail"] if stage["verdict"] == "ran" else stage["reason"]
+            print(f"  {marker:4} {name:20} {detail}", flush=True)
+        if summary["ok"]:
+            print("PASS", flush=True)
+            return 0
+        print("FAIL: " + ", ".join(summary["failed"]), file=sys.stderr, flush=True)
+        return 1
+
+    if args.headless:
+        try:
+            summary = run_headless(device=args.device, seconds=args.seconds,
+                                   source=args.source, scenario_id=args.scenario)
+        except RuntimeError as exc:
+            print(f"headless run refused: {exc}", file=sys.stderr, flush=True)
+            return 2
+        _write_json(args.json, summary)
+        print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+        return 0
+
+    if args.windowed or not (args.selftest or args.headless):
+        return run_windowed(device=args.device, scenario=args.scenario,
+                            source=args.source)
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - the process entry point
+    sys.exit(main())

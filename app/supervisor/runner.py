@@ -227,6 +227,9 @@ class Supervisor(QObject):
         self._retired_queues: list[Any] = []
         self._worker_pid: int | None = None
         self._collector: MetricCollector | None = None
+        #: The most recent `samples()` result, kept so a run summary can be built after
+        #: `stop()` has torn the collector down. See `last_samples`.
+        self._last_samples: tuple[MetricSample, ...] = ()
 
         self._config = WorkerConfig(
             device_id=device_id,
@@ -590,6 +593,19 @@ class Supervisor(QObject):
 
     # -- telemetry --------------------------------------------------------------------
 
+    @property
+    def last_samples(self) -> tuple[MetricSample, ...]:
+        """The most recent sample set this supervisor took, or `()`.
+
+        Kept so a run summary can be built **after** `stop()` has torn the collector
+        down - which is the only safe order, because stopping the collector is what
+        guarantees no telemetry thread is still reading. Taking a fresh sample after
+        `stop()` would rebuild a collector, start a thread, and immediately leave it
+        running.
+        """
+        with self._lock:
+            return tuple(self._last_samples)
+
     def samples(self) -> tuple[MetricSample, ...]:
         """One telemetry sample set, from `MetricCollector.sample()`.
 
@@ -603,7 +619,10 @@ class Supervisor(QObject):
         collector = self._collector
         if collector is None:
             collector = self._rebuild_collector()
-        return collector.sample()
+        result = collector.sample()
+        with self._lock:
+            self._last_samples = result
+        return result
 
     def _rebuild_collector(self) -> MetricCollector:
         """A collector over this process and the current worker pid.

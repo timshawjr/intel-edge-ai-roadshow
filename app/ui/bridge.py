@@ -80,7 +80,6 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtQuick import QQuickImageProvider
 
 from app.contracts.metric_sample import MetricSample, Validity
 from app.inference.devices import is_device, normalise_execution_devices
@@ -336,35 +335,21 @@ _THEME_TOKEN_NAMES: tuple[str, ...] = _theme_token_names()
 ThemeTokens: type = _build_theme_class()
 
 
-class FrameImageProvider(QQuickImageProvider):
-    """Paints the newest decoded frame for the hero and the thumbnails.
+#: The image provider lives in `app.ui.provider` so that importing this module does not
+#: import `QtQuick`. `app.main --selftest` constructs a `UiBridge` for its render-metadata
+#: stage and must stay clear of the QML stack; `tests.test_ui_contract` asserts that
+#: `PySide6.QtQuick` is absent from `sys.modules` afterwards.
+def __getattr__(name: str) -> Any:
+    """Resolve `FrameImageProvider` on first use. See the note above.
 
-    **It serves whatever `UiBridge.set_frame_image` last handed it, and nothing else.**
-    There is no synthetic frame, no placeholder rectangle and no "no signal" pattern that
-    could be mistaken for video: before the first real frame arrives, `requestImage`
-    returns a **1x1 transparent** image, which renders as nothing. That is the honest
-    absence - an empty hero that says so, rather than a still image implying a stream
-    that is not running.
-
-    The BGR-to-RGB swap happens here because `cv2` hands BGR and `QImage.Format_RGB888`
-    wants RGB; getting it wrong renders a plausible-looking image with the red and blue
-    channels exchanged, which nobody notices on a dark retail scene and everybody
-    notices on an orange. The swap is done with `numpy` rather than `cv2.cvtColor` so
-    this module keeps no `cv2` import.
+    Present so `from app.ui.bridge import FrameImageProvider` keeps working for the
+    windowed path and the offscreen render tests without making the QML import eager.
     """
+    if name == "FrameImageProvider":
+        from app.ui.provider import FrameImageProvider
 
-    def __init__(self, bridge: "UiBridge") -> None:
-        super().__init__(QQuickImageProvider.Image)
-        self._bridge = bridge
-        self._blank = QImage(1, 1, QImage.Format_RGB888)
-        self._blank.fill(QColor(0, 0, 0, 0))
-
-    def requestImage(self, *args: Any) -> QImage:
-        """The newest frame, or a 1x1 transparent image if none has arrived."""
-        image = self._bridge.frame_image
-        if image is None or image.isNull():
-            return self._blank
-        return image
+        return FrameImageProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class UiBridge(QObject):
@@ -386,6 +371,66 @@ class UiBridge(QObject):
     metricUpdated = Signal(object)
     #: A business event was emitted. The argument is a `BusinessEvent`-shaped dict.
     eventEmitted = Signal(object)
+
+    # -- cross-thread entry points -------------------------------------------------
+    #
+    # The supervisor's reader and feeder threads publish through these, and this object
+    # lives in the UI thread. Qt turns that into a **queued** connection automatically,
+    # which is exactly what AGENTS.md rule 11 requires: no thread touches a widget, and
+    # the slot runs where the widgets are.
+    #
+    # `QMetaObject.invokeMethod` with `Q_ARG("QVariant", ...)` was the first mechanism and
+    # it is not used: it needs the exact registered type name, and a wrong one fails
+    # silently - the call is dropped and the UI simply never updates, which is a stall
+    # with no error. A signal with a plain Python object argument cannot be wrong that
+    # way.
+
+    #: A route plan arrived from the supervisor's thread.
+    routeArrived = Signal(object)
+    #: An error text arrived from the supervisor's thread.
+    errorArrived = Signal(str)
+    #: A frame plus its already-filtered boxes arrived from the supervisor's thread.
+    frameArrivedFromWorker = Signal(object)
+    #: A whole telemetry sample set arrived.
+    samplesArrived = Signal(object)
+
+    @Slot(object)
+    def apply_route(self, payload: object) -> None:
+        """Apply a route plan payload from the supervisor's thread."""
+        data = dict(payload)  # type: ignore[arg-type]
+        self.set_route(requested=data.get("requested"),
+                       confirmed=tuple(data.get("confirmed") or ()),
+                       state=str(data.get("state") or "pending"))
+        errors = tuple(str(e) for e in (data.get("errors") or ()))
+        if errors:
+            self.set_error(errors[-1])
+        self.routeChanged.emit({"state": self._route_state,
+                                "confirmed": self._device_confirmed})
+
+    @Slot(str)
+    def apply_error(self, text: str) -> None:
+        """Show one stated reason. Additive: a later error does not erase an earlier one."""
+        existing = self._error_message
+        message = f"{existing}\n{text}" if existing else str(text)
+        self.set_error(message)
+
+    @Slot(object)
+    def apply_frame(self, payload: object) -> None:
+        """Record a frame and the boxes that belong to it, from the supervisor's thread."""
+        data = dict(payload)  # type: ignore[arg-type]
+        boxes = list(data.get("boxes") or ())
+        self._overlay_boxes = tuple(boxes)
+        self.overlayBoxesChanged.emit()
+        for event in data.get("events") or ():
+            self.eventEmitted.emit(dict(event))
+        if not self._frame_ready:
+            self._frame_ready = True
+            self.frameReadyChanged.emit()
+
+    @Slot(object)
+    def apply_samples(self, samples: object) -> None:
+        """Take one whole telemetry sample set from the collector's reader."""
+        self.set_samples(tuple(samples))  # type: ignore[arg-type]
 
     # -- every property raises its own change signal, so QML bindings re-evaluate only
     #    what actually moved. A single "anything changed" signal would re-evaluate every
