@@ -40,15 +40,15 @@ produce a larger, differently-defined number and a reader would compare it again
 wrong reference.
 
 **A `latency_ms` is not a throughput claim, and the device ordering here is not a
-result.** Measured on this machine over one clip frame, 30 inferences per device: CPU
-21.81 ms, GPU 4.45 ms, NPU 6.03 ms - so the **NPU is slower than the GPU**, which is not
-the shape a booth story usually has and which the reviewer re-measured twice to confirm it
-was not an artefact of ordering or interleaving. Those are 30 single-frame inferences,
-not a sustained run, and the GPU here is an integrated **Arc 140V sharing system memory
-with the NPU** - exactly the configuration in which a single-frame p50 favours the GPU.
-Nothing in this module should be read as claiming an accelerator is faster than another;
-the module's job is to report what a frame cost and where it ran, and it does not
-establish a ranking.
+result.** Measured on this machine over one clip frame, four repeats of 30 inferences per
+device: CPU 20.99-21.16 ms, GPU 3.30-3.47 ms, NPU 5.92-5.99 ms - so the **NPU is slower
+than the GPU**, which is not the shape a booth story usually has and which the reviewer
+re-measured twice to confirm it was not an artefact of ordering or interleaving. Those are
+single-frame inferences, not a sustained run, and the GPU here is an integrated **Arc 140V
+sharing system memory with the NPU** - exactly the configuration in which a single-frame
+p50 favours the GPU. Nothing in this module should be read as claiming an accelerator is
+faster than another; the module's job is to report what a frame cost and where it ran, and
+it does not establish a ranking.
 
 **The output tensor is fetched by the compiled model's port object, with
 `get_output_tensor(0)` as the recorded fallback.** Measured on this build

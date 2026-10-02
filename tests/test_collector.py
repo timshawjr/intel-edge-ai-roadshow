@@ -37,6 +37,7 @@ import psutil
 from app.contracts.metric_sample import MetricSample, Validity
 from app.telemetry.collector import (
     MAX_REASONED_PROCESSES,
+    NO_WINDOW_ELAPSED_REASON,
     MetricCollector,
     _TrackedProcess,
     cpu_capacity,
@@ -742,6 +743,200 @@ class TheAccessorsCannotStealTheTick(unittest.TestCase):
         _spin(0.3)
         self.assertIsNotNone(collector.system_cpu_percent())
         self.assertIsNotNone(collector.app_cpu_percent())
+
+
+class ThePublishedReasonDescribesWhatHappened(unittest.TestCase):
+    """Review finding N-1: a stale string shipped to the operator.
+
+    M-4 removed the `window_seconds` placeholder - the reported window is now the measured
+    `0.0` - but `NO_WINDOW_ELAPSED_REASON` still told the presenter *"the declared window
+    is a placeholder"*. That constant is published verbatim as `unavailable_reason`, so a
+    booth card would describe a mechanism the code no longer has, and would fail to
+    mention the one it does have: the window it shows is `0.0` because nothing elapsed.
+
+    The word is pinned, because a string that describes a removed mechanism is exactly the
+    kind of stale claim that survives review by being true when written.
+    """
+
+    def test_the_published_reason_does_not_claim_a_placeholder(self):
+        self.assertNotIn(
+            "placeholder", NO_WINDOW_ELAPSED_REASON.lower(),
+            "the published reason describes a window placeholder that no longer exists; "
+            "the collector now reports the measured 0.0")
+
+    def test_the_published_reason_states_the_window_is_zero(self):
+        lowered = NO_WINDOW_ELAPSED_REASON.lower()
+        self.assertIn("0.0", lowered,
+                      "the reason should say what the card will actually show for the "
+                      "window")
+        self.assertIn("not a substituted interval", lowered,
+                      "the reason should say the interval was not substituted")
+
+    def test_the_string_a_card_receives_carries_no_placeholder(self):
+        """End to end: the sample's own reason, not the constant in isolation."""
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=_SteppingClock(step=0.0))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        for sample in collector.sample():
+            if sample.validity is Validity.UNAVAILABLE:
+                self.assertNotIn("placeholder", (sample.unavailable_reason or "").lower(),
+                                 f"{sample.name} publishes a reason describing a removed "
+                                 f"mechanism")
+                self.assertEqual(sample.window_seconds, 0.0,
+                                 f"{sample.name} publishes a window that is not the "
+                                 f"measured 0.0 its own reason describes")
+
+    def test_the_reason_is_short_enough_to_read_on_a_card(self):
+        self.assertLess(len(NO_WINDOW_ELAPSED_REASON), 220,
+                        f"the reason is {len(NO_WINDOW_ELAPSED_REASON)} characters; it is "
+                        f"rendered on a booth card")
+
+
+class _SettableClock:
+    """A clock that only moves when the test says so.
+
+    `_SteppingClock` advances on *every* read, which is the right default for asserting a
+    known window but cannot express the trap this class pins: the accessor reading at the
+    same instant as the previous sample, leaving the next sample no window at all.
+    """
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = float(now)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += float(seconds)
+
+
+class TheAccessorsMoveTheTickAndThatIsDocumented(unittest.TestCase):
+    """Review findings N-2 and N-3.
+
+    **N-2, a documented precondition the code violated.** `_readings()` was documented
+    "caller holds the lock", and both public accessors called it without one. It could not
+    simply take `self._lock`, because `sample()` holds that non-reentrant lock while
+    calling it. It now takes a dedicated `_measure_lock` itself, so the precondition is
+    satisfied rather than restated.
+
+    **N-3, an under-documented cost.** Reading an accessor *moves the tick*: whoever reads
+    first measures. A card polling an accessor on its own timer can therefore leave the
+    next `sample()` with no measurable window, and the booth flips to UNAVAILABLE with no
+    other visible cause. That is the correct outcome, and both accessors now say so.
+    """
+
+    def test_an_accessor_immediately_after_a_sample_leaves_the_next_one_unavailable(self):
+        """The exact trap the docstring now warns about, pinned as behaviour."""
+        clock = _SettableClock()
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock)
+        self.addCleanup(collector.stop)
+        clock.advance(0.25)
+        collector.sample()               # first: unavailable because it is the first
+        clock.advance(0.3)
+        self.assertEqual(
+            _by_name(collector.sample())["system_cpu_percent"].validity, Validity.VALID,
+            "this test needs a genuinely valid sample to starve")
+        # A card reads on its own timer: it asks now, at the same instant the last tick
+        # was taken, and consumes the tick before any time has passed.
+        collector.system_cpu_percent()
+        nxt = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertEqual(nxt.validity, Validity.UNAVAILABLE,
+                         "the card's read did not starve the next sample")
+        self.assertIn("no measurable window elapsed", nxt.unavailable_reason)
+        self.assertEqual(nxt.window_seconds, 0.0)
+
+    def test_a_card_reading_that_lets_time_pass_leaves_the_next_sample_valid(self):
+        """The other side of the same contract, so the trap test cannot pass trivially."""
+        clock = _SettableClock()
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=clock)
+        self.addCleanup(collector.stop)
+        clock.advance(0.25)
+        collector.sample()
+        clock.advance(0.3)          # the tick runs its course first
+        direct = collector.system_cpu_percent()
+        reported = _by_name(collector.sample())["system_cpu_percent"]
+        self.assertEqual(reported.validity, Validity.VALID)
+        self.assertEqual(reported.value, direct)
+        self.assertAlmostEqual(reported.window_seconds, 0.3, places=9)
+
+    def test_both_accessor_docstrings_warn_that_reading_moves_the_tick(self):
+        """The warning Task 8 will be reading. If it is edited away, this fails."""
+        for name in ("system_cpu_percent", "app_cpu_percent"):
+            with self.subTest(accessor=name):
+                doc = getattr(MetricCollector, name).__doc__ or ""
+                lowered = doc.lower()
+                self.assertIn("moves the tick", lowered,
+                              f"{name}'s docstring does not say that reading it moves the "
+                              f"tick, which is the trap it creates for Task 8")
+                self.assertIn("unavailable", lowered,
+                              f"{name}'s docstring does not say the next sample can come "
+                              f"back UNAVAILABLE")
+
+    def test_a_concurrent_accessor_and_sampler_do_not_deadlock_or_corrupt(self):
+        """**This test does not discriminate the lock, and I am not claiming it does.**
+
+        Removing `_measure_lock` entirely leaves every test in this file green, including
+        this one - verified by mutation. That matches the reviewer's finding: the
+        unlocked version is *benign in practice*, because `_Tick` is frozen and
+        publication is a single atomic attribute assignment, so 20 000 hammered calls
+        produced neither an exception nor a corrupted sample.
+
+        So the lock is not an observable-behaviour fix. It is what makes the documented
+        contract true: "exactly one reading per tick, whoever asks first" becomes a
+        guarantee rather than an emergent property of frozen dataclasses and CPython's
+        GIL. A future edit that made the tick mutable, or that let a reading be composed
+        of several mutable steps, would break that property silently and this test would
+        still pass.
+
+        What this test does check is real and worth having: three accessor threads against
+        twenty samples produce no deadlock, no exception, and no sample that pairs a
+        `None` with an absent reason.
+        """
+        import threading
+
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False,
+                                    clock=_SteppingClock(step=0.25))
+        self.addCleanup(collector.stop)
+        collector.sample()
+        errors: list[BaseException] = []
+        readings: list[float | None] = []
+
+        def hammer_accessors():
+            try:
+                for _ in range(300):
+                    readings.append(collector.system_cpu_percent())
+                    collector.app_cpu_percent()
+            except BaseException as exc:  # noqa: BLE001 - recorded, then asserted empty
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer_accessors) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for _ in range(20):
+            samples = collector.sample()
+            for s in samples:
+                if s.validity is Validity.UNAVAILABLE:
+                    self.assertIsNone(s.value)
+                    self.assertTrue(s.unavailable_reason)
+        for t in threads:
+            t.join(30.0)
+            self.assertFalse(t.is_alive(), "a thread blocked on the measurement lock")
+        self.assertEqual(errors, [], "an accessor raised under concurrency")
+        self.assertTrue(any(v is not None for v in readings))
+
+    def test_the_measurement_lock_is_not_the_sample_lock(self):
+        """Two locks, in a fixed order, so neither can be waiting on the other."""
+        collector = MetricCollector([THIS_PID], interval=0.25, background=False)
+        self.addCleanup(collector.stop)
+        self.assertIsNot(collector._measure_lock, collector._lock,
+                         "the measurement lock must be separate from the lock sample() "
+                         "holds, or _readings() cannot take it without deadlocking")
+        self.assertFalse(hasattr(collector._measure_lock, "_is_owned")
+                         and collector._measure_lock._is_owned(),
+                         "the measurement lock is reentrant; it does not need to be")
 
 
 class ARecoveredProcessIsNotBlamed(unittest.TestCase):

@@ -5,8 +5,9 @@ rather than preferences:
 
 **1. `DeviceRegistry.describe()` cannot be on this path.** Measured at **3.3-3.8 s** -
 one memoised Windows PnP enumeration. At `interval = 0.25` the whole budget for a sample
-is 250 ms, and the measured cost of a full sample here is **0.028 ms with one tracked pid
-and 0.047 ms with two** (200 runs each, p50, timed with `perf_counter`). So this module
+is 250 ms, and the measured cost of a full sample here is **~0.03 ms with one tracked pid
+and ~0.04 ms with two** (five repeats of 200 runs each, p50 of each: 0.028-0.062 ms for
+one pid and 0.041-0.048 ms for two, timed with `perf_counter`). So this module
 does not import `app.inference.devices`, `openvino`, or `app.telemetry.pdh` at all:
 device discovery is a **startup** cost, paid once by whoever builds the device panel, and
 a collector that reached for it would stall the telemetry thread for four seconds every
@@ -93,10 +94,8 @@ NO_PROCESSES_REASON = (
     "CPU could be measured. This is not an idle application."
 )
 NO_WINDOW_ELAPSED_REASON = (
-    "no measurable window elapsed between the previous sample and this one, so a "
-    "percentage over it would be a division by ~0. The declared window is a placeholder "
-    "and the readings are unavailable; interval is not substituted for it, because a "
-    "window that did not elapse is not a window anything was averaged over."
+    "no measurable window elapsed since the previous sample, so nothing was measured. "
+    "The reported window is 0.0 - the measured value - not a substituted interval."
 )
 
 #: The most process labels an aggregate reason will name. Measured, not chosen for
@@ -326,6 +325,7 @@ class MetricCollector:
         self._capacity = cpu_capacity()
 
         self._lock = threading.Lock()
+        self._measure_lock = threading.Lock()
         self._tick: _Tick | None = None
         self._latest: tuple[MetricSample, ...] = ()
         self._samples_taken = 0
@@ -422,7 +422,21 @@ class MetricCollector:
     # -- the two direct measurements -------------------------------------------------
 
     def _readings(self) -> "_Tick":
-        """This tick's raw readings, taken once and then reused. Caller holds the lock.
+        """This tick's raw readings, taken once and then reused.
+
+        **This acquires `self._measure_lock` itself**, so both `sample()` and the two
+        public accessors can call it. An earlier version documented "caller holds the
+        lock" while the accessors called it without one - a documented precondition the
+        code violated. It was benign in practice, because `_Tick` is frozen and
+        publication is a single atomic attribute assignment, but it was not a contract
+        anyone could rely on, and a second thread racing here could have taken two
+        readings and kept the second.
+
+        The measurement lock is **separate** from `self._lock`, which guards the sample
+        set. `sample()` takes `_lock` and then `_measure_lock`; an accessor takes only
+        `_measure_lock`; nothing takes `_lock` while holding `_measure_lock`. So the
+        order is fixed, there is no cycle, and `_measure_lock` does not have to be
+        reentrant.
 
         `psutil.cpu_percent(interval=None)` is a **delta since its previous call**, so the
         second reader of a tick does not re-measure the machine - it measures the
@@ -435,17 +449,19 @@ class MetricCollector:
         interval `psutil` actually integrated over - not a wider one measured
         afterwards.
         """
-        if self._tick is not None:
+        with self._measure_lock:
+            if self._tick is not None:
+                return self._tick
+            now = float(self._clock())
+            system = self._raw_system_cpu()
+            per_process_cpu = [tracked.cpu_percent() for tracked in self._tracked]
+            per_process_rss = [tracked.rss_bytes() for tracked in self._tracked]
+            self._tick = _Tick(now=now, window=max(0.0, now - self._window_started_at),
+                               system_cpu=system, per_process_cpu=per_process_cpu,
+                               per_process_rss=per_process_rss)
             return self._tick
-        now = float(self._clock())
-        system = self._raw_system_cpu()
-        per_process_cpu = [tracked.cpu_percent() for tracked in self._tracked]
-        per_process_rss = [tracked.rss_bytes() for tracked in self._tracked]
-        self._tick = _Tick(now=now, window=max(0.0, now - self._window_started_at),
-                           system_cpu=system, per_process_cpu=per_process_cpu,
-                           per_process_rss=per_process_rss)
-        return self._tick
 
+    @staticmethod
     @staticmethod
     def _raw_system_cpu() -> float | None:
         """The one direct `psutil` system-CPU read. `None` if it cannot be taken."""
@@ -461,6 +477,16 @@ class MetricCollector:
         that calls this between two `sample()` calls gets the figure `sample()` will
         report, not a second measurement over the microseconds since that figure was
         taken. See `_readings`.
+
+        **Calling this moves the tick, and that is the cost.** Whoever reads first
+        measures, so an accessor called immediately after a `sample()` takes the next
+        reading at that moment rather than at the next tick. The `sample()` that follows
+        then reports *the shorter window this call created* - and if the call left no time
+        at all, that sample is `UNAVAILABLE` with `window_seconds = 0.0` and the reason
+        "no measurable window elapsed since the previous sample". That is the correct
+        outcome, but a card polling this on its own timer can flip the booth's sample to
+        UNAVAILABLE with no other visible cause. Drive the read from the sampler's cadence
+        rather than an independent timer.
 
         `None` - never `0.0` - when `psutil` cannot be read. A CPU reading that is not
         available is not zero.
@@ -485,6 +511,14 @@ class MetricCollector:
 
         **Like `system_cpu_percent`, this reads at most once per tick** and then returns
         the cached reading, so calling it cannot corrupt the next `sample()`.
+
+        **Calling this also moves the tick, and that is the cost.** An accessor called
+        immediately after a `sample()` takes the next reading at that moment, so the
+        following `sample()` reports the shorter window this call created - and reports
+        `UNAVAILABLE` with `window_seconds = 0.0` if the call left no measurable time. A
+        card polling this on its own timer can flip the booth's sample to UNAVAILABLE with
+        no other visible cause. Drive the read from the sampler's cadence rather than an
+        independent timer.
         """
         return _mean_over_capacity(self._readings().per_process_cpu, self._capacity)
 
@@ -623,15 +657,17 @@ class MetricCollector:
         HEAD**, and should not be invited to try.
 
         **What is reproducible from HEAD** is that the bound holds. Measured after the
-        fix, same script, 199 tracked pids, twelve samples:
+        fix, 199 tracked pids, twelve samples, two runs:
 
-            55.8 -> 56.5 -> 56.5 -> ... -> 56.6 MB      (flat)
+            57.4 -> 57.6 MB    and    57.6 -> 57.6 MB      (flat)
 
         and independently by the reviewer at 400 pids over 30 samples: RSS 56.6 -> 57.4 MB,
         flat from sample 2, with the aggregate reason constant at 673 characters. The
-        post-fix figure to quote is **~56.6 MB flat**; an earlier version of this
-        docstring and the matching test quoted 44.1 MB for the same experiment, which was
-        a different run's starting point rather than the settled value.
+        post-fix figure to quote is **roughly 56-58 MB flat**, and the starting point moves
+        by a megabyte or two between runs, which is why a single precise number here is
+        over-claimed. An earlier version of this docstring said 56.6 MB, and the matching
+        test said 44.1 MB for the same experiment - the latter was a different run's
+        starting point rather than a settled value.
 
         What made it grow was the reason itself, not the process table: handles, thread
         count, `psutil._pmap` and the tracked Python object count were all flat
