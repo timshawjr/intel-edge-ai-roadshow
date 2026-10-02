@@ -1,4 +1,4 @@
-"""The annotated detection sanity fixture: build it, and check the model against it.
+﻿"""The annotated detection sanity fixture: build it, and check the model against it.
 
 Run from the repo root:
 
@@ -25,7 +25,7 @@ sweep found two of the four were not covered at all:
 | features on axis 1 | slice axis 1, never transpose | **yes** |
 | `cx, cy, w, h` not `xyxy` | no `w/2, h/2` subtraction; read as `xyxy` | **yes** |
 | letterbox inverse applied | `to_source` made the identity | **yes** |
-| letterbox pad band at 114 | pad 0, and pad 255 | **NO - see below** |
+| letterbox pad band at 114 | pad 255 | **NO - see below** | (pad 0 IS caught) |
 | scores already activated | a second sigmoid | **was not checked; NOW IS** |
 | `w` and `h` in the right order | swap them | **NO - not separable here, see `_aspect`** |
 
@@ -52,12 +52,16 @@ because the response to a false failure is to loosen the check until the real fa
 through. This fixture does not catch a transposed `w`/`h`, and says so.
 
 **A third hole the sweep found, which is about the frame rather than the decoder:** the
-pad-band mutant survives on frame 0. Filling the band with `0` or with `255` instead of
-`114` still yields 2/2 here. Task 4's own A/B measured that the pad value moves the raw
-score array materially but left the *decoded detections* identical on the four frames it
-tried, and frame 0 is evidently one of the benign ones. So this fixture does **not**
-discriminate the pad value, and this docstring no longer implies that it does. Catching it
-needs a frame where the pad band actually changes a detection, which is M1's job to find.
+pad-band mutant at `255` survives on frame 0 - filling the band with `255` instead of
+`114` still yields 2/2 here, because a white band is closer to the scene than a black one
+and both annotated objects sit well inside the image. **The `0` mutant does NOT survive:**
+measured, `pad_value=0` returns **1/2** with the apple **absent from the frame entirely**,
+and this fixture **FAILS**. An earlier version of this docstring claimed that `0` and `255`
+both returned 2/2; that was wrong for `0`, and it understated this fixture's sensitivity to
+the pad decision. The correction is recorded here because it is the point: frame 0 *is* one
+of the frames where the pad value changes a detection, which makes it better evidence for
+the `114` default than the four benign frames Task 4 happened to try. Only the `255` variant
+needs a different frame to catch, which is M1's job to find.
 
 The only thing that can catch a decoder fault is an annotation made by somebody **looking
 at the frame**. So the workflow here is deliberately ordered:

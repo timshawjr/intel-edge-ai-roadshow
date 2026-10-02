@@ -14,9 +14,9 @@
       "not_caused_by": "the annotation. The person box is 623x658 and the apple 150x184; both were drawn to the silhouette and independently confirmed against the pixels."
     },
     {
-      "fault": "the letterbox pad band filled with 0 or 255 instead of 114",
+      "fault": "the letterbox pad band filled with 255 instead of 114",
       "caught": false,
-      "why": "Both mutants still return 2/2 on this frame. Task 4's own A/B measured that the pad value moves the raw score array materially but left the decoded detections identical on the four frames it tried, and frame 0 is one of the benign ones. This fixture therefore does not discriminate the pad value. Catching it needs a frame where the pad band actually changes a decoded detection."
+      "why": "The 255 mutant still returns 2/2 on this frame, because a white band is closer to the scene than a black one and both annotated objects sit well inside the image. The 0 mutant does NOT survive: measured, pad_value=0 returns 1/2 with the apple absent from the frame entirely and the fixture FAILS. An earlier version of this entry claimed both 0 and 255 returned 2/2; that was wrong for 0 and understated this fixture sensitivity to the pad decision. Catching 255 needs a frame where the pad band actually changes a decoded detection, which is M1 work."
     }
   ],
   "expected": [
@@ -24,14 +24,24 @@
       "class_id": 0,
       "class_name": "person",
       "min_score": 0.25,
-      "box_xyxy": [645, 0, 1268, 658],
+      "box_xyxy": [
+        645,
+        0,
+        1268,
+        658
+      ],
       "reasoning": "The shopper standing at the self-checkout, seen from an overhead camera. Drawn by eye on retail_000.jpg. Left edge 645 is the outer edge of their right upper arm where it meets the top of the frame - the arm slopes gently right as it descends, so the minimum over the whole body is at y=0. Right edge 1268 is the outer edge of their left upper arm, which is rightmost high up, at about y=20-45 where the shoulder meets the top border, and then slopes steadily back left down the arm to the elbow. CORRECTED 2026-10-01: an earlier version of this note said rightmost at y=150-200, which is wrong by about 130 rows; the value 1268 was and is the true maximum. Top edge 0: the head is outside the frame, the torso is cut by the top border. Bottom edge 658: the bare shins disappear behind the near lip of the checkout counter at about y=655-660; the counter occludes the rest, so the box stops at the occlusion rather than guessing at the feet."
     },
     {
       "class_id": 47,
       "class_name": "apple",
       "min_score": 0.25,
-      "box_xyxy": [0, 878, 150, 1062],
+      "box_xyxy": [
+        0,
+        878,
+        150,
+        1062
+      ],
       "reasoning": "The red-and-yellow apple in the black shopping basket at the bottom-left of the frame, cut off by the left border. Drawn by eye on retail_000.jpg. Top edge 878 is the apple's yellow-green shoulder, above which is a separate yellow package. Right edge 150 is the rightmost of the apple's red skin, where it meets a dark bottle in shadow. Bottom edge 1062 is the basket's near rim, which hides the rest of the fruit. Left edge 0 is the frame border: roughly the left third of the apple is outside the picture, and the box covers the visible part only."
     }
   ],
@@ -46,7 +56,10 @@
     "raw_bgr_sha256": "20dd0662140040eab421d8f954db26b106cfaaed7e46dc9e1cf3f5d09a9fda62",
     "raw_bgr_sha256_note": "sha256 over the contiguous BCR buffer as cv2 decoded it, before JPEG encoding. Re-run --extract-frame 0 and this value must come out identical, or the picture has changed and the boxes above no longer describe it.",
     "jpeg_quality": 95,
-    "decoded_resolution": [1920, 1080],
+    "decoded_resolution": [
+      1920,
+      1080
+    ],
     "measured_against": "config/models.json media[retail_checkout] measured_width 1920, measured_height 1080"
   },
   "evaluated_at": {
