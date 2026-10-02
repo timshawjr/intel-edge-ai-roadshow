@@ -14,8 +14,8 @@ what the machine must *refuse* to do:
   nothing, because after an occlusion we cannot know it is the same object - the
   tracker's ids are never reused, so a re-observed id means a caller replayed, not a
   new object, and treating it as a continuation would be a guess. The cancellation
-  is **counted** (`abandoned_transfers`, `abandoned_reasons`) so a booth can say "one
-  transfer was dropped by an occlusion" instead of showing a smaller number with no
+  is **counted** (`abandoned_episodes`, `abandoned_reasons`) so a booth can say "one
+  event was dropped by an occlusion" instead of showing a smaller number with no
   explanation - a silently short count is the dishonest version of the same fact.
 - **Dwell is measured between two real observations** - `last_seen_in_shelf` minus
   `first_seen_in_shelf`. Never interpolated, never carried across a gap, never
@@ -47,26 +47,36 @@ the model, so an id past the end of the label list is a fact about the model, an
 killing a live stream over it would be worse than reporting it
 (`skipped_unmapped_class`). The name is never fabricated.
 
-**Which zones the footage actually supports.** Read
-`docs/qualification/M0-content-gate.md` §3-§4 before reading this module as a claim
-about `retail_checkout`:
+**Which zones the footage actually supports.** Read `app/engine/retail_config.py` -
+it holds the measurements - and `docs/qualification/M0-content-gate.md` §3-§4, before
+reading this module as a claim about `retail_checkout`:
 
 | slot | in `retail_checkout`? | what it is |
 |---|---|---|
-| `basket` | **yes** | the black shopping basket, bottom-left, already full at frame 0 |
-| `checkout` | **yes** | the recessed scanner plate / scale, centre of frame |
+| `basket` | yes, as an object | the black shopping basket, bottom-left, already full at frame 0 |
+| `counter_band` | **yes, and this is the shipped zone** | the full-width band `y` 0.20..0.60 in which a person stands at the counter |
 | `shelf` | **no** | there is no shelf, shelving or shelf stock anywhere in the clip |
 
-The observed movement is **basket -> scanner plate**, several times, in the dense
-pass at frames 1500-1560, 1740-1800, 2000, 2200, 2400 and 2600. So the shipped
-retail configuration is `basket` -> `checkout`, and the committed deliverable is
-**"Items entering the checkout zone"** (reduced scope). The names `"shelf"` and
-`"basket"` used in `tests/test_events.py` are this machine's **semantic test
-fixtures** - generic slots that exercise the geometry without asserting the footage
-contains them. The machine has no hardcoded slot names: both come from
-`manifest.event_rules`, which is why `test_a_basket_to_checkout_move_is_a_candidate_transfer`
-can drive the configuration that will actually ship. Shelf-to-basket remains **unmet**
-and must not be reported as closed.
+**No product-transfer event is detectable on this footage. The shipped pack is
+people-in-zone presence**, declared in `retail_config.py` as
+`presence_zone`/`min_presence_seconds` with **no transfer route at all**. It is not
+"items entering the checkout zone" - measured over all 3387 frames, that produces zero
+events - and it is not shelf-to-basket. Both remain **unmet** and must not be reported
+as closed.
+
+An earlier revision of this note claimed the observed movement was "basket -> scanner
+plate" and backed it with a test that drove a `basket` -> `checkout` transfer. That test
+was deleted in the review fix and the claim with it: the rectangles it drove held a
+stationary apple and two `suitcase` detections. The numbers are in
+`retail_config.py`. The deleted test is deliberately not named here -
+`tests/test_retail_measurements.py` fails on any shipped docstring that cites a test
+which does not exist, and a correction that names the wrong identifier would trip it.
+
+The transfer legs themselves - `candidate_transfer`, `candidate_return` - are real,
+tested and stay: they are spec §4 behaviour and another scenario may have footage for
+them. They simply have **no events on this clip**, which is a fact about the footage
+and not about the code. `tests/test_events.py` exercises them with **semantic fixtures**
+(`shelf`/`basket` slots over synthetic boxes), which say nothing about `retail_checkout`.
 """
 
 from __future__ import annotations
@@ -100,6 +110,20 @@ MIN_PRESENCE_KEY = "min_presence_seconds"
 #: confused: conflating them would either abandon an already-counted stay or keep a
 #: lost track's dwell alive.
 _NEVER: object = object()
+
+
+@dataclass
+class _Stay:
+    """One continuous presence episode: when it began, and whether it was counted.
+
+    `counted` is the whole reason this is a record and not a bare float. Without it
+    `on_track_lost` cannot distinguish a stay that had already produced a
+    `zone_occupancy` event from one that had not, and has to guess - which made it
+    report an abandonment for an event that had already been emitted.
+    """
+
+    entered_at: float
+    counted: bool = False
 
 #: The only kinds this machine emits. `uncertain` is deliberately absent as a kind:
 #: spec §4 offers "uncertain **or** not counted", and this milestone takes *not
@@ -416,11 +440,22 @@ class RetailEventMachine:
     def _resolve_class_names(self, class_names: tuple[str, ...] | None) -> tuple[str, ...]:
         """The label list, read and cross-checked **here and nowhere else**.
 
-        When it comes from the pin, it is checked against `pinned.num_classes()` -
-        which is `labels_match_pin()` in effect, and is the invariant that makes an
-        out-of-range `class_id` at observation time a *model* fact rather than a
-        silent mismatch.
+        The cross-check against the pinned class count is **unconditional** whenever
+        `pinned.num_classes()` is available - it runs for an injected list too. It did
+        not before, and that was a real hole: a machine built with
+        `class_names=("person",)` was accepted silently, and then every `class_id` above
+        0 became a `skipped_unmapped_class` at observation time instead of a startup
+        failure. That is the failure mode this whole refactor exists to remove -
+        `class_id` comes from the model, so the label list has to match the model
+        whether or not the caller supplied it.
+
+        If the pin is unreadable (an unprovisioned tree) the check is skipped rather
+        than failed, and that is stated: a boot-time module must not refuse to import
+        because the model is not on disk yet.
         """
+        from app.inference.pinned import class_names as pinned_class_names
+        from app.inference.pinned import num_classes
+
         if class_names is not None:
             names = tuple(str(n) for n in class_names)
             if not names:
@@ -429,35 +464,41 @@ class RetailEventMachine:
                     "against this list, and an empty list would make every frame "
                     "unusable while reporting nothing wrong."
                 )
+        else:
+            names = tuple(pinned_class_names())
+
+        try:
+            declared = int(num_classes())
+        except Exception:  # noqa: BLE001 - an unprovisioned tree, not a fault to report
             return names
-        from app.inference.pinned import class_names as pinned_class_names
-        from app.inference.pinned import labels_match_pin, num_classes
-        if not labels_match_pin():
+        if len(names) != declared:
             raise ValueError(
-                f"labels.txt has {len(pinned_class_names())} names but the pin declares "
-                f"{num_classes()} classes. Refusing to build the machine: with a label "
-                f"list that does not match the model, an in-range class_id could be "
-                f"given the wrong name, and a wrong class name on a retail event is a "
-                f"fabricated measurement. Re-provision rather than substitute."
+                f"the label list has {len(names)} names but the pinned model declares "
+                f"{declared} classes. Refusing to build the machine: with a list of the "
+                f"wrong width an in-range class_id can be given the wrong name, and a "
+                f"wrong class name on a retail event is a fabricated measurement. "
+                f"Re-provision rather than substitute."
             )
-        return tuple(pinned_class_names())
+        return names
 
     @staticmethod
     def _build_zones(rules: Mapping[str, Any]) -> tuple[dict[str, Zone], str | None, str | None]:
         """Build the `Zone`s named by the rule slots; return them and the route.
 
-        The slot names come from `event_rules` (`origin_slot`/`destination_slot`,
-        defaulting to `shelf`/`basket` when **either** is declared), so a pack whose
-        footage has no shelf declares `basket`/`checkout` and this function builds
-        those. **The machine holds no opinion about what a zone is called** - the only
-        two names it will invent are those defaults.
+        A transfer route is declared by naming **both** ends, in `event_rules`, as
+        `origin_slot` and `destination_slot`. There are **no default zone names**:
+        an earlier revision defaulted to `shelf`/`basket`, which meant a pack acquired
+        a transfer route it never asked for merely by having ROIs with those names,
+        and a pack whose footage has no shelf had no way to say so. Both keys are
+        required together; declaring one and not the other raises, because the machine
+        would otherwise have to invent the missing end and an invented zone is a claim
+        about the footage nobody made. `tests/test_events.py::
+        test_the_default_zone_names_are_gone_from_the_app_layer` pins the absence.
 
         A transfer route is **optional**. A presence-only pack declares
         `presence_zone` and no origin/destination, and gets a machine that emits
-        `zone_occupancy` only. That matters because the shipped retail pack is
-        presence-only: requiring it to declare a transfer route it does not use would
-        mean putting an unused `origin_slot` in the config, which is a claim the
-        footage does not support.
+        `zone_occupancy` only. That is what the shipped retail pack does, because the
+        footage supports no product transfer.
 
         Every ROI is validated by `Zone` here, at load, with the slot's name in the
         message - the difference between a loud failure at startup and boxes in the
@@ -586,12 +627,25 @@ class RetailEventMachine:
         return list(self._events)
 
     @property
-    def abandoned_transfers(self) -> int:
-        """Transfers **not** counted because their evidence was interrupted.
+    def abandoned_episodes(self) -> int:
+        """Episodes that **ended without producing an event**, and why.
 
-        Zero is a real measurement here - the machine did decide - and it is only
-        meaningful next to `events`, which is why both are exposed. A count of zero
-        never means "we did not look".
+        "Episode" rather than "transfer", because this counter is incremented by two
+        different things and a screen-facing name that said "transfer" while counting
+        presence stays was wrong in the configuration that actually ships - the
+        presence-only retail pack has no transfer in it at all, yet this reads
+        non-zero. It was renamed for that reason.
+
+        What it counts:
+        - a transfer episode that reached `min_dwell_seconds` and was then lost before
+          arriving in the destination (`track_lost`), and
+        - a presence stay that was lost before it reached `min_presence_seconds`.
+
+        It does **not** count a stay that had already emitted its event; nothing is
+        retracted. `abandoned_reasons` says which.
+
+        Zero is a real measurement - the machine did decide - and it is only meaningful
+        next to `events`. A count of zero never means "we did not look".
         """
         return self._abandoned
 
@@ -714,15 +768,18 @@ class RetailEventMachine:
         if not zone.contains_point(zone.centroid_of(normalised)):
             self._presence.pop(track.track_id, None)
             return ()
-        entered_at = self._presence.setdefault(track.track_id, now)
+        record = self._presence.setdefault(track.track_id, _Stay(now))
+        entered_at = record.entered_at
         if (now - entered_at) < self._min_presence:
             return ()
-        # No "already counted" marker is kept here. One was, and it was actively
-        # harmful: it made `_presence` hold `None` for a counted stay, which meant a
-        # `reset()` that failed to clear the dict left the `None` behind and the next
-        # observation silently returned instead of starting a fresh stay - a mutant no
-        # test could catch. `dedup_key` already suppresses the repeat (once per track
-        # per loop), so the marker bought nothing.
+        # `record.counted` is what lets `on_track_lost` tell a stay that was already
+        # counted from one that had not. An earlier version stored that fact as a bare
+        # `None` in the same dict, which was indistinguishable from "no record" and made
+        # the two cases impossible to separate; `on_track_lost` then counted an
+        # already-counted stay as abandoned, so a stay that matured at t=2.0 and was
+        # lost at t=3.5 reported an abandonment for an event that had already been
+        # emitted. A `_Stay` record carries both facts and nothing overloads `None`.
+        record.counted = True
         key = (f"{frame.source_loop_id}:{track.track_id}:{class_name}"
                f":presence:{self._presence_zone_name}")
         return self._emit_keyed("zone_occupancy", key, track.track_id, class_name,
@@ -900,7 +957,13 @@ class RetailEventMachine:
         # already been *counted* is not abandoned - it was counted, and nothing is
         # being retracted here.
         stay = self._presence.pop(track_id, _NEVER)
-        had_uncounted_stay = stay is not _NEVER
+        # Only a stay that had **not** yet produced an event counts as abandoned. A
+        # stay already counted produced its `zone_occupancy`; nothing is being
+        # retracted here, and reporting an abandonment for it would put a number on the
+        # screen that does not describe anything that was withheld. `_Stay.counted`
+        # makes the two cases separable, which they were not when this held a bare
+        # timestamp.
+        had_uncounted_stay = isinstance(stay, _Stay) and not stay.counted
         had_pending = (
             progress is not None
             and progress.first_seen_in_origin is not None

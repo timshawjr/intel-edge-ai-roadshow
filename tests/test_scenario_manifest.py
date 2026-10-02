@@ -3,11 +3,21 @@
 The reason this contract exists at all: **M0 recorded that the retail footage does
 not contain the scenario the original brief asked for.** Read
 `docs/qualification/M0-content-gate.md` §3-§4 - `retail_checkout` is a
-self-checkout station whose basket is *already full at frame 0*, there is no shelf
-anywhere in the clip, and the movement actually visible is items going **basket ->
-scanner plate**. The committed deliverable is therefore the reduced-scope
-"items entering the checkout zone", and shelf-to-basket stays unmet on the
+self-checkout station, there is no shelf anywhere in the clip, and measured over all
+3387 frames **no product-transfer event is detectable in it at all**. The delivered
+scope is therefore **people-in-zone presence**, and shelf-to-basket stays unmet on the
 open-blockers list.
+
+An earlier revision of this note claimed the visible movement was a two-zone product
+route and recorded the reduced-scope deliverable as items entering the checkout zone.
+Both claims were **withdrawn** when the rectangles were measured: they held a
+stationary apple and two `suitcase` detections. The numbers, and the
+`counter_band` presence zone that replaced them, are in
+`app/engine/retail_config.py`.
+
+The strings in the fixtures below are deliberately **neutral placeholders** rather
+than the withdrawn wording, so that no file in the suite can be quoted as the
+project's claim.
 
 A manifest is where that fact has to live, so it cannot quietly stop being true. If
 `business_line` is the sentence the booth shows, then it has to be the reduced-scope
@@ -43,7 +53,7 @@ BASKET = (0.60, 0.30, 0.98, 0.70)
 def _manifest(**kw):
     base = dict(
         id="retail", version=1, title="Retail / checkout zone",
-        business_line="Items entering the checkout zone",
+        business_line="Goods leaving the marked area",
         class_allowlist=("person", "apple"),
         zones=(),
         event_rules={"min_dwell_seconds": 0.5, "max_transition_seconds": 12.0,
@@ -74,7 +84,7 @@ class TheRecord(unittest.TestCase):
         import json
         payload = _manifest(zones=(Zone("checkout", "area", (0.5, 0.2, 0.9, 0.8)),)).to_json()
         text = json.dumps(payload)
-        self.assertIn('"business_line": "Items entering the checkout zone"', text)
+        self.assertIn('"business_line": "Goods leaving the marked area"', text)
         self.assertEqual(payload["zones"][0]["name"], "checkout")
         self.assertEqual(payload["zones"][0]["roi"], [0.5, 0.2, 0.9, 0.8])
         self.assertIsInstance(payload["event_rules"]["shelf"], list)
@@ -94,8 +104,8 @@ class TheClaim(unittest.TestCase):
             _manifest(business_line=None)
 
     def test_a_reduced_scope_note_rides_with_the_data(self):
-        note = ("Shelf-to-basket is NOT delivered: retail_checkout shows basket -> "
-                "scanner plate and contains no shelf.")
+        note = ("Shelf-to-basket is NOT delivered: no product-transfer event is "
+                "detectable in the provisioned retail clip, which contains no shelf.")
         m = _manifest(scope_note=note)
         self.assertIn("NOT delivered", m.to_json()["scope_note"])
 

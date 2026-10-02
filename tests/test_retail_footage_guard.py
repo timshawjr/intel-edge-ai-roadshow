@@ -1,4 +1,4 @@
-"""The general guard: **a shipped configuration must produce events on the real clip.**
+﻿"""The general guard: **a shipped configuration must produce events on the real clip.**
 
 This test file exists because of a review finding. The previous work put two
 rectangles in `tests/test_events.py`, called them "the honest configuration", and
@@ -35,6 +35,29 @@ which would be the guard passing for the wrong reason. At stride 5 the two event
 correspond to two real, sustained person presences (track ids 1 and 41, covering real
 frames 0..485 and 485..3385).
 
+## This is a deliberately SLOW test. Do not make it faster.
+
+**Budget: ~25 s of the suite's ~38 s**, on CPU. That is the price of the only test in
+the repository that runs the real pipeline over the real clip, and it is **not** to be
+repaid by coarsening `SAMPLE_STRIDE`. Review has already been through that trade once:
+at stride 5 the tracker's `max_misses=2` is a 25-frame tolerance, and strides coarser
+than about 6 start inflating the event count through track fragmentation, which would
+make this test pass for the wrong reason. Buying speed by making the assertion weaker
+is the one change that would retire the test.
+
+The costs are real and measured, so nobody has to re-derive them:
+
+| what | cost |
+|---|---|
+| full clip, stride 1 (3387 inferences) | ~115 s |
+| stride 5 (678 inferences) | ~24 s |
+| `grab` + `retrieve` on every frame instead | ~35 s |
+| seeking per frame | ~140 s |
+
+If this test has to get cheaper, the lever is **hardware** (the NPU path), not the
+stride. Lowering the stride *increases* fidelity and cost together; there is no
+setting that makes it both cheap and sound.
+
 ## Skipping
 
 If `openvino`, the CPU plugin, the IR or the clip is absent, this **skips**, following
@@ -47,8 +70,9 @@ import unittest
 from pathlib import Path
 
 from app.engine.retail_config import (
-    CLIP_FPS,
     RETAIL_CHECKOUT_CLIP,
+    clip_fps,
+    clip_measurements,
     retail_sanity_manifest,
 )
 
@@ -117,6 +141,7 @@ def run_clip(manifest) -> dict:
 
     tracker = Tracker(iou_threshold=manifest.iou_threshold)
     machine = RetailEventMachine(manifest, class_names=class_names())
+    fps = clip_fps()
 
     capture = cv2.VideoCapture(RETAIL_CHECKOUT_CLIP)
     sampled = detections_total = 0
@@ -148,8 +173,10 @@ def run_clip(manifest) -> dict:
             )
             detections_total += len(decoded)
             # `now` is the frame's true presentation time, so dwell measured from it is
-            # real elapsed time even though frames are sampled.
-            now = frame_index / CLIP_FPS
+            # real elapsed time even though frames are sampled. The fps comes from
+            # `config/models.json`, not a constant in a module: a re-provisioned clip
+            # would otherwise make every dwell figure here quietly wrong.
+            now = frame_index / fps
             frame = FramePacket(
                 session_id="guard", scenario_id=manifest.id, stream_id="clip",
                 frame_id=frame_index, source_pts=now, source_loop_id=0,
@@ -165,13 +192,18 @@ def run_clip(manifest) -> dict:
         "sampled_frames": sampled,
         "detections": detections_total,
         "events": machine.events,
-        "abandoned": machine.abandoned_transfers,
+        "abandoned": machine.abandoned_episodes,
         "skipped_unmapped_class": machine.skipped_unmapped_class,
         "tracker": tracker,
     }
 
 
 class TheRealFootage(unittest.TestCase):
+    """**SLOW by design** - see "This is a deliberately SLOW test" in the module
+    docstring. `test_shipped_retail_config_emits_at_least_one_event_per_loop_stride5`
+    decodes and infers 678 frames of `retail_checkout` on the CPU plugin; the other
+    two are cheap, because they are the ones that must run everywhere."""
+
     def test_shipped_retail_config_emits_at_least_one_event_per_loop_stride5(self):
         reason = _skip_reason()
         if reason:
@@ -213,17 +245,51 @@ class TheRealFootage(unittest.TestCase):
         # Always runs, even where the guard above skipped. A configuration shipped
         # without the guard pointing at it is exactly how the previous rectangles
         # survived.
-        import app.engine.retail_config as retail_config
+        #
+        # The scan is over **every module in `app.engine`**, not just
+        # `app.engine.retail_config`. Scanning one module would leave a config module
+        # added anywhere else in the engine package silently uncovered, which is the
+        # same failure one level up.
+        import pkgutil
 
-        builders = [
-            name for name in dir(retail_config)
-            if name.endswith("_manifest") and callable(getattr(retail_config, name))
-        ]
-        self.assertTrue(builders, "no manifest builder found in app/engine/retail_config.py")
-        covered = {b.__name__ for b in SHIPPED_CONFIGURATIONS}
-        for name in builders:
-            self.assertIn(name, covered,
-                          f"{name} is shipped but no real-clip guard runs it")
+        import app.engine as engine_package
+
+        found: dict[str, str] = {}
+        for info in pkgutil.iter_modules(engine_package.__path__):
+            module = __import__(f"app.engine.{info.name}", fromlist=["*"])
+            for name in dir(module):
+                obj = getattr(module, name)
+                if not (name.endswith("_manifest") and callable(obj)):
+                    continue
+                if getattr(obj, "__module__", "").startswith("app."):
+                    # A builder defined here, not one merely re-exported from a
+                    # contract module, and not a class.
+                    if isinstance(obj, type):
+                        continue
+                    found[f"{info.name}:{name}"] = name
+        self.assertTrue(found, "no manifest builder found anywhere in app/engine/")
+        covered = {f"retail_config:{b.__name__}" for b in SHIPPED_CONFIGURATIONS}
+        for key, name in sorted(found.items()):
+            self.assertIn(key, covered,
+                          f"{key} is shipped but no real-clip guard runs it")
+
+    def test_the_clip_fps_comes_from_verified_config_not_a_constant(self):
+        # `CLIP_FPS = 3387 / 113.0129` used to be hardcoded in `retail_config.py`. If the
+        # clip were re-provisioned, the guard's `now` would go silently wrong and every
+        # dwell figure would be measured against a fiction.
+        from app.engine import retail_config
+
+        self.assertFalse(hasattr(retail_config, "CLIP_FPS"),
+                         "CLIP_FPS is gone; clip_fps() reads config/models.json")
+        measured = clip_fps()
+        entry = clip_measurements()
+        self.assertAlmostEqual(measured, float(entry["measured_fps"]), places=9)
+        # ...and it agrees with the frame count over the duration, which is the only
+        # cross-check available without decoding.
+        self.assertAlmostEqual(
+            entry["measured_frames"] / float(entry["measured_duration_s"]),
+            measured, places=4,
+        )
 
 
 if __name__ == "__main__":

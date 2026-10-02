@@ -1,6 +1,6 @@
-"""`app/engine/events.py` - the retail event state machine. The product's claim.
+﻿"""`app/engine/events.py` - the retail event state machine. The product's claim.
 
-Spec §4: `visible_on_shelf -> exited_shelf -> entered_basket -> candidate_transfer`,
+Spec Â§4: `visible_on_shelf -> exited_shelf -> entered_basket -> candidate_transfer`,
 with the same stable track, a minimum dwell, a bounded transition interval and a
 dedup key. A reverse movement is a **separate** return event. Occlusion or a lost
 track identity means **uncertain or not counted, never a completed transfer**. Gaps
@@ -12,7 +12,7 @@ about the ways the machine must *refuse* to produce an event:
 - **A lost track cancels, it never completes.** `on_track_lost` discards that track's
   pending state outright. Re-observing the track id afterwards starts from nothing,
   because after an occlusion we do not know whether it is the same object. The
-  cancellation is counted (`abandoned_transfers`) so the number that reaches the
+  cancellation is counted (`abandoned_episodes`) so the number that reaches the
   screen can say that a transfer was dropped rather than quietly being smaller.
 - **Dwell is measured between two real observations.** `last_seen_in_shelf` minus
   `first_seen_in_shelf`. It is never interpolated and never carried across a gap.
@@ -26,15 +26,23 @@ about the ways the machine must *refuse* to produce an event:
 opened, nothing is written. Every event carries the loop and frame it was observed on
 so a caller can check it against what is on screen.
 
-**On the zones, plainly.** `retail_checkout` contains **no shelf**: 72 frames were
-reviewed and the clip is a self-checkout whose basket is already full at frame 0, and
-the movement visible is basket -> scanner plate. See
-`docs/qualification/M0-content-gate.md` §3-§4. So the slot names `"shelf"` and
-`"basket"` in this test file are the **state machine's semantic fixtures** - they
-exercise the geometry without claiming the footage contains them. The honest
-retail configuration is `basket` -> `checkout`, and `test_a_basket_to_checkout_move_is_a_transfer`
-below drives exactly that, so the machine is proven against the scenario that will
-actually ship. Nothing here may be read as the shelf-to-basket claim being met.
+**On the zones, plainly.** `retail_checkout` contains **no shelf**. Measured over all
+3387 frames, **no product-transfer event is detectable in it at all** - the shipped
+pack is **people-in-zone presence** (`app/engine/retail_config.py`,
+`presence_zone="counter_band"`), and that is the reduced scope this milestone
+delivers. Nothing in this file may be read as the shelf-to-basket claim being met, or
+as "items entering the checkout zone".
+
+The slot names `"shelf"` and `"basket"` below are **semantic fixtures** - generic slots
+that exercise the geometry over synthetic boxes, asserting nothing about
+`retail_checkout`. An earlier revision of this docstring claimed the clip's movement was
+a two-zone product route, named the retail configuration as such a route, and cited a
+test in this file as proof. That test was deleted in the review fix because the
+rectangles it drove held a stationary apple and two `suitcase` detections; the stale
+claim and the stale citation went with it. The deleted test is deliberately **not named
+here**: `tests/test_retail_measurements.py` fails on any shipped docstring that cites a
+test which does not exist, and a correction that named the wrong identifier would trip
+it. The numbers are in `app/engine/retail_config.py`.
 """
 
 import unittest
@@ -74,7 +82,7 @@ APPLE_ID = 47
 def _manifest(**kw):
     base = dict(
         id="retail", version=1, title="Retail / checkout zone",
-        business_line="Items entering the checkout zone",
+        business_line="Goods leaving the marked area",
         class_allowlist=("person", "apple"),
         zones=(),
         event_rules={
@@ -181,11 +189,11 @@ class Transfer(unittest.TestCase):
         self.m.observe(_track(1, IN_SHELF, 0.0), _frame(0, 0.0))
         self.m.observe(_track(1, IN_SHELF, 0.6), _frame(1, 0.6))
         self.m.on_track_lost(1, 0.8)
-        self.assertEqual(self.m.abandoned_transfers, 1)
+        self.assertEqual(self.m.abandoned_episodes, 1)
         self.assertEqual(self.m.abandoned_reasons["track_lost"], 1)
         # Losing a track that had no pending transfer is not a cancellation.
         self.m.on_track_lost(99, 0.9)
-        self.assertEqual(self.m.abandoned_transfers, 1)
+        self.assertEqual(self.m.abandoned_episodes, 1)
 
     def test_a_return_movement_is_a_separate_event_kind(self):
         self._walk(self.m)
@@ -250,7 +258,7 @@ class Transfer(unittest.TestCase):
         m.observe(_track(1, IN_SHELF, 0.6, misses=1), _frame(1, 0.6))
         events = m.observe(_track(1, IN_BASKET, 1.0, misses=1), _frame(2, 1.0))
         self.assertEqual([e.kind for e in events], [])
-        self.assertEqual(m.abandoned_transfers, 0)
+        self.assertEqual(m.abandoned_episodes, 0)
 
 
 class LoopBoundary(unittest.TestCase):
@@ -279,7 +287,7 @@ class LoopBoundary(unittest.TestCase):
         self._walk(self.m, loop=0)
         self.m.on_track_lost(1, 2.0)
         self.m.reset(loop_id=1)
-        self.assertEqual(self.m.abandoned_transfers, 0)
+        self.assertEqual(self.m.abandoned_episodes, 0)
         self.assertEqual(self.m.abandoned_reasons, {})
         # A replay of loop 0's frames under loop 1 must still transfer exactly once,
         # which it would not if the dedup set had survived the reset.
@@ -287,7 +295,7 @@ class LoopBoundary(unittest.TestCase):
         self.assertEqual(len([e for e in events if e.kind == "candidate_transfer"]), 1)
 
     def test_a_frame_from_an_unannounced_loop_is_refused(self):
-        # Spec §9 requires an explicit reset per loop. Silently adopting a new loop id
+        # Spec Â§9 requires an explicit reset per loop. Silently adopting a new loop id
         # here would let one loop's pending state leak into the next, which is
         # Review Focus #3 in its other direction.
         self.m.observe(_track(1, IN_SHELF, 0.0), _frame(0, 0.0, loop=0))
@@ -314,7 +322,7 @@ class DedupKey(unittest.TestCase):
         self.assertEqual(ev.at_frame_id, 12)
 
     def test_two_transfers_of_the_same_object_in_one_loop_have_different_keys(self):
-        # Two apples, both basket -> checkout: distinct keys, so neither is deduped
+        # Two apples, both origin -> destination: distinct keys, so neither is deduped
         # against the other. Without the track id in the key one would be swallowed.
         keys = {self._transfer(1)[0].dedup_key, self._transfer(2)[0].dedup_key}
         self.assertEqual(len(keys), 2)
@@ -418,6 +426,22 @@ class TrackedClasses(unittest.TestCase):
         # reason it cannot state.
         with self.assertRaises(ValueError):
             RetailEventMachine(_manifest(), class_names=())
+
+    def test_an_injected_label_list_of_the_wrong_width_is_refused(self):
+        # Round-2 review finding: the width check against the pin ran only when
+        # `class_names` was omitted, so an injected `("person",)` was accepted silently
+        # and then every `class_id` above 0 became a `skipped_unmapped_class` at
+        # observation time instead of a startup failure. The check is unconditional
+        # now.
+        with self.assertRaises(ValueError) as caught:
+            RetailEventMachine(_manifest(), class_names=("person",))
+        self.assertIn("classes", str(caught.exception))
+
+    def test_an_injected_list_of_the_right_width_is_accepted(self):
+        # The other side: the check must not reject a caller's own list merely for
+        # being injected, so long as it is the model's width.
+        m = RetailEventMachine(_manifest(), class_names=CLASS_NAMES)
+        self.assertEqual(len(m.tracked_classes), 2)
 
     def test_the_default_label_list_is_resolved_and_cross_checked_at_construction(self):
         # C2: resolution happens once, here, and is checked against the pin. The
@@ -552,6 +576,43 @@ class TheShippedPresenceConfiguration(unittest.TestCase):
                                  _frame(int(t * 10), t))
         self.assertEqual(len([e for e in emitted if e.kind == "zone_occupancy"]), 1)
 
+    def test_a_stay_that_was_already_counted_is_not_abandoned(self):
+        # Round-2 review finding: the comment on `on_track_lost` claimed a counted stay
+        # is not abandoned, but the code could not tell a counted stay from an uncounted
+        # one - it held a bare timestamp - so a stay maturing at t=2.0 and lost at
+        # t=3.5 reported an abandonment for an event that had already been emitted.
+        # `_Stay.counted` makes the two cases separable; this pins the outcome.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        inside = (500, 260, 1280, 660)
+        for t in (0.0, 1.0, 2.0, 2.5):
+            m.observe(_track(1, inside, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        self.assertEqual(len(m.events), 1)
+        self.assertEqual(m.abandoned_episodes, 0)
+        m.on_track_lost(1, 3.5)
+        self.assertEqual(m.abandoned_episodes, 0,
+                         "the event was already emitted; nothing was withheld")
+
+    def test_a_stay_lost_before_it_matured_is_abandoned(self):
+        # The other side of the same boundary, so the test above cannot pass just
+        # because nothing is ever counted.
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        inside = (500, 260, 1280, 660)
+        for t in (0.0, 1.0):
+            m.observe(_track(1, inside, t, cls=PERSON_ID), _frame(int(t * 10), t))
+        m.on_track_lost(1, 1.5)
+        self.assertEqual(m.abandoned_episodes, 1)
+        self.assertEqual(m.abandoned_reasons["track_lost"], 1)
+
+    def test_the_counter_is_named_for_what_it_counts(self):
+        # It counts abandoned *episodes*, of two kinds. A name saying "transfers"
+        # reads non-zero in the presence-only pack that ships, where no transfer exists.
+        self.assertFalse(hasattr(RetailEventMachine(_manifest()), "abandoned_transfers"))
+        m = RetailEventMachine(retail_sanity_manifest(), class_names=CLASS_NAMES)
+        self.assertEqual(m.abandoned_episodes, 0)
+        m.on_track_lost(999, 0.0)
+        self.assertEqual(m.abandoned_episodes, 0,
+                         "losing a track with no episode abandons nothing")
+
     def test_a_lost_track_does_not_carry_its_presence_forward(self):
         # The occlusion rule applied to presence: the track vanishes mid-dwell, and a
         # same-id observation afterwards must not be credited with the missing time.
@@ -567,7 +628,7 @@ class TheShippedPresenceConfiguration(unittest.TestCase):
         for t in (0.0, 1.0):
             m.observe(_track(1, box, t, cls=PERSON_ID), _frame(int(t * 10), t))
         m.on_track_lost(1, 1.5)
-        self.assertEqual(m.abandoned_transfers, 1)
+        self.assertEqual(m.abandoned_episodes, 1)
         early = m.observe(_track(1, box, 1.6, cls=PERSON_ID), _frame(16, 1.6))
         self.assertEqual([e.kind for e in early], [])
         at_two = m.observe(_track(1, box, 2.0, cls=PERSON_ID), _frame(20, 2.0))

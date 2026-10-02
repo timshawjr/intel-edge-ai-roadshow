@@ -5,12 +5,16 @@ pack is a **data structure that can be read**, not a sentence in a slide deck. T
 fields do that work:
 
 - **`business_line`** - the sentence the booth shows. For `retail_sanity` this is
-  **"Items entering the checkout zone"**, not "Shelf-to-basket loss prevention",
-  because `retail_checkout` contains no shelf and no shelf-to-basket event. Read
-  `docs/qualification/M0-content-gate.md` §3-§4: 72 frames were looked at, the
-  basket is already full at frame 0, and the observed movement is basket ->
-  scanner plate. A pack that overstates its own claim here would put a false
-  statement on a screen at a trade show.
+  **"People present at the checkout counter"**. An earlier revision of this docstring
+  recorded a reduced-scope sentence about items entering the checkout zone; that claim
+  was **withdrawn**, because measured over all 3387 frames of `retail_checkout` **no
+  product-transfer event is detectable in it at all**. The withdrawn sentence is
+  deliberately not quoted here: `tests/test_retail_measurements.py` fails on any
+  shipped source containing it, so a correction that quoted it would keep failing its
+  own check. See `app/engine/retail_config.py` for the measurements and
+  `docs/qualification/M0-content-gate.md` §3-§4 for the content gate. A pack that
+  overstates its own claim here would put a false statement on a screen at a trade
+  show, which is the one failure this whole module exists to prevent.
 - **`scope_note`** - free text carried alongside it, so a reduced-scope label can
   ride with the data and be exported with it rather than living in a presenter
   script that can drift. Optional: a pack with no reduction has nothing to say.

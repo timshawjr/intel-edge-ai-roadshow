@@ -27,14 +27,24 @@ by a test that would fail if it were removed:
   both claim one item and the counter doubles.
 
 **On zone names.** `name` here is the state machine's **semantic slot**
-(`"shelf"`, `"basket"`, `"belt"`), and the generic names are deliberate: one
-machine serves every scenario, and the *scenario manifest* is what says which of
-these the footage actually contains. Read
-`docs/qualification/M0-content-gate.md` §3-§4 before assuming a retail clip has a
-shelf: `retail_checkout` is a self-checkout and shows **basket -> scanner plate**,
-and the honest configuration for it names `basket` and `checkout`, not `shelf` and
-`basket`. `"shelf"` is a fixture name used by the unit tests to exercise the
-geometry, not a claim that the footage contains a shelf.
+(`"shelf"`, `"basket"`, `"belt"`, `"counter_band"`), and the generic names are
+deliberate: one machine serves every scenario, and the *scenario manifest* is what
+says which of these the footage actually contains.
+
+Read `app/engine/retail_config.py` before assuming a retail clip has a shelf.
+`retail_checkout` is a self-checkout with **no shelf anywhere in it**, and measured
+over all 3387 frames **no product-transfer event is detectable in it at all** - the
+pack that ships is people-in-zone presence over a `counter_band` zone.
+
+An earlier revision of this note named a two-zone product route for this clip. That
+claim was **withdrawn** when the rectangles were measured and found to hold a
+stationary apple and two `suitcase` detections. It is deliberately described rather
+than quoted here: `tests/test_retail_measurements.py` fails on any shipped source
+containing the withdrawn wording, so a correction that quoted it would keep failing
+its own check.
+
+`"shelf"` is a **fixture name** used by the unit tests to exercise the geometry over
+synthetic boxes. It is not a claim that any provisioned footage contains a shelf.
 
 `dwell_seconds_in_zone` and `crossed_line` are free functions rather than methods
 because they are predicates about a *pair* of observations - the zone is the same
