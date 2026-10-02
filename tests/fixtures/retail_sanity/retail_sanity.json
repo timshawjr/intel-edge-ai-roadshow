@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "built_on": "2026-10-01",
+  "source_clip": "assets/media/retail-checkout.mp4",
+  "frame_index": 0,
+  "image": "retail_000.jpg",
+  "expected": [
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "min_score": 0.25,
+      "box_xyxy": [645, 0, 1268, 658],
+      "reasoning": "The shopper standing at the self-checkout, seen from an overhead camera. Drawn by eye on retail_000.jpg. Left edge 645 is the outer edge of their right upper arm where it meets the top of the frame - the arm slopes gently right as it descends, so the minimum over the whole body is at y=0. Right edge 1268 is the outer edge of their left upper arm, which is rightmost around y=150-200 and then turns back left towards the elbow. Top edge 0: the head is outside the frame, the torso is cut by the top border. Bottom edge 658: the bare shins disappear behind the near lip of the checkout counter at about y=655-660; the counter occludes the rest, so the box stops at the occlusion rather than guessing at the feet."
+    },
+    {
+      "class_id": 47,
+      "class_name": "apple",
+      "min_score": 0.25,
+      "box_xyxy": [0, 878, 150, 1062],
+      "reasoning": "The red-and-yellow apple in the black shopping basket at the bottom-left of the frame, cut off by the left border. Drawn by eye on retail_000.jpg. Top edge 878 is the apple's yellow-green shoulder, above which is a separate yellow package. Right edge 150 is the rightmost of the apple's red skin, where it meets a dark bottle in shadow. Bottom edge 1062 is the basket's near rim, which hides the rest of the fruit. Left edge 0 is the frame border: roughly the left third of the apple is outside the picture, and the box covers the visible part only."
+    }
+  ],
+  "notes": "ANNOTATED BY EYE, NOT COPIED FROM MODEL OUTPUT. The order of work was: (1) tools/build_sanity_fixture.py --extract-frame 0 wrote retail_000.jpg at the clip's native 1920x1080; (2) retail_000.jpg was opened and looked at, and the two boxes above were read off it in source pixels; (3) only then was the pinned model run and compared. The coordinates are not copied from the detector's output, and no box was widened, moved or dropped afterwards to make the model agree. If the model disagrees with either box, the annotation is the more likely of the two to be right and the disagreement is a finding about the decoder, not a reason to edit this file - which is why tools/build_sanity_fixture.py never writes it. min_score is fixed at 0.25, the same conf threshold the fixture is evaluated at, chosen before the model was run; it is deliberately not a tuned number, and the test suite pins that equality so it cannot become one. 'apple' is class 47 in the pinned labels.txt, not 52: the file is the plain COCO 80 list, where 52 is 'hot_dog'. DELIBERATELY NOT ANNOTATED, each for a stated reason: a second shopper's lower legs and flip-flopped feet at the top-left (about x 370-540, y 0-100) with a shopping trolley - it is a person, but roughly 85 percent of the body is outside the frame, so where the body ends is guesswork and a box would be mostly invention; a gold-lidded jar and a dark bottle lying in the basket (about x 150-400, y 890-1080) - a cap and a dark body are visible, but this frame does not show enough of either to say bottle rather than jar or can, and a bread bag has no COCO class at all; the drink cartons and the plastic bag of rolls - no COCO class; the checkout counter - 'dining_table' (60) was considered because the counter is a horizontal surface across the lower frame, but I do not judge it to be a dining table, and annotating it would be recording a guess about what a model will say rather than what is in the picture; the background shelving - no COCO class.",
+  "provenance": {
+    "extracted_by": ".venv\\Scripts\\python.exe tools\\build_sanity_fixture.py --extract-frame 0",
+    "opencv_version_used_for_extraction": "5.0.0",
+    "requested_frame_index": 0,
+    "cv2_counter_before_read": 0,
+    "cv2_counter_after_read": 1,
+    "counter_note": "CAP_PROP_POS_FRAMES is the index of the NEXT frame to be decoded, so a read of frame 0 leaves the counter at 1. Measured on this clip: a seek to 0 then read is byte-identical to a sequential read of frame 0, and likewise for 1 and 2; no read failed at 0, 1, 2, 60, 300, 1200 or 3386.",
+    "raw_bgr_sha256": "20dd0662140040eab421d8f954db26b106cfaaed7e46dc9e1cf3f5d09a9fda62",
+    "raw_bgr_sha256_note": "sha256 over the contiguous BCR buffer as cv2 decoded it, before JPEG encoding. Re-run --extract-frame 0 and this value must come out identical, or the picture has changed and the boxes above no longer describe it.",
+    "jpeg_quality": 95,
+    "decoded_resolution": [1920, 1080],
+    "measured_against": "config/models.json media[retail_checkout] measured_width 1920, measured_height 1080"
+  },
+  "evaluated_at": {
+    "conf_threshold": 0.25,
+    "iou_threshold": 0.45,
+    "match_iou": 0.5,
+    "note": "The same 0.25/0.45 pair tests/test_decode.py uses, and the IoU a detection must reach against the hand box, both fixed before the model was run. The 0.5 is a real tolerance and not a formality: a box drawn by eye at 1920x1080 and the same box drawn by the model in 640x640 model space and mapped back through the letterbox inverse will not agree to the pixel, and demanding more would make this fixture fail on annotation jitter rather than on a decoder fault."
+  }
+}
