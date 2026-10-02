@@ -142,11 +142,11 @@
   "fetch_api": {
     "infer_input_int_index": "accepted",
     "infer_input_port_name": "accepted",
-    "infer_input_output_port_object": "rejected: TypeError",
-    "infer_input_const_output": "accepted",
+    "infer_input_ir_output_port_object": "rejected: TypeError",
+    "infer_input_compiled_port_object": "accepted",
     "get_tensor_output_int_index": "rejected: TypeError",
-    "get_tensor_output_output_port_object": "accepted: [1, 84, 8400]",
-    "get_tensor_output_const_output": "accepted: [1, 84, 8400]",
+    "get_tensor_output_ir_output_port_object": "accepted: [1, 84, 8400]",
+    "get_tensor_output_compiled_port_object": "accepted: [1, 84, 8400]",
     "get_output_tensor_int_index": "accepted: [1, 84, 8400]"
   },
   "fetch_note": "MEASURED on the installed runtime by this tool; see fetch_api for the per-call results. The two sides want DIFFERENT key types and neither accepts the obvious one: InferRequest.infer accepts an int index, a port NAME, or a ConstOutput, and REJECTS the Output port object; InferRequest.get_tensor accepts the Output port object or a ConstOutput and REJECTS an int index, while get_output_tensor(0) accepts the int. So the input for infer and the output for get_tensor cannot both be keyed the same way, and a caller that assumes they can finds out at runtime, on a booth. The port index app.inference.decode keys on is a key this project assigns, not one OpenVINO accepts for either call.",

@@ -132,17 +132,24 @@ def _probe_fetch_api(model: Any, compiled: Any) -> dict[str, Any]:
     This is measured, not asserted from memory, because the answer is genuinely
     surprising and version-specific. Measured on `openvino==2026.4.0` on this machine:
 
-    | call                              | int index | port name | `Output` port object | `ConstOutput` |
+    | call                              | int index | port name | IR `Output` port object | compiled `ConstOutput` |
     |---|---|---|---|---|
     | `infer({key: blob})`              | OK        | OK (`'x'`) | **TypeError**        | OK            |
     | `get_tensor(key)`                 | TypeError | n/a (no name) | **OK**            | OK            |
     | `get_output_tensor(0)`            | OK        | n/a       | n/a                 | n/a           |
 
     So the two sides want **different** key types, and neither accepts the obvious one:
-    `infer` rejects the `Output` port object it is handed, while `get_tensor` rejects the
+    `infer` rejects the IR `Output` port object it is handed, while `get_tensor` rejects the
     int. `get_output_tensor(0)` accepts the int and is the simpler route for outputs.
     A caller that fetches the input one way and the output another will find this out at
     runtime, on a booth, which is why both rows are recorded.
+
+    **The key names below name the MODEL the port came from, not just the port type.**
+    That distinction is load-bearing and was previously only implicit in this docstring:
+    `infer` accepts an int index **and** the *compiled* model's port object, and rejects
+    only the *IR* model's port object. Reading the recorded block without that qualifier
+    makes it look like a blanket ban on port objects, which is wrong. So each key says
+    `ir_...` or `compiled_...`.
 
     A `TypeError` is recorded as rejected. Any other exception is recorded as `"error:
     <text>"` rather than being folded into "rejected", so a genuine failure cannot be
@@ -154,8 +161,8 @@ def _probe_fetch_api(model: Any, compiled: Any) -> dict[str, Any]:
         cases: list[tuple[str, str, Any]] = [
             ("input", "int_index", 0),
             ("input", "port_name", next(iter(model.inputs[0].get_names()), "")),
-            ("input", "output_port_object", model.inputs[0]),
-            ("input", "const_output", compiled.input(0)),
+            ("input", "ir_output_port_object", model.inputs[0]),
+            ("input", "compiled_port_object", compiled.input(0)),
         ]
         for side, kind, key in cases:
             try:
@@ -167,8 +174,8 @@ def _probe_fetch_api(model: Any, compiled: Any) -> dict[str, Any]:
                 result[f"infer_{side}_{kind}"] = f"error: {type(exc).__name__}: {exc}"
         out_cases: list[tuple[str, Any]] = [
             ("int_index", 0),
-            ("output_port_object", model.outputs[0]),
-            ("const_output", compiled.output(0)),
+            ("ir_output_port_object", model.outputs[0]),
+            ("compiled_port_object", compiled.output(0)),
         ]
         for kind, key in out_cases:
             try:
