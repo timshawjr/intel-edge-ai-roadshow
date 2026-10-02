@@ -5,5 +5,8 @@ from app.contracts.device_status import (
     Validity,
     mark_validated,
 )
+from app.contracts.frame import FramePacket
+from app.contracts.scenario_manifest import ScenarioManifest
 
-__all__ = ["DeviceStatus", "Validity", "mark_validated"]
+__all__ = ["DeviceStatus", "FramePacket", "ScenarioManifest", "Validity",
+           "mark_validated"]
