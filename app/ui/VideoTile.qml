@@ -1,32 +1,61 @@
-// VideoTile.qml - one video surface: hero or thumbnail.
+// VideoTile.qml - one camera's video surface: hero or thumbnail.
 //
-// The hero draws the newest decoded frame plus the overlay that belongs to *that* frame.
-// The boxes come from `bridge.overlay_boxes`, which is built by `UiBridge.set_overlay`,
-// which filters on `Track.is_current`. There is no QML-side truth table about whether a
-// track is coasting, because that is the one thing QML cannot be trusted to hold
-// correctly: a coasted track's box is the last one *seen*, so drawing it puts a
-// plausible, correctly-placed rectangle over an object that has since left, and nothing
-// about that rectangle looks wrong.
+// ## One tile, one camera
 //
-// The image `source` carries `bridge.frame_revision` as a query string. Without it the
-// `Image` is fetched once and the hero shows frame 0 for the whole session - measured
-// behaviour of a constant `image://` URL, and the reason this binding is not a constant.
+// `streamId` names **this tile's** camera, and the `Image` asks the provider for exactly
+// that stream: `"image://frames/" + streamId + "?v=" + <that stream's revision>`. The
+// provider serves `UiBridge.frame_for(streamId)` and has nothing else to serve - there is
+// no cross-stream fallback, so a tile **cannot** show another camera's picture even by
+// accident. Before this, every tile asked for `"hero"` and all three surfaces showed
+// whichever camera delivered last.
+//
+// The revision comes from the bridge's **notified** `stream_frame_revisions` map, never
+// from a method call: a QML binding that calls a method declares no property dependency
+// and is evaluated once, which is the defect this repository has now found four times.
+//
+// ## A camera with no frame says so
+//
+// `frames_ready[streamId] !== true` is the guard, and a stream that has never delivered a
+// frame is **absent from the map** rather than present with a 0 - `0` would be
+// indistinguishable from "frame 0 just arrived". The tile then shows its own background
+// and this sentence, in words, naming the camera. It does **not** hold a previous frame and
+// it does not borrow the hero's.
+//
+// ## The hero draws the overlay
+//
+// The hero's boxes come from `bridge.overlay_boxes`, which is the **bound stream's** boxes
+// (`UiBridge.set_route_stream` re-derives them when the hero moves, so pointing the screen
+// at Camera C does not leave Camera A's rectangles drawn over it). There is no QML-side
+// truth table about whether a track is coasting, because that is the one thing QML cannot
+// be trusted to hold correctly: a coasted track's box is the last one *seen*, so drawing it
+// puts a plausible, correctly-placed rectangle over an object that has since left, and
+// nothing about that rectangle looks wrong.
 
 import QtQuick
 
 Item {
     id: tile
 
+    /// Which camera this tile shows. **Required**, and it is what the image is addressed by.
+    property string streamId: ""
     /// True for the hero. Thumbnails get the border and the caption only.
     property bool hero: false
     /// Caption shown under a thumbnail.
     property string caption: ""
-    /// Which image-provider path this tile asks for.
-    property string sourceName: hero ? "hero" : "thumb"
     /// Whether overlay boxes and zone rectangles are drawn. Hero only.
     property bool drawOverlay: hero
     /// Explainer key for the hover panel.
     property string explainKey: "yolo"
+
+    /// Whether **this** camera has delivered a frame. Not `bridge.frame_ready`, which is the
+    /// hero's: three cameras at 15 fps would otherwise put "no frame decoded yet" over two
+    /// working thumbnails.
+    readonly property bool frameReady: streamId.length > 0
+        && bridge.stream_frames_ready[streamId] === true
+    /// This camera's own revision, or 0 for a camera that has delivered nothing.
+    readonly property int frameRevision:
+        bridge.stream_frame_revisions[streamId] !== undefined
+        ? bridge.stream_frame_revisions[streamId] : 0
 
     signal tileActivated()
 
@@ -39,24 +68,35 @@ Item {
         // Anti-aliasing off: on a downscaled 1920x1080 frame it costs real time per
         // frame and the booth reads motion, not edges.
         smooth: false
-        source: "image://frames/" + tile.sourceName + "?v=" + bridge.frame_revision
+        objectName: "tileImage_" + tile.streamId
+        source: tile.streamId.length > 0
+            ? "image://frames/" + tile.streamId + "?v=" + tile.frameRevision
+            : ""
     }
 
-    // Nothing is drawn before the first real frame arrives: the provider serves a 1x1
-    // transparent image, so the tile shows its own background rather than a placeholder
-    // that could be mistaken for a frozen stream.
+    // Nothing is drawn before this camera's first real frame arrives: the provider serves
+    // a 1x1 transparent image, so the tile shows its own background rather than a
+    // placeholder that could be mistaken for a frozen stream - and rather than another
+    // camera's picture.
     Rectangle {
         anchors.fill: parent
-        visible: !bridge.frame_ready
+        objectName: "tileNoFrame_" + tile.streamId
+        visible: !tile.frameReady
         color: Theme.BG_VIDEO
         border.color: Theme.BORDER
         border.width: 1
         Text {
             anchors.centerIn: parent
-            text: "no frame decoded yet"
+            width: parent.width - Theme.SPACING.md
+            objectName: "tileNoFrameText_" + tile.streamId
+            text: tile.streamId.length > 0
+                ? "no frame from Camera " + tile.streamId + " yet"
+                : "no camera on this surface"
             color: Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_DETAIL
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
         }
     }
 
@@ -83,6 +123,7 @@ Item {
         model: tile.drawOverlay ? bridge.overlay_boxes : []
         delegate: Item {
             required property var modelData
+            objectName: "tileBox_" + tile.streamId + "_" + modelData.track_id
             x: modelData.x * tile.width
             y: modelData.y * tile.height
             width: Math.max(1, modelData.w * tile.width)

@@ -170,8 +170,8 @@ def _render_png(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> str:
     return _render(tmpdir, seed)[0]
 
 
-def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict]:
-    """`(png_path, {objectName: [text, visible]})` for one offscreen render.
+def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict, dict]:
+    """`(png_path, {objectName: [text, visible, ...]}, per_camera_probe)`.
 
     The strings come out of the child's **scene graph**, read from the named items the QML
     declares - not from the bridge's Python properties, and not from the PNG. A bridge can
@@ -201,12 +201,15 @@ def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict]:
     for line in completed.stdout.splitlines():
         if line.startswith("SCENESTRINGS "):
             strings = json.loads(line[len("SCENESTRINGS "):])
+        elif line.startswith("FRAMEPROBE "):
+            probe = json.loads(line[len("FRAMEPROBE "):])
+            probe["requests"] = [(raw, bool(served)) for raw, served in probe["requests"]]
     if not strings:
         raise AssertionError(
             "the render published no scene strings, so every string assertion would be "
             "reading nothing - which is exactly how the M1 card-text assertion proved "
             "two of three keys.\nstdout: " + completed.stdout[-3000:])
-    return output, strings
+    return output, strings, probe
 
 
 #: **Three cameras on three devices**, which is the layout the per-device wording is really
@@ -303,14 +306,15 @@ bridge.set_streams(["A", "B", "C"])
 class FakeFrame:
     """A minimal stand-in for a `FramePacket`.
 
-    Only the four attributes `UiBridge` reads are provided: identity, extents and image.
-    The identity is the real four-tuple shape, because that is what `accept_result`
-    compares.
+    Only the attributes `UiBridge` reads are provided: identity, extents, image and - **M2,
+    per-camera frames** - the stream it belongs to. The identity is the real four-tuple
+    shape, because that is what `accept_result` compares.
     """
 
     identity = ("selftest", "A", 0, 0)
     width = 1920
     height = 1080
+    stream_id = "A"
 
 
 def _image():
@@ -367,14 +371,51 @@ def dump_strings():
         if not name:
             continue
         NAMES[name] = [str(item.property("text")), bool(item.property("visible"))]
+        if name == "heroTile":
+            # **M2: the hero's own `streamId`.** A hero hardcoded to camera A and a hero
+            # following `route_stream` leave exactly the same *set of named items* on the
+            # screen, so the difference is invisible unless the hero has a name and its own
+            # read. It was a surviving mutant until this existed.
+            NAMES[name] = [str(item.property("streamId"))]
+            continue
+        if name.startswith("thumb_"):
+            # **M2: a thumbnail's caption**, because the caption is a claim about which
+            # camera is on the surface and it is only checkable by reading it.
+            NAMES[name] = [str(item.property("caption"))]
+            continue
+        if name.startswith("tile"):
+            # **M2: a tile's source, source size and painted width**, because "the hero is
+            # empty" and "the hero is bound to the wrong URL" look identical in pixels and
+            # the difference is one property away.
+            _size = item.property("sourceSize")
+            # `sourceSize` is `None` on an `Item` that is not an image - the dump reads
+            # every named item, and a bare `Item` has no size at all. `None` is written as
+            # `""` rather than raising, because a missing size on a non-image is not a
+            # failure of anything.
+            _size_text = ("" if _size is None
+                          else "%dx%d" % (_size.width(), _size.height()))
+            NAMES[name] = NAMES[name] + [str(item.property("source")),
+                                          _size_text,
+                                          str(item.property("paintedWidth"))]
     print("SCENESTRINGS " + json.dumps(NAMES, sort_keys=True))
+    # **M2: the per-camera probe.** Which camera has a frame, which has not, and **every
+    # id the image provider was actually asked for** - the last of those is the only place
+    # a cross-wired tile shows up, and it is what the three-surface tests assert on.
+    _probe = bridge.frame_for("A")
+    print("FRAMEPROBE " + json.dumps({
+        "frame": None if _probe is None else "%dx%d" % (_probe.width(), _probe.height()),
+        "ready": dict(bridge.stream_frames_ready),
+        "revisions": dict(bridge.stream_frame_revisions),
+        "requests": [[str(raw), bool(served)] for raw, served in provider.requests[:16]],
+    }))
 
 
 shutil.rmtree(work, ignore_errors=True)
 shutil.copytree(@UI@, work)
 
 engine = QQmlApplicationEngine()
-engine.addImageProvider("frames", FrameImageProvider(bridge))
+provider = FrameImageProvider(bridge)
+engine.addImageProvider("frames", provider)
 ctx = engine.rootContext()
 ctx.setContextProperty("Theme", theme)
 ctx.setContextProperty("bridge", bridge)
@@ -437,7 +478,7 @@ class ThreeStreamBoothLayout(unittest.TestCase):
     def setUpClass(cls):
         tmp = tempfile.mkdtemp(prefix="roadshow-allcpu-")
         cls._tmp = tmp
-        cls.png, cls.strings = _render(tmp, _ALLCPU_SEED)
+        cls.png, cls.strings, cls.probe = _render(tmp, _ALLCPU_SEED)
 
     @classmethod
     def tearDownClass(cls):
@@ -578,7 +619,7 @@ class ThreeStreamBoothLayout(unittest.TestCase):
         # route, no metrics, no frames. This is the screen's first frame.
         tmp = tempfile.mkdtemp(prefix="roadshow-cold-")
         try:
-            _png, strings = _render(tmp, 'bridge.set_streams(["A", "B", "C"])\n')
+            _png, strings, _probe = _render(tmp, 'bridge.set_streams(["A", "B", "C"])\n')
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         for sid in ("A", "B", "C"):
@@ -632,6 +673,7 @@ class ThreeStreamBoothLayout(unittest.TestCase):
 
             def __init__(self):
                 self.identity = ("s", "A", 1, 0)
+                self.stream_id = "A"
 
         class _Manifest:
             def zones_for_event_rules(self):
@@ -965,7 +1007,7 @@ class StreamCardRecord(unittest.TestCase):
         # carries it.
         tmp = tempfile.mkdtemp(prefix="roadshow-devices-")
         try:
-            _png, strings = _render(tmp, _THREE_DEVICE_SEED)
+            _png, strings, _probe = _render(tmp, _THREE_DEVICE_SEED)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         expected = {"system_cpu_percent": "no CPU sample yet",
@@ -994,6 +1036,311 @@ class StreamCardRecord(unittest.TestCase):
         for sid in ("A", "B", "C"):
             self.assertEqual(strings[f"streamStaleText_{sid}"][1], False,
                              f"camera {sid} is at 315 ms; it must not be called stale")
+
+
+#: **M2, closing the disclosed gap**: three declared cameras, **two with frames and one
+#: without**, and the two frames are different **sizes** as well as colours. Different
+#: sizes matter: a cross-wired tile that showed the other camera's pixels would still be
+#: 1920x1080, so only the size makes the swap visible in `sourceSize` without decoding an
+#: image. 960x540 and 480x270 against a 1x1 blank is unambiguous.
+_PER_CAMERA_SEED = '''bridge.set_streams(["A", "B", "C"])
+
+
+def _frame(width, height, channel, level):
+    import numpy as _np
+    img = _np.zeros((height, width, 3), _np.uint8)
+    img[:, :, channel] = level
+    return img
+
+
+bridge.apply_route({"stream": "A", "requested": "CPU", "confirmed": ["CPU"],
+                    "state": "active", "fell_back": False, "errors": []})
+bridge.apply_route({"stream": "B", "requested": "GPU", "confirmed": [],
+                    "state": "pending", "fell_back": False, "errors": []})
+bridge.apply_route({"stream": "C", "requested": "NPU", "confirmed": ["NPU"],
+                    "state": "active", "fell_back": False, "errors": []})
+bridge.apply_frame({"stream": "A", "image": _frame(960, 540, 1, 200),
+                    "width": 960, "height": 540, "zones": [], "boxes": [], "events": []})
+bridge.apply_frame({"stream": "C", "image": _frame(480, 270, 2, 200),
+                    "width": 480, "height": 270, "zones": [], "boxes": [], "events": []})
+'''
+
+
+class PerCameraVideoSurfaces(unittest.TestCase):
+    """**M2: each tile serves its own camera's frames, or says it has none.**
+
+    This closes the gap Task 5 disclosed: *"per-camera video surfaces are not built - the
+    hero and M1's two honestly-labelled thumbnails are unchanged, and three live pictures
+    need per-stream frames through `FrameImageProvider` and a feeder per stream."*
+
+    Two offscreen renders, both seeded with three declared cameras:
+
+    - **Camera A has a 960x540 frame, Camera B has none, Camera C has a 480x270 frame.**
+    Different sizes, so a cross-wired tile is visible in the `sourceSize` the `Image`
+    reports without decoding anything, and B's absence is visible as a 1x1.
+    - **A second render with the hero pointed at Camera C**, to prove the hero follows the
+      selection rather than always being Camera A.
+
+    ## Every assertion is on a named item or the provider's own audit trail
+
+    Three separate traps make a weaker version of this test pass: an absent item reads
+    `""`, a `Repeater` delegate is invisible to `findChild`, and a provider that returns a
+    1x1 transparent image draws **something** rather than nothing. So the tests read
+    `objectName`s that must exist, and the provider's `requests` list, which records every
+    id it was asked for and whether it served anything.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.mkdtemp(prefix="roadshow-percam-")
+        cls.png, cls.strings, cls.probe = _render(cls._tmp, _PER_CAMERA_SEED)
+        cls._tmp2 = tempfile.mkdtemp(prefix="roadshow-herosel-")
+        _png, cls.hero_strings, cls.hero_probe = _render(
+            cls._tmp2, _PER_CAMERA_SEED + 'bridge.set_route_stream("C")\n')
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+        shutil.rmtree(cls._tmp2, ignore_errors=True)
+
+    def tile(self, strings, sid):
+        """`(source, sourceSize)` for one camera's `Image`, asserting the item exists."""
+        name = f"tileImage_{sid}"
+        self.assertIn(name, strings,
+                      f"there is no {name} in the scene, so any assertion about which "
+                      f"picture it shows would be asserting about nothing: "
+                      f"{sorted(strings)}")
+        return strings[name][2], strings[name][3]
+
+    def test_each_tile_asks_for_its_own_stream_and_no_other_name(self):
+        # **The loud part.** Every id the provider was asked for must be one of the three
+        # camera ids - never `"hero"`, never `"thumb0"`, never another camera's. That was the
+        # whole defect: every tile asked for `"hero"`, and all three surfaces showed
+        # whichever camera delivered last.
+        asked = [raw.split("?")[0] for raw, _served in self.probe["requests"]]
+        self.assertTrue(asked, "the provider was asked for nothing at all, so this test "
+                               "would pass over an empty scene")
+        self.assertEqual(sorted(set(asked)), ["A", "B", "C"],
+                         f"the provider must only ever be asked for a camera id; it was "
+                         f"asked for {sorted(set(asked))}")
+        for legacy in ("hero", "thumb0", "thumb1", ""):
+            self.assertNotIn(legacy, asked,
+                             f"'{legacy}' is the pre-M2 shared path. Every tile asking for "
+                             f"one shared path is exactly how three cameras ended up "
+                             f"showing one camera.")
+
+    @staticmethod
+    def _stream_of(url_text):
+        """`"image://frames/A?v=1"` -> `"A"`.
+
+        **The id is read the same way the provider reads it**, out of the `QUrl`'s last path
+        segment with the query dropped. The first version of these tests did a
+        `.split("?")[0]` on `str(QUrl)` and compared it against a hand-written string, which
+        did not match `"PySide6.QtCore.QUrl('image://frames/A"` - so the assertion was
+        comparing the wrong two things and would have failed for the wrong reason on any
+        render that was actually correct.
+        """
+        text = str(url_text)
+        start = text.find("image://")
+        if start >= 0:
+            text = text[start + len("image://"):]
+        return text.split("?")[0].strip("') ").split("/")[-1].strip("') ")
+
+    def test_a_tile_with_a_frame_serves_that_frame_and_only_that_frame(self):
+        # The two sizes make a swap unmissable: A's is 960x540 and C's is 480x270, so a tile
+        # showing the other's pixels reports the other's size.
+        source, size = self.tile(self.strings, "A")
+        self.assertEqual(self._stream_of(source), "A",
+                         f"camera A's tile asks for {source!r}")
+        self.assertIn("960x540", size,
+                      f"camera A's tile must show A's 960x540 frame; it reports {size}")
+        source, size = self.tile(self.strings, "C")
+        self.assertEqual(self._stream_of(source), "C",
+                         f"camera C's tile asks for {source!r}")
+        self.assertIn("480x270", size,
+                      f"camera C's tile must show C's 480x270 frame; it reports {size}")
+        # And the two are served, so this is not a tile pair that happens to look right.
+        served = {raw.split("?")[0] for raw, ok in self.probe["requests"] if ok}
+        self.assertEqual(served, {"A", "C"},
+                         f"the provider must serve exactly the two cameras that have "
+                         f"frames: {sorted(served)}")
+
+    def test_a_camera_with_no_frame_says_so_and_shows_no_picture(self):
+        # **B has produced nothing.** The tile must say so in words, must not be painted,
+        # and above all must not be showing A's or C's picture.
+        self.assertNotIn("B", self.probe["ready"],
+                         f"camera B is declared and has no frame, so it must be absent "
+                         f"from the ready map, not present-and-false: "
+                         f"{self.probe['ready']}")
+        self.assertEqual(self.probe["revisions"].get("B"), None,
+                         f"a camera with no frame has no revision; 0 would be "
+                         f"indistinguishable from frame 0: {self.probe['revisions']}")
+        source, size = self.tile(self.strings, "B")
+        self.assertEqual(self._stream_of(source), "B",
+                         f"camera B's tile asks for {source!r}")
+        self.assertIn("1x1", size,
+                      f"camera B has no frame, so its image must be the 1x1 blank and not "
+                      f"another camera's pixels: it reports {size}")
+        not_shown = f"tileNoFrame_{'B'}"
+        self.assertIn(not_shown, self.strings, sorted(self.strings))
+        self.assertTrue(self.strings[not_shown][1],
+                        "camera B has no frame, so its 'no frame' panel must be VISIBLE - a "
+                        "hidden panel with a blank picture is the same as nothing")
+        words = self.strings[f"tileNoFrameText_B"][0]
+        self.assertEqual(words, "no frame from Camera B yet",
+                         f"the tile must say which camera has no frame, in words: {words!r}")
+        # **And the reason it is blank is not a rendering failure.**
+        not_served = [raw for raw, ok in self.probe["requests"] if not ok]
+        self.assertTrue(any(raw.startswith("B") for raw in not_served),
+                        f"the provider must have refused to serve something rather than "
+                        f"silently substituting another camera's pixels: {not_served}")
+
+    def test_the_hero_serves_the_bound_stream_and_follows_a_change_of_selection(self):
+        # **The hero is Camera A** in the first render, and **Camera C** after
+        # `set_route_stream("C")`. Three separate things move together - the picture, the
+        # badge and the overlay boxes - and this is the assertion that they move *together*.
+        #
+        # **The hero's own `streamId` is read from the named hero item**, not inferred from
+        # which tile happens to be largest. A hero hardcoded to `"A"` and a hero following
+        # `route_stream` leave exactly the same set of named items on the screen - the first
+        # version of this test passed against the hardcoded hero, because every assertion
+        # was about a *tile* and the tiles are the same either way.
+        self.assertIn("heroTile", self.strings, sorted(self.strings))
+        self.assertEqual(self.strings["heroTile"][0], "A",
+                         f"the hero must be bound to the default stream A; the item says "
+                         f"{self.strings['heroTile'][0]!r}")
+        self.assertEqual(self.hero_strings["heroTile"][0], "C",
+                         f"and after set_route_stream('C') it must say C; it says "
+                         f"{self.hero_strings['heroTile'][0]!r}")
+        self.assertEqual(self._stream_of(self.strings["tileImage_A"][2]), "A",
+                         "the default bound stream is Camera A")
+        self.assertEqual(self._stream_of(self.hero_strings["tileImage_A"][2]), "A",
+                         "the thumbnail for camera A is still camera A's own stream after "
+                         "the hero moved")
+        # Camera C's tile is the hero now, and it shows **C's** frame.
+        hero_source, hero_size = self.tile(self.hero_strings, "C")
+        self.assertEqual(self._stream_of(hero_source), "C", hero_source)
+        self.assertIn("480x270", hero_size,
+                      f"the hero must show the newly bound camera's own frame; it reports "
+                      f"{hero_size}")
+        # **The badge moved with it**, which is the "nothing describes a different camera"
+        # property. `hero_strings['streamBadgeText_C']` is C's card; the hero's own badge is
+        # the header's `deviceBadgeText`.
+        self.assertIn("device: NPU", self.hero_strings["deviceBadgeText"][0],
+                      f"the header badge must describe the newly bound camera: "
+                      f"{self.hero_strings['deviceBadgeText'][0]!r}")
+        self.assertIn("device: CPU", self.strings["deviceBadgeText"][0],
+                      f"and in the default render it described camera A: "
+                      f"{self.strings['deviceBadgeText'][0]!r}")
+
+    def test_a_thumbnail_is_captioned_with_its_own_camera_and_its_own_device(self):
+        # **The caption is a claim about the picture, and it is read, not assumed.**
+        #
+        # The first version of this binding was
+        # `"Camera " + modelData + " · " + bridge.stream_routes[modelData].confirmed`,
+        # and `confirmed` is a Python tuple crossing into QML as a `QVariantList`.
+        # Concatenating a list with a string rendered the literal **`-1`** on both
+        # thumbnails - on a render where the Python side held `confirmed: ('GPU.0',)` for
+        # camera B and the picture above the caption was real. It was visible only by
+        # reading the scene graph, which is why it is a test and not a review comment.
+        #
+        # A camera with no confirmed device must say so in words, must not print a number,
+        # and must not borrow another camera's device.
+        self.assertEqual(self.strings.get("thumb_B", [""])[0], "Camera B · not confirmed",
+                         f"camera B is pending with no confirmed device in this render: "
+                         f"{self.strings.get('thumb_B')!r}")
+        self.assertEqual(self.strings.get("thumb_C", [""])[0], "Camera C · NPU",
+                         f"camera C is confirmed on NPU in this render: "
+                         f"{self.strings.get('thumb_C')!r}")
+        self.assertNotIn("-1", self.strings.get("thumb_B", [""])[0],
+                         f"the literal -1 is what a QVariantList stringifies to when it "
+                         f"is concatenated instead of joined: "
+                         f"{self.strings.get('thumb_B')!r}")
+        # **And the negative control**: take camera C's confirmation away and its caption
+        # must say so in words rather than printing a device or a number.
+        empty = _render(tempfile.mkdtemp(prefix="roadshow-nocap-"),
+                        _PER_CAMERA_SEED.replace('"confirmed": ["NPU"]',
+                                                 '"confirmed": []'))
+        self.assertIn("thumb_C", empty[1], sorted(empty[1]))
+        self.assertEqual(empty[1]["thumb_C"][0], "Camera C · not confirmed",
+                         f"an unconfirmed camera must say so in words: "
+                         f"{empty[1]['thumb_C']!r}")
+
+    def test_a_thumbnail_caption_follows_a_confirmation_that_arrives_after_the_load(self):
+        # **The notify wiring, and this is not the same test as the one above.** That one
+        # seeds the routes *before* `engine.load`, so a property with the **wrong**
+        # `notify=` still reads correctly and the caption is right by accident - which is
+        # how a non-notified map survives a green suite. Here the routes arrive **after**
+        # the scene exists, which is what a live booth does: the card reads
+        # `pending - not yet confirmed` and only later names the device. A caption frozen
+        # at its first value is a presenter telling a visitor the wrong device for the
+        # rest of the session, and nothing on screen would show it.
+        seed = ('bridge.set_streams(["A", "B", "C"])\n'
+                'bridge.apply_route({"stream": "A", "requested": "CPU",\n'
+                '                    "confirmed": [], "state": "pending",\n'
+                '                    "fell_back": False, "errors": []})\n')
+        # **The late routes are published from a `QTimer` inside the render process**, so
+        # the change the caption must notice is a property *notification*, not a rebuild.
+        late = (
+            "\nimport PySide6.QtCore as _qt\n"
+            "def _confirm():\n"
+            '    bridge.apply_route({"stream": "A", "requested": "CPU",\n'
+            '                        "confirmed": ["CPU"], "state": "active",\n'
+            '                        "fell_back": False, "errors": []})\n'
+            '    bridge.apply_route({"stream": "B", "requested": "NPU",\n'
+            '                        "confirmed": ["NPU"], "state": "active",\n'
+            '                        "fell_back": False, "errors": []})\n'
+            "_qt.QTimer.singleShot(1, _confirm)\n")
+        before = _render(tempfile.mkdtemp(prefix="roadshow-cap0-"), seed)
+        after = _render(tempfile.mkdtemp(prefix="roadshow-cap1-"), seed + late)
+        self.assertIn("thumb_B", before[1], sorted(before[1]))
+        self.assertEqual(before[1]["thumb_B"][0], "Camera B · not confirmed",
+                         f"before any confirmation: {before[1]['thumb_B']!r}")
+        self.assertEqual(after[1]["thumb_B"][0], "Camera B · NPU",
+                         f"after the confirmation is published, the caption must name the "
+                         f"device - a caption frozen at its first value tells a visitor "
+                         f"the wrong device for the rest of the session: "
+                         f"{after[1]['thumb_B']!r}")
+
+    def test_the_provider_never_falls_back_to_another_streams_pixels(self):
+        """The guarantee itself, at the provider's own level, with no window involved.
+
+        `UiBridge.frame_for` returns `None` for a stream with no frame and the provider
+        answers 1x1 transparent. It must **not** answer with the hero's frame, and it must
+        not answer with the most recent frame from any camera - either would put another
+        camera's shopper under this camera's caption.
+        """
+        import numpy as np
+        from PySide6.QtGui import QImage
+        from PySide6.QtCore import QCoreApplication
+
+        from app.ui.bridge import UiBridge
+        from app.ui.provider import FrameImageProvider
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        bridge = UiBridge()
+        bridge.set_streams(["A", "B", "C"])
+        red = np.zeros((64, 48, 3), np.uint8)
+        red[:, :, 2] = 200
+        bridge.apply_frame({"stream": "A", "image": red, "width": 48, "height": 64,
+                            "zones": [], "boxes": [], "events": []})
+        provider = FrameImageProvider(bridge)
+
+        served = provider.requestImage("A?v=1")
+        self.assertEqual((served.width(), served.height()), (48, 64))
+        for sid in ("B", "C", "hero", "", "Z"):
+            blank = provider.requestImage(f"{sid}?v=1")
+            self.assertEqual((blank.width(), blank.height()), (1, 1),
+                             f"a request for {sid!r} returned "
+                             f"{blank.width()}x{blank.height()}; it must be the 1x1 "
+                             f"blank and never another camera's pixels")
+        # And with nothing at all stored, even camera A gets nothing.
+        empty = UiBridge()
+        empty.set_streams(["A"])
+        blank_provider = FrameImageProvider(empty)
+        self.assertEqual(blank_provider.requestImage("A?v=1").width(), 1,
+                         "a camera with no frame must not be given the last frame any "
+                         "camera produced")
 
 
 class FrameAgeWindowAndFallbackRendering(unittest.TestCase):
@@ -1652,6 +1999,11 @@ class FakeFrame:
     identity = ("selftest", "A", 0, 0)
     width = 1920
     height = 1080
+    # **M2: which camera this frame belongs to.** `UiBridge.set_frame_image` files the
+    # pixels under this key, and the hero's tile reads that key - so a stand-in without it
+    # is a frame belonging to no camera, and the render comes back with the hero empty and
+    # no warning anywhere.
+    stream_id = "A"
 
 
 image = np.zeros((1080, 1920, 3), np.uint8)
@@ -1682,7 +2034,8 @@ shutil.rmtree(work, ignore_errors=True)
 shutil.copytree(@UI@, work)
 
 engine = QQmlApplicationEngine()
-engine.addImageProvider("frames", module.FrameImageProvider(bridge))
+provider = module.FrameImageProvider(bridge)
+engine.addImageProvider("frames", provider)
 ctx = engine.rootContext()
 ctx.setContextProperty("Theme", theme)
 ctx.setContextProperty("bridge", bridge)

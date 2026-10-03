@@ -186,49 +186,94 @@ Window {
                     width: Math.round(parent.width * Theme.VIDEO_WIDTH_FRACTION)
                     height: parent.height
 
+                    // **The streams other than the hero's, as a real list.** With three
+                    // cameras that is two thumbnails, each showing **its own** stream's
+                    // frames; with one camera it is empty and the hero takes the whole
+                    // height. Never a placeholder tile: a surface captioned with a camera
+                    // that does not exist, showing another camera's picture, is the
+                    // mislabelling this project keeps finding.
+                    readonly property var otherStreams: {
+                        var out = [];
+                        var ids = bridge.stream_ids;
+                        for (var i = 0; i < ids.length; ++i) {
+                            if (ids[i] !== hero.streamId)
+                                out.push(ids[i]);
+                        }
+                        return out;
+                    }
+
                     VideoTile {
                         id: hero
+                        // **A name on the hero**, so a test can read *which camera it is
+                        // showing* as a property rather than inferring it from which tile
+                        // happens to be largest. Without it, a hero hardcoded to camera A
+                        // and a hero following `route_stream` are indistinguishable from
+                        // the scene graph: both leave a `tileImage_A` and a `tileImage_C`
+                        // somewhere on the screen. Measured - that was a surviving mutant.
+                        objectName: "heroTile"
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
                         // The hero takes all but the thumbnail row's height.
-                        height: parent.height - thumbRow.height - Theme.GAP
+                        height: parent.height
+                              - (heroColumn.otherStreams.length > 0 ? thumbRow.height + Theme.GAP : 0)
                         hero: true
-                        sourceName: "hero"
+                        // **The bound stream**, which is `DEFAULT_ROUTE_STREAM` ("A")
+                        // until something moves it - a presenter selecting a camera, or
+                        // `UiBridge.set_route_stream`. The badge, the picture and the
+                        // overlay boxes all follow this one value, so nothing on this
+                        // surface can describe a different camera than the one shown.
+                        streamId: bridge.route_stream
                         drawOverlay: true
                         explainKey: "yolo"
                     }
 
-                    // -- two thumbnails -------------------------------------------
+                    // -- one thumbnail per other camera ---------------------------
                     Item {
                         id: thumbRow
+                        visible: heroColumn.otherStreams.length > 0
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        height: parent.height * 0.16
+                        height: visible ? parent.height * 0.16 : 0
 
                         Row {
                             anchors.fill: parent
                             spacing: Theme.GAP
 
-                            VideoTile {
-                                width: (parent.width - Theme.GAP) / 2
-                                height: parent.height
-                                hero: false
-                                sourceName: "thumb0"
-                                drawOverlay: false
-                                caption: "Camera A \u00b7 " + bridge.device_confirmed
-                                explainKey: "tracking"
-                            }
-
-                            VideoTile {
-                                width: (parent.width - Theme.GAP) / 2
-                                height: parent.height
-                                hero: false
-                                sourceName: "thumb1"
-                                drawOverlay: false
-                                caption: "same clip, replayed copy \u00b7 not a second camera"
-                                explainKey: "zone"
+                            Repeater {
+                                model: heroColumn.otherStreams
+                                delegate: VideoTile {
+                                    required property string modelData
+                                    objectName: "thumb_" + modelData
+                                    width: heroColumn.otherStreams.length > 1
+                                           ? (parent.width - Theme.GAP) / 2 : parent.width
+                                    height: parent.height
+                                    hero: false
+                                    streamId: modelData
+                                    drawOverlay: false
+                                    // The camera's own confirmed device, per stream - not
+                                    // the hero's. A thumbnail captioned with the wrong
+                                    // device is the same defect as the wrong picture.
+                                    //
+                                    // **A plain string from a notified map, never the
+                                    // list.** `stream_routes[sid].confirmed` is a Python
+                                    // tuple that arrives in QML as a `QVariantList` which
+                                    // is truthy, has no usable `length`, and stringifies
+                                    // to **`-1`**. Measured: this caption read
+                                    // `Camera B · -1` on a render whose Python side held
+                                    // `confirmed: ('GPU.0',)` and whose picture above the
+                                    // caption was real. Nothing about that screenshot says
+                                    // the caption is wrong.
+                                    // `bridge.stream_confirmed_labels` joins the tuple in
+                                    // Python, where it is a tuple.
+                                    caption: "Camera " + modelData + " \u00b7 "
+                                             + (bridge.stream_confirmed_labels[modelData] !== undefined
+                                                && bridge.stream_confirmed_labels[modelData].length > 0
+                                                ? bridge.stream_confirmed_labels[modelData]
+                                                : "not confirmed")
+                                    explainKey: "tracking"
+                                }
                             }
                         }
                     }

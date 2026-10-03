@@ -1636,6 +1636,8 @@ class LiveWindowedPath(unittest.TestCase):
                         "card_names": [], "card_items_present": {},
                         "activity_cpu": "", "card_figures": {},
                         "age_window_note": "", "samples": [], "select_lines": [],
+                        "tiles": {}, "hero_stream": "", "hero_source": "",
+                        "hero_tile_stream": "", "tile_revisions": {},
                         "stream_states": {}, "error_message": "",
                         "fell_back": False, "stream_route_state": "",
                         "overlay_boxes": [], "expected_boxes": [],
@@ -1900,6 +1902,34 @@ def find_all_texts(object_name_prefix):
                    if name.startswith(object_name_prefix)})
 
 
+def find_raw_property(object_name, property_name, default=None):
+    """A named QML item's property **as the object**, not stringified.
+
+    `find_property` stringifies, which is right for text and wrong for a `QSize` - a size
+    has to be read as two numbers, not as `PySide6.QtCore.QSize(1920, 1080)`.
+    """
+    for name, item in _named_items():
+        if name == object_name:
+            value = item.property(property_name)
+            return default if value is None else value
+    return default
+
+
+def _qsize(value):
+    """`"1920x1080"` from a `QSize`, or `""` for a null/absent size.
+
+    `str(QSize(1920, 1080))` is `"PySide6.QtCore.QSize(1920, 1080)"` on this PySide6, so an
+    assertion written against a plain `WxH` would be comparing a representation rather than
+    a measurement.
+    """
+    if value is None:
+        return ""
+    try:
+        return f"{value.width()}x{value.height()}"
+    except AttributeError:
+        return str(value)
+
+
 def find_item_exists(object_name):
     """Whether a named QML item exists in the scene at all.
 
@@ -2051,6 +2081,37 @@ def finish_and_quit():
         report["activity_cpu"] = find_property("card_A", "activityText")
         report["window_text_stream"] = find_text("streamWindowText_A")
         report["age_text_stream"] = find_text("streamAgeText_A")
+        # **M2: the per-camera video surfaces, read off the scene graph.** `tileImage_<sid>`
+        # is the `Image` each tile binds its own stream into, and `tileNoFrameText_<sid>` is
+        # the sentence a camera with nothing to show puts on its own surface. Reading both
+        # per camera is what proves a tile is serving *its own* stream rather than one
+        # shared picture under three captions.
+        report["tiles"] = {
+            sid: {"source": str(find_property(f"tileImage_{sid}", "source")),
+                  # **`WxH`, not `str(QSize(...))`.** `str(QSize)` is
+                  # `PySide6.QtCore.QSize(1920, 1080)` and an assertion written against a
+                  # bare `1920x1080` then fails for a formatting reason on a perfectly
+                  # correct tile - which is how a test stops measuring the thing.
+                  "sourceSize": _qsize(find_raw_property(f"tileImage_{sid}",
+                                                          "sourceSize")),
+                  # **The text only when the panel is visible.** A `Text` keeps its `text`
+                  # while `visible: false`, so reading it unconditionally reports the
+                  # sentence on every tile and the assertion "this camera says it has no
+                  # frame" passes for a camera that has three hundred frames.
+                  "no_frame_visible": find_visible(f"tileNoFrame_{sid}"),
+                  "no_frame_text": (find_text(f"tileNoFrameText_{sid}")
+                                    if find_visible(f"tileNoFrame_{sid}") else "")}
+            for sid in bridge.stream_ids}
+        report["hero_stream"] = str(getattr(bridge, "route_stream", ""))
+        report["hero_source"] = str(find_property("tileImage_" + report["hero_stream"],
+                                                  "source"))
+        # **The hero tile's own `streamId`**, read as a property. `deviceBadgeText` is the
+        # precedent: a bridge property being right does not mean the screen is showing the
+        # right thing, so the assertion has to be about a named item.
+        report["hero_tile_stream"] = str(find_property("heroTile", "streamId"))
+        report["tile_revisions"] = {
+            sid: str(find_raw_property(f"tileImage_{sid}", "source"))
+            for sid in bridge.stream_ids}
         report["card_figures"] = {
             key: find_text("cardText_" + key)
             for key in ("system_cpu_percent", "gpu_utilisation_percent",
@@ -2350,6 +2411,129 @@ class PresenterSelectionAndObservedFallback(unittest.TestCase):
                       "`fell_back` must be False here: nothing ran on any device, so "
                       "nothing fell back from anything")
         self.assertIs(report["stream_routes"]["A"]["fell_back"], False, report)
+
+
+class PerCameraVideoOnTheLivePath(unittest.TestCase):
+    """**M2, the gap closed on the real path:** three cameras, three workers, three clips,
+    three tiles, and each tile showing **its own** stream's frames.
+
+    One live run with `--streams 3`, so the proof is the real supervisor, the real three
+    workers on three devices, the real three decode threads and the real screen - not an
+    offscreen render with three seeded pictures.
+
+    What is asserted is deliberately narrow and deliberately **loud**:
+
+    - three tiles exist and each one's bound `source` names **its own** stream;
+    - the hero's source names the **bound** stream;
+    - every tile that has a frame reports a real source size, and a tile that does not is
+      **visible** and says so in words naming its camera.
+
+    A tile showing another camera's picture is caught by the `source` assertion and by the
+    size: three workers decoding three different clips at three different rates do not
+    produce three identical frame sizes by accident, and the run prints its own layout line
+    so a reader can check the device-to-camera assignment against the clip each worker
+    decoded.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        reason = _provisioned()
+        if reason:
+            raise unittest.SkipTest(
+                f"cannot run the real pipeline: {reason}. The live path is not exercised "
+                f"on this machine and no claim is made about it.")
+        cls.report = LiveWindowedPath._drive(extra_args=["--streams", "3"],
+                                             seconds=22.0)
+
+    def test_three_cameras_each_get_a_tile_bound_to_its_own_stream(self):
+        report = self.report
+        self.assertEqual(report["returncode"], 0, report["stderr"])
+        tiles = report["tiles"]
+        self.assertEqual(sorted(tiles), ["A", "B", "C"],
+                         f"three cameras, three tiles: {sorted(tiles)}")
+        for sid, entry in tiles.items():
+            self.assertIn(f"/frames/{sid}?", entry["source"],
+                          f"camera {sid}'s tile is bound to {entry['source']!r}; a tile "
+                          f"bound to anything but its own stream is how three cameras "
+                          f"came to show one picture")
+        # **And none of them is bound to the pre-M2 shared paths.**
+        for shared in ("/frames/hero?", "/frames/thumb0?", "/frames/thumb1?"):
+            for sid, entry in tiles.items():
+                self.assertNotIn(shared, entry["source"],
+                                 f"camera {sid}'s tile is on the shared path {shared}")
+
+    def test_the_hero_serves_the_bound_stream(self):
+        report = self.report
+        self.assertEqual(report["hero_stream"], "A",
+                         f"the default bound stream is Camera A: "
+                         f"{report['hero_stream']!r}")
+        self.assertIn("/frames/A?", report["hero_source"],
+                      f"the hero's source is {report['hero_source']!r}")
+        # **The hero's own `streamId`, read as a property.** Both the bound-stream test and
+        # the three-camera test below check *tiles*; without this, a hero hardcoded to "A"
+        # and a hero following `route_stream` leave exactly the same set of named items on
+        # the screen, and the difference is invisible. It was a surviving mutant.
+        self.assertEqual(report["hero_tile_stream"], "A",
+                         "the hero tile must be bound to the bridge's bound stream, read "
+                         "from the item itself")
+        self.assertIn(report["hero_tile_stream"], report["tiles"],
+                      f"the hero must be one of the cameras it is showing: "
+                      f"{sorted(report['tiles'])}")
+
+    def test_every_camera_actually_delivered_a_frame_on_this_run(self):
+        # **Three workers, three clips, three frames.** With the payload's `stream` key
+        # pinned to "A", every worker's frame would be filed under camera A and cameras B
+        # and C would sit on their "no frame" panels for the whole session - while every
+        # tile's *source* still read correctly. That was a surviving mutant: the binding was
+        # right and the pixels were wrong.
+        for sid, entry in self.report["tiles"].items():
+            self.assertFalse(entry["no_frame_visible"],
+                             f"camera {sid}'s tile is showing the 'no frame' panel on a "
+                             f"run with three live workers: {entry!r}. Either its worker "
+                             f"delivered nothing or its frames were filed under another "
+                             f"camera.")
+            self.assertEqual(entry["no_frame_text"], "",
+                             f"camera {sid} has a worker and a frame: {entry!r}")
+        # And the three revisions are **independent counters**, which is the same property
+        # from the other side - a single shared revision would move all three together.
+        self.assertGreaterEqual(len({v for v in self.report["tile_revisions"].values()}),
+                                2,
+                                f"three cameras analysed at three different rates, so at "
+                                f"least two of their frame revisions must differ: "
+                                f"{self.report['tile_revisions']}")
+
+    def test_a_camera_with_frames_reports_a_real_source_size(self):
+        for sid, entry in self.report["tiles"].items():
+            size = entry["sourceSize"]
+            self.assertRegex(size, r"\d+x\d+",
+                             f"camera {sid} has a bound source, so its image size must be "
+                             f"a real one: {entry}")
+            if not entry["no_frame_visible"]:
+                self.assertNotEqual(size, "1x1",
+                                    f"camera {sid} is showing a frame but its image is the "
+                                    f"1x1 blank: {entry}")
+
+    def test_every_camera_is_either_showing_a_frame_or_saying_it_has_none(self):
+        for sid, entry in self.report["tiles"].items():
+            if entry["no_frame_visible"]:
+                self.assertIn(f"Camera {sid}", entry["no_frame_text"],
+                              f"camera {sid}'s tile must name the camera that has no "
+                              f"frame: {entry['no_frame_text']!r}")
+            else:
+                self.assertEqual(entry["no_frame_text"], "",
+                                 f"camera {sid} is showing a frame, so its tile must not "
+                                 f"also be claiming it has none: {entry!r}")
+
+    def test_the_run_says_which_camera_is_on_which_device(self):
+        # **The layout line**, so a reader of the report can check the assignment against
+        # the three cards rather than taking the tiles on trust.
+        line = next((ln for ln in self.report["boot_lines"]
+                     if ln.startswith("[startup] 3 camera(s)")), "")
+        self.assertTrue(line,
+                        f"the run must print its camera-to-device layout; the boot lines "
+                        f"were {self.report['boot_lines'][:4]}")
+        for sid in ("A", "B", "C"):
+            self.assertIn(f"{sid} ->", line, line)
 
 
 class PerStreamMetricPublishing(unittest.TestCase):

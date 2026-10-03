@@ -637,17 +637,30 @@ class UiBridge(QObject):
 
     def _apply_frame_payload(self, payload: object) -> None:
         data = dict(payload)  # type: ignore[arg-type]
+        # **M2: the payload is one STREAM's frame**, and it is stored under that stream's
+        # key. Before this, every stream's frame landed on the single `_frame_image` and
+        # every tile asked the provider for `hero`, so all three surfaces showed whichever
+        # camera arrived last - which is the mislabelling this project keeps finding, in
+        # its most visible form: a tile captioned "Camera B" showing Camera A's shopper.
+        stream = str(data.get("stream") or self._route_stream)
         image = data.get("image")
         if image is not None:
-            self._store_image(image)
+            self._store_image(image, stream)
         zones = data.get("zones")
         if zones and not self._zones:
             # Once only. Zones are a property of the scenario pack, not of the frame, and
             # re-publishing them 15 times a second would rebuild the repeater for nothing.
             self._publish_zones(zones, _Extents(data.get("width"), data.get("height")))
         boxes = list(data.get("boxes") or ())
-        self._overlay_boxes = tuple(boxes)
+        # **The boxes belong to that stream too.** `bridge.overlay_boxes` stays the hero's,
+        # because the hero draws the overlay and the hero is the bound stream; the record
+        # is kept per stream so a hero switched to another camera draws *that* camera's
+        # boxes and not the previous one's.
+        self._stream_boxes[stream] = tuple(boxes)
+        if stream == self._route_stream:
+            self._overlay_boxes = tuple(boxes)
         self.overlayBoxesChanged.emit()
+        self.streamFramesChanged.emit()
         for event in data.get("events") or ():
             self.record_event(event)
         if not self._frame_ready:
@@ -667,7 +680,7 @@ class UiBridge(QObject):
         self.set_error(f"{self._error_message}\n{reason[:400]}" if self._error_message
                        else reason[:400])
 
-    def _store_image(self, array: Any) -> None:
+    def _store_image(self, array: Any, stream: str) -> None:
         """Turn a BGR `numpy` array into this bridge's `QImage`, on the UI thread.
 
         The BGR-to-RGB swap happens here because `cv2` hands BGR and
@@ -683,10 +696,27 @@ class UiBridge(QObject):
         height, width = int(rgb.shape[0]), int(rgb.shape[1])
         qimage = QImage(rgb.tobytes(), width, height, width * 3,
                         QImage.Format_RGB888)
-        self._frame_image = qimage.copy()
-        self._frame_revision += 1
+        stored = qimage.copy()
+        # **M2: stored under this stream's key, and the bound stream's key is also the
+        # hero's.** `frame_image` / `frame_revision` are the **bound stream's** frame and
+        # stay exactly that - every M0/M1 reader of them keeps working, and they now mean
+        # something precise: "the camera this screen is showing".
+        record = self._stream_frames.setdefault(str(stream), {})
+        record["image"] = stored
+        record["revision"] = int(record.get("revision") or 0) + 1
+        record["width"] = width
+        record["height"] = height
+        if str(stream) == self._route_stream:
+            self._frame_image = stored
+            self._frame_revision = int(record["revision"])
         self.frameRevisionChanged.emit()
         self.frameImageChanged.emit()
+        # **And the per-stream record.** The tiles bind to `stream_frame_revisions`, whose
+        # notify is `streamFramesChanged` and nothing else - so without this line a tile's
+        # `?v=` never moves, it fetches once, and it shows frame 0 for the whole session.
+        # Measured: the first per-stream render came back with the metrics column drawn and
+        # the hero **empty**, with no QML warning, for exactly this reason.
+        self.streamFramesChanged.emit()
 
     def _publish_zones(self, zones: Iterable[Any], frame: Any) -> None:
         """Publish zone rectangles once, against the frame they are drawn over."""
@@ -767,6 +797,12 @@ class UiBridge(QObject):
     #: mean a card re-reads the whole record set on every metric tick, and - worse - would
     #: make it impossible to tell which of the two caused a repaint.
     streamCardsChanged = Signal()
+    #: A **per-stream frame** arrived, or the hero moved to another stream. **M2.**
+    #:
+    #: Separate from `frameRevisionChanged` because that one is the **hero's** revision and
+    #: must not move when a background thumbnail's camera delivers a frame - otherwise
+    #: every camera at 15 fps re-fetched the hero's image 45 times a second.
+    streamFramesChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -811,6 +847,19 @@ class UiBridge(QObject):
         self._latest_identity: tuple[Any, ...] | None = None
         self._frame_image: QImage | None = None
         self._frame_revision = 0
+        #: `stream_id -> {image, revision, width, height}`. **M2: one frame per camera.**
+        #:
+        #: This is what closes the disclosed gap "per-camera video surfaces are not
+        #: built": before it there was one `_frame_image` and every tile asked the provider
+        #: for `hero`, so all three surfaces showed whichever camera's frame arrived last.
+        #: A tile now asks for **its own** stream and there is nothing for the provider to
+        #: serve but that stream's pixels - so a tile cannot show another camera's picture
+        #: even by accident.
+        self._stream_frames: dict[str, dict[str, Any]] = {}
+        #: `stream_id -> tuple of overlay boxes` for that camera's newest frame. Kept
+        #: separately from `_overlay_boxes`, which is the **hero's**, so switching the hero
+        #: to another camera draws that camera's boxes rather than the previous one's.
+        self._stream_boxes: dict[str, tuple] = {}
         #: How many frames have been analysed. Set from the supervisor, not counted here:
         #: the bridge sees applied results, and "applied" is not the same word as
         #: "analysed". See `frames_analysed`.
@@ -884,6 +933,87 @@ class UiBridge(QObject):
 
     stream_routes = Property("QVariantMap", _get_stream_routes,
                              notify=streamStatesChanged)
+
+    def _get_stream_confirmed_labels(self) -> dict:
+        """`stream_id -> that camera's confirmed device as ONE STRING`, `""` if none.
+
+        **M2, added because a caption printed `-1`.** `stream_routes[sid]["confirmed"]` is a
+        Python tuple that reaches QML as a `QVariantList`, and in this PySide6 it arrives as
+        something truthy with no usable `length` and no useful `toString`: the thumbnail
+        caption rendered the literal string `-1` on every camera, on a render where the
+        Python side held `confirmed: ('GPU.0',)` and the picture above the caption was real.
+
+        So the joining happens **here**, in Python, where the value is a tuple and
+        `"· ".join(...)` is a string. QML gets a plain string, and `""` means "no confirmed
+        device", which the caption renders as words.
+        """
+        return {sid: ", ".join(str(d) for d in (entry.get("confirmed") or ()))
+                for sid, entry in self._stream_routes.items()}
+
+    stream_confirmed_labels = Property("QVariantMap", _get_stream_confirmed_labels,
+                                      notify=streamStatesChanged)
+
+    # -- per-camera frames ------------------------------------------------------------
+
+    def _get_stream_frame_revisions(self) -> dict:
+        """`stream_id -> that camera's own frame revision`. **The QML binding surface.**
+
+        A tile's `Image.source` is `"image://frames/" + streamId + "?v=" + revision`, and it
+        reads the revision out of this **notified** map. It does not call a method for it: a
+        QML binding that calls a method declares no property dependency and is evaluated
+        once, which is the defect this repository has now found four times.
+
+        A stream with no frame is **absent from the map**, not present with a 0. `0` would
+        be indistinguishable from "frame 0 has just been written", and the tile's
+        `visible:` guard is `frames_ready[streamId] !== true` rather than a revision test.
+        """
+        return {sid: int(entry.get("revision") or 0)
+                for sid, entry in self._stream_frames.items()}
+
+    stream_frame_revisions = Property("QVariantMap", _get_stream_frame_revisions,
+                                     notify=streamFramesChanged)
+
+    def _get_stream_frames_ready(self) -> dict:
+        """`stream_id -> whether that camera has delivered a frame at all`.
+
+        **A camera with no frame is a distinct state from a camera with a stale one**, and
+        the tile has to be able to say which. `True` only once a real `QImage` has been
+        stored for that stream; absent from the map until then.
+        """
+        return {sid: True for sid, entry in self._stream_frames.items()
+                if entry.get("image") is not None
+                and not entry["image"].isNull()}
+
+    stream_frames_ready = Property("QVariantMap", _get_stream_frames_ready,
+                                  notify=streamFramesChanged)
+
+    def frame_for(self, stream_id: str) -> QImage | None:
+        """This stream's newest `QImage`, or `None`. **For the image provider only.**
+
+        `None` for a stream with no frame, and **never a fallback to another stream's**:
+        that is the whole guarantee. A tile whose camera has produced nothing gets nothing
+        and says so in words, rather than holding whatever the hero is showing.
+        """
+        entry = self._stream_frames.get(str(stream_id))
+        if entry is None:
+            return None
+        image = entry.get("image")
+        return image if image is not None else None
+
+    def overlay_boxes_for(self, stream_id: str) -> tuple:
+        """This stream's newest overlay boxes. Hero only; thumbnails draw none."""
+        return tuple(self._stream_boxes.get(str(stream_id), ()))
+
+    def set_stream_frame(self, stream_id: str, image: Any) -> None:
+        """Publish one camera's frame. **UI thread.** Used by the offscreen render tests.
+
+        `set_frame_image` remains the single-stream entry point M0/M1 use, and forwards here
+        with the bound stream - so there is one implementation of "turn BGR into a QImage and
+        count the revision", not two that can drift.
+        """
+        if image is None:
+            return
+        self._store_image(image, str(stream_id))
 
     def stream_reasons(self, stream_id: str) -> str:
         """One stream's own stated reasons as **one renderable line**, or `""`.
@@ -1117,6 +1247,18 @@ class UiBridge(QObject):
             confirmed=tuple((entry or {}).get("confirmed") or ()),
             state=str((entry or {}).get("state") or "pending"),
             fell_back=(entry or {}).get("fell_back"))
+        # **M2: the hero's PICTURE and BOXES move with the badge.** Pointing the screen at
+        # Camera C and leaving Camera A's pixels on it is the mislabelling this project keeps
+        # finding, so `frame_image` and `overlay_boxes` are re-derived from the new stream's
+        # own record rather than left behind.
+        record = self._stream_frames.get(wanted) or {}
+        self._frame_image = record.get("image")
+        self._frame_revision = int(record.get("revision") or 0)
+        self._overlay_boxes = tuple(self._stream_boxes.get(wanted, ()))
+        self.overlayBoxesChanged.emit()
+        self.frameRevisionChanged.emit()
+        self.frameImageChanged.emit()
+        self.streamFramesChanged.emit()
         self.streamStatesChanged.emit()
 
     def _get_ai_fps(self):
@@ -1648,12 +1790,14 @@ class UiBridge(QObject):
         """
         self.set_frame(frame)
         array = frame.image
-        rgb = array[:, :, ::-1]
-        height, width = int(array.shape[0]), int(array.shape[1])
-        image = QImage(rgb.tobytes(), width, height, width * 3, QImage.Format_RGB888)
-        self._frame_image = image.copy()
-        self._frame_revision += 1
-        self.frameRevisionChanged.emit()
+        # **M2: through `_store_image`, so there is ONE implementation of "BGR array to
+        # QImage, keyed by stream, revision counted".** This method used to do the swap and
+        # the store itself, which meant a second copy of the whole thing to keep in step -
+        # and the per-stream store was the copy that got left behind, so the single-stream
+        # entry point published a hero the tiles could not see.
+        self._store_image(array, str(getattr(frame, "stream_id", None)
+                                       or self._route_stream))
+        image = self._frame_image
         # **Not `constant=True`.** The provider reads the attribute from Python so it
         # worked regardless, which is why this was harmless - but a QML binding on
         # `frame_image` would have captured the first frame for the whole session, and

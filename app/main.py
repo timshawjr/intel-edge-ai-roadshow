@@ -736,7 +736,8 @@ def _drain(supervisor: Any, tracker: Any, machine: Any, folded: dict[str, Any],
 def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                  source: str = "loop", session_id: str = "booth",
                  select: Mapping[str, str] | None = None,
-                 fail_stream: str | None = None) -> int:
+                 fail_stream: str | None = None,
+                 streams: int = 1) -> int:
     """The live booth. Returns the process exit code.
 
     **Device discovery happens here, before the window opens**, and it is announced:
@@ -765,6 +766,26 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     The badge reads the **confirmed** device and never the requested one. That is the
     difference between "the presenter asked for the GPU" and "the GPU ran the frame", and
     M1's C4 is exactly the mistake of conflating them.
+
+    ## `streams`: how many cameras, each on its own device and its own clip
+
+    **`streams=1` is the default and behaves exactly as M0/M1 did** - one camera on
+    `--device`. `streams=3` asks for the three-camera layout: one camera per available
+    device, `--device` first, **its own `ClipSource`, its own decode thread, its own
+    `Tracker` and its own `RetailEventMachine`**.
+
+    Three of those are load-bearing rather than tidy:
+
+    - **one clip per camera.** One clip decoded into three streams puts three workers on
+      three devices each analysing the *same* picture, and the three tiles show three copies
+      of one camera. That is what M1's second thumbnail was captioned with - *"same clip,
+      replayed copy - not a second camera"* - and it is what this task closes.
+    - **one tracker and one event machine per camera.** Sharing them interleaves track ids
+      across cameras and lets one camera's zone rule fire on another's picture: a plausible,
+      correctly-placed rectangle over the wrong object.
+    - **devices are assigned in a stated order** (`--device` first, then `CPU`, `GPU`, `NPU`
+      from what the registry reports), so a screenshot of the screen and the printed
+      `[startup] N camera(s): A -> CPU, B -> GPU, C -> NPU` line agree.
     """
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QFontDatabase
@@ -775,7 +796,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     from app.engine.source import ClipSource
     from app.engine.tracker import Tracker
     from app.inference.pinned import class_names
-    from app.supervisor.runner import Supervisor
+    from app.inference.devices import DeviceRegistry
+    from app.supervisor.runner import DEFAULT_STREAM_IDS, Supervisor
     from app.ui.bridge import ThemeTokens, UiBridge
     from app.ui.provider import FrameImageProvider
 
@@ -789,18 +811,58 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     _register_font(QFontDatabase)
 
     manifest = retail_sanity_manifest()
-    tracker = Tracker(iou_threshold=manifest.iou_threshold)
-    machine = RetailEventMachine(manifest, class_names=class_names())
+    # **M2: one tracker and one event machine PER STREAM.** With three cameras sharing
+    # one tracker, track ids carry across cameras and one camera's zone rule fires on the
+    # other's picture - a plausible rectangle over the wrong object. See `_on_result`.
+    # **The devices this machine actually reports**, through the registry rather than a
+    # guess: the same `DeviceRegistry` `_describe_devices()` used a moment ago, so the
+    # `[startup] N camera(s)` line and the device list printed above it cannot disagree. A
+    # machine without an NPU therefore gets two cameras, and the line says two.
+    try:
+        import openvino as ov
+
+        available = tuple(DeviceRegistry(ov.Core()).available())
+    except Exception as exc:  # noqa: BLE001 - discovery failed, so fall back and say so
+        print(f"[startup] cannot enumerate devices for the camera layout "
+              f"({type(exc).__name__}: {exc}); falling back to {device} only",
+              file=sys.stderr, flush=True)
+        available = ()
+    if not available:
+        available = (device,)
+    # **`--streams` cameras, one per device, first camera on `--device`.** The default is
+    # ONE camera, exactly as before: the booth's default is a single-camera window, and
+    # `--streams 3` is how an operator asks for the three-camera layout. The devices are
+    # assigned in the order `CPU, GPU, NPU` with `--device` first, so `--device GPU
+    # --streams 3` puts the GPU on Camera A.
+    wanted = max(1, min(int(streams or 1), len(available)))
+    devices = [device] + [d for d in available if d != device]
+    stream_devices = tuple(devices[:wanted])
+    stream_ids = tuple(DEFAULT_STREAM_IDS[:wanted])
+    streams = {sid: (Tracker(iou_threshold=manifest.iou_threshold),
+                     RetailEventMachine(manifest, class_names=class_names()))
+               for sid in stream_ids}
 
     bridge = UiBridge(application)
     theme = ThemeTokens(application)
-    supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
-                            scenario_id=manifest.id,
-                            conf_threshold=manifest.conf_threshold,
-                            iou_threshold=manifest.iou_threshold,
-                            compile_failure=([fail_stream] if fail_stream else False))
-    clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
-                      session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
+    if len(stream_devices) == 1:
+        supervisor = Supervisor(device_id=stream_devices[0], stream_id=stream_ids[0],
+                                session_id=session_id,
+                                scenario_id=manifest.id,
+                                conf_threshold=manifest.conf_threshold,
+                                iou_threshold=manifest.iou_threshold,
+                                compile_failure=([fail_stream] if fail_stream else False))
+    else:
+        supervisor = Supervisor(device_ids=stream_devices, session_id=session_id,
+                                scenario_id=manifest.id,
+                                conf_threshold=manifest.conf_threshold,
+                                iou_threshold=manifest.iou_threshold,
+                                compile_failure=([fail_stream] if fail_stream else False))
+    clips = [ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id=sid,
+                        session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
+             for sid in stream_ids]
+    print(f"[startup] {len(stream_ids)} camera(s): "
+          + ", ".join(f"{sid} -> {dev}" for sid, dev in zip(stream_ids, stream_devices)),
+          flush=True)
 
     engine = QQmlApplicationEngine()
     engine.addImageProvider("frames", FrameImageProvider(bridge))
@@ -829,7 +891,7 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     supervisor.state_changed.connect(lambda plan: _on_route(bridge, plan))
     supervisor.error_raised.connect(lambda text: _append_error(bridge, text))
     supervisor.result_ready.connect(
-        lambda result: _on_result(bridge, tracker, machine, manifest, result))
+        lambda result: _on_result(bridge, streams, manifest, result))
 
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "ui" / "Main.qml")))
     roots = engine.rootObjects()
@@ -837,7 +899,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
         print("[startup] Main.qml produced no root objects; refusing to open a blank "
               "window", file=sys.stderr, flush=True)
         supervisor.stop()
-        clip.close()
+        for clip in clips:
+            clip.close()
         return 2
 
     supervisor.start()
@@ -848,7 +911,14 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     # screen. Declaring a stream claims nothing: every figure still reads `unavailable`
     # until something is measured.
     bridge.set_streams(list(supervisor.stream_ids))
-    _start_feeders(bridge, supervisor, clip)
+    # **One feeder thread per camera, each with its own `ClipSource`.** One clip decoded into
+    # three streams would put three workers on three devices each analysing the *same*
+    # picture, and the three tiles would show three copies of one camera - which is exactly
+    # what M1's second thumbnail used to be captioned ("same clip, replayed copy - not a
+    # second camera") and exactly what this task closes. Each stream now has its own decode
+    # thread, its own tracker and its own image.
+    for clip in clips:
+        _start_feeders(bridge, supervisor, clip)
     _start_telemetry(bridge, supervisor, application)
     if select:
         # **After** `engine.load` and **after** `start()`, on its own thread. See the
@@ -865,7 +935,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
         thread.join(timeout=35.0)
     _SELECTION_THREADS.clear()
     supervisor.stop()
-    clip.close()
+    for clip in clips:
+        clip.close()
     return int(exit_code)
 
 
@@ -1086,9 +1157,19 @@ def _append_error(bridge: Any, text: str) -> None:
     bridge.errorArrived.emit(str(text))
 
 
-def _on_result(bridge: Any, tracker: Any, machine: Any, manifest: Any,
-               result: Any) -> None:
-    """Fold one result into tracker, events, pixels and zones. **Reader thread.**
+def _on_result(bridge: Any, streams: Any, manifest: Any, result: Any) -> None:
+    """Fold one result into **that stream's** tracker, events, pixels and zones.
+
+    **Reader thread**, and the thread is per stream, so `streams` is looked up by
+    `result.frame.stream_id` and **not** shared. **M2:** one tracker and one event machine
+    for three cameras would interleave their tracks - one camera's track id continuing into
+    the next camera's frame, one camera's zone rule firing on the other's picture - and the
+    per-camera overlay would be a plausible rectangle over the wrong object, which is the
+    defect M1 recorded as "a correct box on the wrong picture".
+
+    A result whose stream has no entry is **dropped with a stated reason** rather than
+    folded into somebody else's camera: it is a real condition (a stream declared after the
+    feeders started) and silently attributing it would be a mislabelling.
 
     Everything published here crosses to the UI thread as one payload on
     `frameArrivedFromWorker`, and `UiBridge.apply_frame` - which runs on the **UI
@@ -1138,6 +1219,14 @@ def _on_result(bridge: Any, tracker: Any, machine: Any, manifest: Any,
     if result.error is not None:
         return
     frame = result.frame
+    entry = streams.get(str(frame.stream_id))
+    if entry is None:
+        _append_error(bridge,
+                      f"a result arrived for stream {frame.stream_id!r}, which has no "
+                      f"tracker and no event machine; it was dropped rather than folded "
+                      f"into another camera's picture")
+        return
+    tracker, machine = entry
     _reset_for_loop_change(frame, tracker, machine)
     now = frame.captured_at
     events = []
@@ -1170,8 +1259,18 @@ def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any],
     Carries `image` (the raw numpy array) and, on the first frame only, `zones`. Both are
     rebuilt on the UI thread by the slot; see `_on_result` for why the pixels travel here
     rather than as a `QImage`.
+
+    ## `stream` is the whole of the per-camera split
+
+    **M2.** The payload says which camera it is, and `UiBridge.apply_frame` files the
+    pixels, the revision and the overlay boxes under that camera. Without it there was one
+    `_frame_image` and every tile asked the provider for `hero`, so all three surfaces showed
+    whichever camera delivered last - a tile captioned "Camera B" showing Camera A's
+    shopper. Read from `frame.stream_id`, which is the identity the frame was submitted
+    under, so it cannot disagree with the worker that produced it.
     """
     return {
+        "stream": str(frame.stream_id),
         "identity": list(frame.identity),
         "width": frame.width,
         "height": frame.height,
@@ -1198,7 +1297,8 @@ def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any],
 
 
 def _start_feeders(bridge: Any, supervisor: Any, clip: Any) -> None:
-    """One thread: decode at the clip's rate and submit. Nothing touches a widget.
+    """One thread **per camera**: decode at the clip's rate and submit. Nothing touches a
+    widget.
 
     **It has a stop condition that is not a guess.** The first version's only exit was
     `route_plan().state == "failed"`, which a supervisor that was shut down *normally*
@@ -1207,16 +1307,26 @@ def _start_feeders(bridge: Any, supervisor: Any, clip: Any) -> None:
     clip until the process happened to exit. It now also checks `_FEED_STOP`, which
     `run_windowed` sets on the way out.
 
+    ## The exit condition is now **per stream**, not the aggregate
+
+    With one camera, `route_plan().state == "failed"` *was* that camera's state. With three
+    it is `failed` only when **every** stream has failed, so a feeder for a dead camera
+    would have gone on submitting into a queue nobody drains - for ever, at 15 frames a
+    second, while the other two cameras were fine. The check is therefore this clip's own
+    stream through `stream_state(stream_id)`, the per-stream answer
+    `RoutePlan.stream_state` exists to provide.
+
     The tracker and the event machine are **not** arguments here. They are folded in the
     supervisor's reader thread by `_on_result`, on the same result that produces the
     payload this thread publishes - passing them in would invite a second fold of the same
     result, which is the defect I2 records for the headless path.
     """
     _FEED_STOP.clear()
+    stream_id = str(clip.stream_id)
 
     def feed() -> None:
         while not _FEED_STOP.is_set():
-            if supervisor.route_plan().state == "failed":
+            if supervisor.stream_state(stream_id) == "failed":
                 return
             frame = clip.read()
             if frame is None:
@@ -1226,7 +1336,7 @@ def _start_feeders(bridge: Any, supervisor: Any, clip: Any) -> None:
             supervisor.submit(frame)
             time.sleep(0.005)
 
-    thread = threading.Thread(target=feed, name="frame-feed", daemon=True)
+    thread = threading.Thread(target=feed, name=f"frame-feed-{stream_id}", daemon=True)
     thread.start()
 
 
@@ -1447,6 +1557,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "window exists, on its own thread, and the badge changes "
                              "only once a placement is CONFIRMED. e.g. "
                              "--select A=GPU")
+    parser.add_argument("--streams", dest="streams", type=int, default=1,
+                        help="how many cameras to run. 1 (the default) is the single-camera "
+                             "window exactly as before; 3 asks for one camera per available "
+                             "device, each with its OWN clip, decode thread, tracker and "
+                             "event machine, and each tile showing only its own stream's "
+                             "frames. --device names the FIRST camera's device.")
     parser.add_argument("--fail-stream", dest="fail_stream", default=None,
                         metavar="STREAM",
                         help="make this camera's worker really die before compiling, so "
@@ -1566,7 +1682,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         return run_windowed(device=args.device, scenario=args.scenario,
                             source=args.source, select=selection,
-                            fail_stream=args.fail_stream)
+                            fail_stream=args.fail_stream,
+                            streams=max(1, int(args.streams or 1)))
 
     return 0
 
