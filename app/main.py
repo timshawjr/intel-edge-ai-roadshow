@@ -92,7 +92,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 __all__ = [
     "REGISTERED_PROVIDERS",
@@ -734,13 +734,37 @@ def _drain(supervisor: Any, tracker: Any, machine: Any, folded: dict[str, Any],
 # --------------------------------------------------------------------------------------
 
 def run_windowed(*, device: str = "CPU", scenario: str = "retail",
-                 source: str = "loop", session_id: str = "booth") -> int:
+                 source: str = "loop", session_id: str = "booth",
+                 select: Mapping[str, str] | None = None,
+                 fail_stream: str | None = None) -> int:
     """The live booth. Returns the process exit code.
 
     **Device discovery happens here, before the window opens**, and it is announced:
     `DeviceRegistry.describe()` costs 3.3-3.8 s cold on this machine, and a booth operator
     needs to be told that is what is happening rather than shown a black screen. It is
     never called again.
+
+    ## `select`: a presenter can move a camera, and the screen shows it **after** proof
+
+    `select` is `stream_id -> device`, and it is applied by
+    `_start_presenter_selection` on its **own thread**, after `engine.load` and after
+    `supervisor.start()`.
+
+    Both orderings are load-bearing and both were got wrong somewhere in this milestone's
+    history:
+
+    - **After `engine.load`.** The screen must already exist when the route arrives, or
+      the badge never updates - that was defect C4, a `constant=True` property with no
+      notify signal, which read correctly at `engine.load` and froze for the session.
+    - **On its own thread.** `await_transition` blocks for as long as the placement takes,
+      and doing that on the UI thread would freeze the window through the whole of the
+      "Moving Camera B inference to CPU..." state that spec section 5 asks for. The
+      presenter therefore sees the route go **pending** and then **confirmed**, which is
+      the claim the badge makes and the claim the live test reads.
+
+    The badge reads the **confirmed** device and never the requested one. That is the
+    difference between "the presenter asked for the GPU" and "the GPU ran the frame", and
+    M1's C4 is exactly the mistake of conflating them.
     """
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QFontDatabase
@@ -773,7 +797,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
                             scenario_id=manifest.id,
                             conf_threshold=manifest.conf_threshold,
-                            iou_threshold=manifest.iou_threshold)
+                            iou_threshold=manifest.iou_threshold,
+                            compile_failure=([fail_stream] if fail_stream else False))
     clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
                       session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
 
@@ -818,14 +843,113 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     supervisor.start()
     _start_feeders(bridge, supervisor, clip)
     _start_telemetry(bridge, supervisor, application)
+    if select:
+        # **After** `engine.load` and **after** `start()`, on its own thread. See the
+        # `select` section of this function's docstring.
+        _start_presenter_selection(supervisor, select)
 
     exit_code = application.exec()
     # The feeder thread is stopped **before** the supervisor and the clip, and it is
     # stopped by a flag it checks rather than by its own logic. See `_start_feeders`.
     stop_feeding()
+    for thread in _SELECTION_THREADS:
+        # Bounded, because the worker itself is bounded by `await_transition`'s deadline;
+        # this only stops a move being abandoned half-done against a stopped supervisor.
+        thread.join(timeout=35.0)
+    _SELECTION_THREADS.clear()
     supervisor.stop()
     clip.close()
     return int(exit_code)
+
+
+#: The presenter-selection threads. The windowed run joins them before tearing the
+#: supervisor down, so a move in flight is not left to finish against a stopped
+#: supervisor - `await_transition` has a 30 s deadline and `stop()` would race it.
+_SELECTION_THREADS: list[threading.Thread] = []
+
+#: How long `_await_settled` waits for the current placement before moving anyway. Long
+#: enough for the measured 3.5 s cold three-device placement, with room for a slower
+#: machine; past it the move proceeds rather than never happening.
+SETTLE_TIMEOUT_SECONDS: Final[float] = 60.0
+
+
+def _await_settled(supervisor: Any, streams: tuple[str, ...]) -> str:
+    """Wait until every named stream has a settled state, and report what it was.
+
+    `active` (a placement is proved) or `failed` (it will never be) both end the wait; only
+    `pending` keeps it going. The returned word is the state the move started from, printed
+    by the caller so a presenter can tell "I moved it off a running camera" from "I moved it
+    off one that had not proved anything yet".
+    """
+    deadline = time.perf_counter() + SETTLE_TIMEOUT_SECONDS
+    while True:
+        plan = supervisor.route_plan()
+        states = [plan.stream_state(sid) for sid in streams]
+        if states and all(state in ("active", "failed") for state in states):
+            return ",".join(str(state) for state in states)
+        if time.perf_counter() >= deadline:
+            return "timeout:" + ",".join(str(state) for state in states)
+        time.sleep(0.05)
+
+
+def _start_presenter_selection(supervisor: Any, mapping: Mapping[str, str]) -> None:
+    """Move the named cameras on their own thread, and say what happened.
+
+    Closes M1's open criterion 2: the placement was already *proved* in M1, so what was
+    missing was a **presenter causing one**. The screen is the evidence - the badge must
+    change, and only after a placement is confirmed.
+
+    Three things this deliberately does not do:
+
+    - **It never sets the badge itself.** It asks the supervisor, and the badge moves when
+      the supervisor publishes a route with a `confirmed` reading. A presenter-driven
+      change that wrote the requested device to the screen would be C4 all over again.
+    - **It does not block the UI thread.** See the `select` docstring.
+    - **It does not retry.** A presenter asked for a move once; if it does not confirm, the
+      transition protocol recovers to the last healthy route and says so. Retrying until
+      clean would turn a failure into a hang and hide the very thing the presenter needs to
+      see.
+
+    The outcome is printed rather than only recorded, because a presenter watching a
+    window needs to be told "the GPU did not take it and we are back on the CPU" in words,
+    and a silent recovery on screen reads as a stuck toggle.
+    """
+    def worker() -> None:
+        try:
+            # **Wait for the placement that is already running to prove itself first.**
+            # A cold placement takes ~3.5 s on this machine (three cold compiles), and a
+            # move issued inside that window races it: the presenter's request supersedes
+            # a generation that never confirmed, so the screen shows one device for the
+            # whole run and the badge change proves nothing. Spec section 5's protocol is
+            # "request a new generation" from a route that has an actual placement, and
+            # that is also the only order in which a badge change is legible to a
+            # presenter.
+            #
+            # Bounded, and **not** waited for when the route is already `failed`: a stream
+            # with no worker will never become active, and a presenter who asked to move
+            # it should not be held for the timeout.
+            settled = _await_settled(supervisor, tuple(sorted(mapping)))
+            print(f"[select] starting from {settled!r}", flush=True)
+            transition = supervisor.begin_transition(dict(mapping))
+            outcome = supervisor.await_transition(transition, timeout_s=30.0)
+        except Exception as exc:  # noqa: BLE001 - a failed move is a result, not a crash
+            print(f"[select] {dict(mapping)!r} failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+        confirmed = {sid: list(outcome.confirmed.get(sid, ())) for sid in sorted(mapping)}
+        print(f"[select] requested {dict(mapping)!r} -> "
+              f"acknowledged={outcome.acknowledged} "
+              f"bounded_by={outcome.bounded_by!r} "
+              f"generation={outcome.generation} "
+              f"in {outcome.elapsed_s:.3f} s; confirmed={confirmed}; "
+              f"unconfirmed={list(outcome.unconfirmed_streams())}", flush=True)
+        if not outcome.acknowledged:
+            for reason in supervisor.errors():
+                print(f"[select]   {reason}", flush=True)
+
+    thread = threading.Thread(target=worker, name="presenter-selection", daemon=True)
+    thread.start()
+    _SELECTION_THREADS.append(thread)
 
 
 #: Set by `_start_feeders`; the windowed run calls `stop_feeding()` on the way out. A
@@ -888,7 +1012,8 @@ def _describe_devices() -> None:
 
 
 def _on_route(bridge: Any, plan: Any) -> None:
-    """Publish a route plan to the bridge. Runs on the supervisor's reader thread.
+    """Publish **each stream's own** route to the bridge. Runs on the supervisor's reader
+    thread.
 
     **A signal, not `invokeMethod`.** The bridge lives in the UI thread and the emitter
     does not, so Qt queues the call automatically - which is AGENTS.md rule 11, satisfied
@@ -897,35 +1022,47 @@ def _on_route(bridge: Any, plan: Any) -> None:
     **silently**: the call is dropped and the UI never updates, which is a stall with no
     diagnostic anywhere.
 
-    ## WARNING — `state` is the **aggregate**, not this stream's state
+    ## M2 Task 4: migrated from the aggregate to per stream
 
-    `requested` and `confirmed` are read per stream (`plan.requested_device(stream)`,
-    `plan.confirmed_devices(stream)`), but `"state"` is `plan.state`, which since M2 is the
-    aggregate over every stream: `failed` only when *all* failed, `active` when *any* one
-    proved a placement. **With three streams a plan where Camera A is running and Camera C
-    has failed publishes `"state": "active"`,** and a card bound to Camera A would render
-    a healthy route while Camera C is a dead one.
+    This used to publish **one** payload, for `next(iter(plan.requested))`, whose
+    `"state"` was `plan.state` - the **aggregate** over every stream: `failed` only when all
+    failed, `active` when any one proved a placement. Harmless with one camera, where the
+    aggregate *is* that camera's state. **Wrong the moment this serves three streams**: a
+    plan where Camera A is running and Camera C has failed published `"state": "active"`,
+    and Camera A's card rendered a healthy route over a dead camera. A 22-line warning
+    here said so and said Task 4 owned it; this is Task 4.
 
-    This is harmless **today** because both callers here build a single-stream supervisor
-    (`run_headless` and `run_windowed`, lines 591 and 773, each `device_id=device,
-    stream_id="A"`), and with one stream the aggregate *is* that stream's state. It becomes
-    wrong the moment this path serves three streams.
+    Now:
 
-    **Not fixed here on purpose.** Task 4 owns the migration to the three-stream UI, and
-    the per-stream payload shape is that task's decision to make; this function must not
-    be changed ahead of it. When it is migrated, `"state"` must become
-    `plan.stream_state(stream)`, and the per-stream payload must carry that stream's own
-    `errors` rather than `plan.errors` for the same reason.
+    - **one payload per stream**, each carrying `plan.stream_state(stream)` - that
+      camera's own answer, not the panel's;
+    - `fell_back` per stream, from `plan.fell_back(stream)`, which is also per stream and
+      was previously never published at all;
+    - **no `errors` key.** `RoutePlan` has no per-stream error channel, so there is
+      nothing per-stream to forward, and forwarding `plan.errors` under a per-stream label
+      is the same defect with a different field name. Stated reasons still reach the
+      screen through `_append_error` -> `apply_error`, a running log that names its stream.
+      Task 5's three cards will need a real per-stream reason; that gap is recorded there
+      rather than papered over here.
+
+    Emitting per stream rather than one payload with a map keeps the payload shape a plain
+    flat dict, which is what `UiBridge.apply_route` already guards and what a queued
+    `Signal(object)` can carry without a type registration.
     """
-    stream = next(iter(plan.requested), None)
-    bridge.routeArrived.emit({
-        "requested": plan.requested_device(stream) if stream else None,
-        "confirmed": list(plan.confirmed_devices(stream)) if stream else [],
-        # Aggregate. See the warning above: `plan.stream_state(stream)` is the per-stream
-        # answer and this is not it. Task 4 owns the migration.
-        "state": plan.state,
-        "errors": list(plan.errors),
-    })
+    for stream in sorted(plan.requested):
+        bridge.routeArrived.emit({
+            "stream": stream,
+            "requested": plan.requested_device(stream),
+            "confirmed": list(plan.confirmed_devices(stream)),
+            # **`None` is passed through, not coerced to `"pending"`.** A stream that has
+            # declared no state has declared nothing, and `RoutePlan.stream_state` is
+            # explicit that a consumer must draw that as unknown rather than as healthy.
+            # Coercing it here would turn "this camera has said nothing" into "this camera
+            # is waiting", which is a claim. The bridge stores what it is given and coerces
+            # only at the point of rendering.
+            "state": plan.stream_state(stream),
+            "fell_back": plan.fell_back(stream),
+        })
 
 
 def _append_error(bridge: Any, text: str) -> None:
@@ -1154,6 +1291,7 @@ def _publish_derived_metrics(bridge: Any, supervisor: Any,
     frame age, and `set_metrics` stores `None` as `None` so the card says `unavailable`
     rather than `0`.
     """
+    from app.supervisor.runner import FRAME_AGE_WINDOW
     now = time.perf_counter()
     analysed = supervisor.frames_analysed
     window = now - previous["at"]
@@ -1163,6 +1301,15 @@ def _publish_derived_metrics(bridge: Any, supervisor: Any,
     p50 = _percentile(ages, 0.50)
     p95 = _percentile(ages, 0.95)
     bridge.set_metrics(ai_fps=fps, frame_age_p50_ms=p50, frame_age_p95_ms=p95)
+    # **State the window the two percentiles are taken over.** They are percentiles of a
+    # `deque(maxlen=FRAME_AGE_WINDOW)`, so the window is "the most recent N analysed
+    # frames" and its span in seconds depends on this stream's own rate. The card used to
+    # print a bare `frame age p50` with nothing saying what that is a percentile
+    # of: a p50 of 2 s over a 17 s window and a p50 of 11 s over a 26 s one are not the
+    # same claim, and the label carried neither.
+    # The constant is *published* here rather than imported by the bridge, so it stays in
+    # one place and the UI module does not pull in the worker stack for a number.
+    bridge.set_age_window(FRAME_AGE_WINDOW)
     # R3: the footer's event counts may only read `0` once a frame has actually been
     # analysed. This is the supervisor's own counter rather than a count of applied
     # results, so the row does not flicker between "unavailable" and `0` every time a
@@ -1203,6 +1350,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how long a headless run lasts.")
     parser.add_argument("--json", dest="json", default=None,
                         help="write the run summary to this path as JSON.")
+    parser.add_argument("--select", dest="select", action="append", default=None,
+                        metavar="STREAM=DEVICE",
+                        help="a presenter-driven move, repeatable. Applied after the "
+                             "window exists, on its own thread, and the badge changes "
+                             "only once a placement is CONFIRMED. e.g. "
+                             "--select A=GPU")
+    parser.add_argument("--fail-stream", dest="fail_stream", default=None,
+                        metavar="STREAM",
+                        help="make this camera's worker really die before compiling, so "
+                             "the failure path can be observed on the live screen. A "
+                             "QUALIFICATION AID, not a booth feature: it injects the "
+                             "same fault `Supervisor`'s own test seam injects, so what "
+                             "you see is the real detect-a-dead-worker path and not a "
+                             "mock.")
     parser.add_argument("--release", dest="release", action="store_true",
                         default=RELEASE_BY_DEFAULT,
                         help="refuse to start with a simulated provider registered. "
@@ -1220,6 +1381,41 @@ def _write_json(path: str | None, payload: Any) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+#: The devices `--select` will accept. **The same three the rest of the CLI accepts**,
+#: deliberately: a booth switch offers CPU, GPU or NPU and nothing else. `AUTO`, `HETERO`
+#: and `MULTI` are refused for the reason `--device` gives - they hide where the work ran,
+#: and a badge that says "AUTO" is not a placement.
+SELECTABLE_DEVICES: Final[tuple[str, ...]] = ("CPU", "GPU", "NPU")
+
+
+def _parse_selection(entries: Sequence[str] | None) -> dict[str, str] | None:
+    """`["A=GPU", "B=CPU"]` -> `{"A": "GPU", "B": "CPU"}`. `None` in, `None` out.
+
+    Returns `None` for a malformed entry rather than raising, because the caller's job is
+    to print one clear line and exit 2 - a traceback from a mistyped booth switch is a
+    worse answer than "use STREAM=DEVICE". A device outside `SELECTABLE_DEVICES` is
+    refused for the same reason `HETERO` is: naming a device nothing will execute on would
+    put a claim on screen that cannot be true.
+    """
+    if not entries:
+        return None
+    mapping: dict[str, str] = {}
+    for entry in entries:
+        text = str(entry)
+        if "=" not in text:
+            print(f"--select wants STREAM=DEVICE; got {text!r}",
+                  file=sys.stderr, flush=True)
+            return None
+        stream, _, device = text.partition("=")
+        stream, device = stream.strip(), device.strip()
+        if not stream or device not in SELECTABLE_DEVICES:
+            print(f"--select {text!r}: stream must be named and device must be one of "
+                  f"{list(SELECTABLE_DEVICES)}", file=sys.stderr, flush=True)
+            return None
+        mapping[stream] = device
+    return mapping
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1272,8 +1468,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.windowed or not (args.selftest or args.headless):
+        selection = _parse_selection(args.select)
+        if args.select and selection is None:
+            print(f"--select wants STREAM=DEVICE; got {args.select!r}",
+                  file=sys.stderr, flush=True)
+            return 2
         return run_windowed(device=args.device, scenario=args.scenario,
-                            source=args.source)
+                            source=args.source, select=selection,
+                            fail_stream=args.fail_stream)
 
     return 0
 

@@ -281,6 +281,104 @@ sys.exit(0)
 '''
 
 
+class FrameAgeWindowAndFallbackRendering(unittest.TestCase):
+    """**M2 Task 4.** Two rendering questions, neither of which needs a window.
+
+    ## The frame-age percentiles must say what they are percentiles of
+
+    `frame_age_p50_ms` is a percentile of a `deque(maxlen=FRAME_AGE_WINDOW)` - *the most
+    recent N analysed frames* - and how many seconds that spans depends on the stream's own
+    rate. The card used to print a bare `frame age p50 315.5 ms` with no window anywhere,
+    and `app/main.py:1113` labelled the field `frame_age_p50_ms` with nothing beside it. A
+    p50 of 2 s over a 17 s window and a p50 of 8 s over a 26 s one are different claims and
+    the label carried neither.
+
+    ## The fallback rendering, proved as rendering and **not** as an observation
+
+    M0's unmet gate 9 needs a *silent* fallback: work that executes somewhere other than
+    where it was asked to go. On this machine every device executes where it is asked, so
+    that does not occur, and Task 4 could not observe it. What **is** provable here is that
+    the screen would say so if it did - the badge's `(fell back from ...)` suffix and the
+    `device_fell_back` flag. This class proves the rendering; it does **not** claim the
+    hardware ever produced one, and the live-path test in `tests/test_main.py` asserts
+    `fell_back` is `False` in the observed failure, which is the honest answer there.
+    """
+
+    def test_the_window_note_is_empty_until_somebody_says_how_many(self):
+        bridge = _bridge()
+        self.assertEqual(bridge.age_window_note, "",
+                         "with no window published there is nothing to say, and an "
+                         "invented 'last second' would be a claim about nothing")
+        bridge.set_metrics(ai_fps=15.0, frame_age_p50_ms=315.5)
+        self.assertEqual(bridge.age_window_note, "",
+                         "a rate alone does not tell anyone how many frames the window is")
+
+    def test_the_window_note_states_the_count_and_the_span_it_implies(self):
+        bridge = _bridge()
+        # **Publishing the window must notify on its own.** It would be easy to rely on
+        # `_emit_for` firing `windowNotesChanged` whenever a metric changes, but a window
+        # can change with no metric change at all - the first publish, or the deque bound
+        # being altered by a rebuild - and then a QML binding bound to `age_window_note`
+        # would never re-read. Asserted directly, with **no** metric set, so it cannot be
+        # satisfied by the metric path.
+        ticks = []
+        bridge.windowNotesChanged.connect(lambda: ticks.append(1))
+        bridge.set_age_window(256)
+        self.assertEqual(len(ticks), 1,
+                         "publishing the window must notify; a QML binding to "
+                         "`age_window_note` has no other way to learn the window changed")
+        bridge.set_metrics(ai_fps=15.0, frame_age_p50_ms=315.5,
+                           frame_age_p95_ms=902.4)
+        note = bridge.age_window_note
+        self.assertIn("256", note, note)
+        self.assertIn("analysed frames", note, note)
+        # 256 / 15.0 = 17.07 s, and the note must show a rounded second rather than a
+        # false precision it cannot have.
+        self.assertIn("about 17 s", note, note)
+        self.assertIn("15.0 fps", note, note)
+
+    def test_a_zero_rate_does_not_divide(self):
+        # The standing rule: never print `unavailable` as `0`, and never divide by a
+        # window nobody measured.
+        for fps in (0.0, None):
+            bridge = _bridge()
+            bridge.set_age_window(256)
+            bridge.set_metrics(ai_fps=fps, frame_age_p50_ms=1.0)
+            note = bridge.age_window_note
+            self.assertIn("span depends on", note,
+                          f"fps={fps!r}: the span is genuinely unknown and saying so "
+                          f"beats implying 15 fps: {note!r}")
+            self.assertNotIn("inf", note.lower())
+            self.assertNotIn("nan", note.lower())
+
+    def test_a_fallback_would_be_shown_as_a_fallback_on_the_badge(self):
+        bridge = _bridge()
+        bridge.set_route(requested="NPU", confirmed=("CPU",), state="active")
+        self.assertTrue(bridge.device_fell_back,
+                        "a confirmed device other than the requested one IS a fallback")
+        self.assertEqual(bridge.device_display, "CPU (fell back from NPU)",
+                         bridge.device_display)
+        # And the requested device is still recorded, so the operator can see what was
+        # asked for as well as what is running.
+        self.assertEqual(bridge.device_requested, "NPU")
+
+    def test_a_route_that_confirmed_what_it_asked_for_is_not_a_fallback(self):
+        bridge = _bridge()
+        # The GPU reports `'GPU.0'`; a substring test would call that a fallback.
+        bridge.set_route(requested="GPU", confirmed=("GPU.0",), state="active")
+        self.assertFalse(bridge.device_fell_back,
+                         "the dotted spelling is the same device, not a different one")
+        self.assertEqual(bridge.device_display, "GPU.0", bridge.device_display)
+
+    def test_an_unproven_route_is_never_a_fallback(self):
+        bridge = _bridge()
+        bridge.set_route(requested="GPU", confirmed=(), state="pending")
+        self.assertFalse(bridge.device_fell_back,
+                         "nothing ran anywhere, so nothing fell back from anywhere")
+        self.assertEqual(bridge.device_display,
+                         "pending - GPU not yet confirmed", bridge.device_display)
+
+
 class RequiredCopy(unittest.TestCase):
     """The brief's tests, kept because each one says exactly what it checks."""
 

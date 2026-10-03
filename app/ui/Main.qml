@@ -246,6 +246,13 @@ Window {
                     // Three compute cards. CPU is measurable; GPU and NPU are not, and
                     // say so.
                     ComputeCard {
+                        // A name on each card, so a test can read this card's
+                        // **bound** strings - the activity line carries `ai_fps` and
+                        // the frame-age percentiles, which no `cardText_*` item shows.
+                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
+                        // `cardText_frame_age_p50_ms`, and no such items exist, so
+                        // those two lookups returned "" and asserted nothing.
+                        objectName: "card_CPU"
                         width: parent.width
                         height: (parent.height - Theme.GAP * 2) / 3
                         deviceId: "CPU"
@@ -265,11 +272,28 @@ Window {
                                        + "  \u00b7  frame age p50 "
                                        + bridge.metric_text["frame_age_p50_ms"]
                                        + "  p95 " + bridge.metric_text["frame_age_p95_ms"]
+                                       // **The window, stated on screen.** The two
+                                       // figures above are percentiles of the most
+                                       // recent N analysed frames, and N is a count - how
+                                       // many seconds that spans depends on this
+                                       // stream's own rate, which the reader cannot see
+                                       // from a percentile. Read from a notified
+                                       // property, never a Slot call: see
+                                       // `UiBridge._get_metric_text`.
+                                       + (bridge.age_window_note.length > 0
+                                          ? "  (" + bridge.age_window_note + ")" : "")
                         explainKey: "cpu"
                         onExplainRequested: key => window.pinnedExplanationKey = key
                     }
 
                     ComputeCard {
+                        // A name on each card, so a test can read this card's
+                        // **bound** strings - the activity line carries `ai_fps` and
+                        // the frame-age percentiles, which no `cardText_*` item shows.
+                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
+                        // `cardText_frame_age_p50_ms`, and no such items exist, so
+                        // those two lookups returned "" and asserted nothing.
+                        objectName: "card_GPU"
                         width: parent.width
                         height: (parent.height - Theme.GAP * 2) / 3
                         deviceId: "GPU"
@@ -287,6 +311,13 @@ Window {
                     }
 
                     ComputeCard {
+                        // A name on each card, so a test can read this card's
+                        // **bound** strings - the activity line carries `ai_fps` and
+                        // the frame-age percentiles, which no `cardText_*` item shows.
+                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
+                        // `cardText_frame_age_p50_ms`, and no such items exist, so
+                        // those two lookups returned "" and asserted nothing.
+                        objectName: "card_NPU"
                         width: parent.width
                         height: (parent.height - Theme.GAP * 2) / 3
                         deviceId: "NPU"

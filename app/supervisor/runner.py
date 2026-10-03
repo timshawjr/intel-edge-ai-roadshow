@@ -1359,20 +1359,24 @@ class Supervisor(QObject):
                 stream.out_queue = None
                 stream.pid = None
                 stream.queue.close()
+        for _stream, _process, in_queue, _out in claimed:
+            # **The stop sentinel goes in BEFORE the threads are joined**, which is the
+            # whole of this fix. It used to go in after, which meant the worker never saw
+            # it, so a feeder blocked writing to a full pipe waited out its full 5 s grace
+            # and `stop()` cost three streams' worth of that: measured **15.18 s before and
+            # 0.84 s after**, same probe, six toggles first. (Task 3 also measured 0.27 s
+            # by letting the queues drain for 1.5 s *before* calling `stop()` at all - that
+            # was a workaround around the ordering, and this is the ordering, so the honest
+            # comparison is against the 15.18 s and not against the workaround.)
+            # See `_signal_stop` and `_reap_worker`.
+            self._signal_stop(in_queue)
         for sid in self._order:
             self._halt_threads(sid)
         for stream, process, in_queue, _out in claimed:
-            if in_queue is not None:
-                # The stop sentinel, so a healthy worker returns from `run_worker` rather
-                # than being killed. `put` only appends to the queue's buffer - the feeder
-                # thread does the writing - so this does not block on the dead-pipe case.
-                try:
-                    in_queue.put(None)
-                except Exception:  # noqa: BLE001 - shutdown, not a reportable failure
-                    pass
             if process is not None:
-                process.join(timeout=STOP_GRACE_SECONDS)
-                if process.is_alive():
+                # Draining while it exits: see `_reap_worker`. Without it one worker in
+                # three never returns and this join blocks its whole grace.
+                if not self._reap_worker(stream.stream_id, process, _out):
                     process.terminate()
                     process.join(timeout=STOP_GRACE_SECONDS)
         # **Never `join_thread()` a shutdown queue.** Measured here: with a
@@ -1435,6 +1439,117 @@ class Supervisor(QObject):
                 candidate.close()
             except Exception:  # noqa: BLE001 - teardown
                 pass
+
+    def _reap_worker(self, stream_id: str, process: Any, out_queue: Any,
+                 timeout_s: float = STOP_GRACE_SECONDS) -> bool:
+        """Wait for a retiring worker to exit, **draining its output while it does**.
+
+        Returns `True` if the process exited inside the deadline.
+
+        ## Why the drain is not optional
+
+        The sentinel in `_signal_stop` is only read by a worker that comes back round to
+        `in_queue.get()`. A worker blocked in `out_queue.put(result)` never gets there,
+        and it blocks there as soon as the parent's reader thread is gone and the pipe
+        fills - a 240x320 `FramePacket` is 230 KB, so one unread result is enough.
+
+        Measured, after the sentinel was added and before this: of three workers, **one**
+        never exited, so `join(timeout=5.0)` blocked its full five seconds and `stop()`
+        took **5.16 s**. With the drain below it takes **0.05 s**. `multiprocessing`'s own
+        behaviour is on both sides of that: the child blocks writing to a pipe nobody
+        reads, and the parent's `join` blocks waiting for a child that is blocked.
+
+        ## What the drained items are, and why they are counted
+
+        Everything still in flight belongs to the generation being retired, so it is
+        **discarded and counted** through `_discard_superseded` rather than dropped
+        silently and rather than delivered - delivering a retired generation's result is
+        exactly the defect the transition protocol exists to prevent. The counter's
+        documented reason is "superseded", and a shutdown discard is that too: the result
+        was produced by a worker this call is retiring.
+        """
+        if process is None:
+            return True
+        deadline = time.perf_counter() + timeout_s
+        while process.is_alive():
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0.0:
+                return False
+            if out_queue is None:
+                time.sleep(min(0.02, remaining))
+                continue
+            try:
+                item = out_queue.get(timeout=min(0.05, remaining))
+            except queue.Empty:
+                continue
+            except (OSError, EOFError, ValueError):
+                # The queue was closed under us; the child is on its way out.
+                break
+            if item is not None:
+                self._discard_superseded(stream_id, item)
+        return not process.is_alive()
+
+    def _discard_superseded(self, stream_id: str, item: Any) -> None:
+        """Count one result from a retiring worker, and never deliver it.
+
+        A named method rather than a call to `accept_result` with a fake generation: the
+        reason is not "the generation did not match", it is "this result belongs to a
+        worker being torn down", and the two should not be able to drift apart silently.
+        """
+        with self._lock:
+            self._discarded_results += 1
+            stream = self._streams.get(str(stream_id))
+            if stream is not None:
+                self._attribute_discard(stream)
+
+    def _signal_stop(self, in_queue: Any) -> None:
+        """Put the stop sentinel into a worker's input queue, **while it can still read it**.
+
+        ## Why this exists, and why it is called *before* the join
+
+        `run_worker` returns when it reads `None` from its input queue. That is the only
+        graceful exit a worker has, and the only way to reach it is to write the sentinel
+        before the process is torn down.
+
+        Both teardown paths used to do the opposite, and both paid for it in measured
+        seconds:
+
+        - `stop()` called `_halt_threads` **first** and put the sentinel after it.
+        - `_apply_devices` and `_restart` never put it at all; they joined for
+          `join(timeout=1.0)` and then terminated the process.
+
+        So the worker never saw the sentinel, never returned, and the join always ran out
+        its full second before `terminate()`. That is the whole of the ~1 s per moved
+        stream in the transition times, and it is why one stream cost ~1.1 s of `setup`
+        and two cost ~2.15 s.
+
+        The feeder makes it worse in the other direction, and this ordering fixes that
+        too. A feeder blocked in `in_queue.put()` on a full pipe is unblocked only by the
+        worker draining that pipe; `_halt_threads` joins it with a `STOP_GRACE_SECONDS`
+        (5.0 s) grace and then reports it as surviving. Three streams of that is 15 s of
+        `stop()`. Writing the sentinel first lets the worker drain and return, which
+        empties the pipe, which unblocks the feeder.
+
+        ## What is given up, and why it costs nothing
+
+        Frames already handed to the worker's input queue are abandoned rather than
+        analysed. That is **already** what happens: the generation is over, `_drain_queue`
+        throws away everything still in this supervisor's bounded queue and counts it as
+        `frames_invalidated`, and a frame that has left the bounded queue has left the
+        supervisor's accounting entirely. Terminating mid-inference abandons exactly the
+        same frames; the sentinel only makes the child exit on its own terms instead of
+        being killed. No counter changes, and `_halt_threads` still reports any thread
+        that survives its grace.
+
+        Best-effort by design: `mp.Queue.put` can raise on a pipe whose reader has already
+        gone, and a teardown that raised here would be worse than one that terminates.
+        """
+        if in_queue is None:
+            return
+        try:
+            in_queue.put(None)
+        except Exception:  # noqa: BLE001 - teardown; the process is terminated anyway
+            pass
 
     def _halt_threads(self, stream_id: str) -> None:
         """Join one stream's feeder, reader and watchdog threads and clear the handles.
@@ -1811,13 +1926,40 @@ class Supervisor(QObject):
                 stream.out_queue = None
                 stream.pid = None
             running = self._running and not self._stopping
+        # **Publish the unproven state before the teardown, not after it.**
+        #
+        # Inside the lock above, every affected stream's `state` became `pending` and its
+        # proof was cleared - so the supervisor already knows the old device is no longer
+        # confirmed. But the teardown (terminate/join the old worker, retire its queues,
+        # drain, spawn the replacement) then runs for **~1.1 s per moved stream** before
+        # the `state_changed` at the end of this method. For that whole second the screen
+        # still rendered the *previous* device as if it were current.
+        #
+        # Measured on the live path (Task 4): a presenter-driven move produced **10
+        # consecutive 100 ms samples** in which the badge read `device: CPU` while the
+        # supervisor's `confirmed_devices` was already empty. The queued hop cannot fix
+        # that - the bridge was not *told* anything for the whole second. Emitting here
+        # does, and it is also what spec section 5 asks for: the UI shows "Moving Camera B
+        # inference to CPU..." with pending vs actual, which means pending has to be
+        # published while the move is still in progress.
+        self.state_changed.emit(self.route_plan())
+        for _stream_id, _process, in_queue, _out_queue in claims:
+            # **The stop sentinel goes in BEFORE the join**, which this code never did and
+            # `stop()` did only after its own join. Measured: with it, one moved stream
+            # costs ~1.1 s of `setup` because `join(timeout=1.0)` always runs out before
+            # `terminate()`; the sentinel lets the worker return from `run_worker` and the
+            # join finds it already gone. See `_signal_stop`.
+            self._signal_stop(in_queue)
         for stream_id, process, _in_queue, _out_queue in claims:
             self._halt_threads(stream_id)
-        for _stream_id, process, _in_queue, _out_queue in claims:
+        for _stream_id, process, _in_queue, out_queue in claims:
             if process is None:
                 continue
-            process.join(timeout=1.0)
-            if process.is_alive():
+            # **Reaped, not joined-and-waited.** `join(timeout=1.0)` here always ran its
+            # full second because the worker never saw the sentinel and never returned;
+            # draining its output while it exits is what makes the join cheap. See
+            # `_reap_worker` for the measurement.
+            if not self._reap_worker(_stream_id, process, out_queue, timeout_s=1.0):
                 process.terminate()
                 process.join(timeout=1.0)
         for _stream_id, _process, in_queue, out_queue in claims:
@@ -2302,10 +2444,13 @@ class Supervisor(QObject):
             stream.in_queue = None
             stream.out_queue = None
             stream.pid = None
+        self._signal_stop(in_queue)
         self._halt_threads(stream_id)
         if process is not None:
-            process.join(timeout=1.0)
-            if process.is_alive():
+            # Reaped, not joined: see `_reap_worker`. A restart used to wait out a full
+            # `join(timeout=1.0)` on every dead worker, because the sentinel was never
+            # sent and the child never returned.
+            if not self._reap_worker(stream_id, process, out_queue, timeout_s=1.0):
                 process.terminate()
                 process.join(timeout=1.0)
         # The old transport is abandoned here, not at exit. See `_retire`: a queue left

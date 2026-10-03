@@ -69,6 +69,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1273,14 +1274,91 @@ class LiveWindowedPath(unittest.TestCase):
         #
         # This is the same class of defect as the `constant=True` device badge, one layer
         # out, and it is why this assertion reads pixels rather than properties.
-        for key, value in self.report["card_text"].items():
-            self.assertNotEqual(value, "unavailable",
-                                f"the rendered {key} figure says unavailable while the "
-                                f"bridge holds a measured value; the QML binding is not "
-                                f"re-evaluating: {self.report['card_text']}")
-        self.assertIn("telemetry fresh", self.report["staleness_text_rendered"],
+        #
+        # ## M2 Task 4: two of the three keys asserted nothing
+        #
+        # This looped `card_text`, whose keys were `system_cpu_percent`, `ai_fps` and
+        # `frame_age_p50_ms`, and read `find_text("cardText_" + key)`. **`Main.qml` creates
+        # cards for `system_cpu_percent`, `gpu_utilisation_percent` and
+        # `npu_utilisation_percent` only**, so `cardText_ai_fps` and
+        # `cardText_frame_age_p50_ms` name items that do not exist, `find_text` returns
+        # `""` for both, and `"" != "unavailable"` passes. Measured on a live run before
+        # the fix:
+        #
+        #     card_text: {"system_cpu_percent": "96.2%", "ai_fps": "",
+        #                  "frame_age_p50_ms": ""}
+        #
+        # Two of three keys proved nothing about the screen. The rewrite below reads the
+        # values that **actually reach it** - the three cards' own figures, and the CPU
+        # card's bound `activityText`, which is where `ai_fps` and the frame-age
+        # percentiles live - and `test_every_card_name_this_test_reaches_for_exists`
+        # pins that the items are really there.
+        report = self.report
+        # **The items this test reads must exist.** An absent item renders `""` and every
+        # "is it not unavailable" assertion on it passes, which is the whole defect.
+        self.assertEqual(report["card_items_present"],
+                         {"card_CPU": True, "card_GPU": True, "card_NPU": True},
+                         "the three cards must be named items in the scene")
+        self.assertEqual(
+            sorted(report["card_names"]),
+            ["cardText_gpu_utilisation_percent", "cardText_npu_utilisation_percent",
+             "cardText_system_cpu_percent"],
+            f"these are the only named card figures the screen has, and this is what it "
+            f"has: {report['card_names']}. `ComputeCard.qml` names only its primary "
+            f"metric, so the CPU card's `app_cpu_percent` secondary is read as '' and is "
+            f"deliberately not asserted on - that would be the same missing-item fault "
+            f"this test exists to stop repeating.")
+        # The CPU card's own figure, which is measured on this machine.
+        self.assertNotEqual(report["card_figures"]["system_cpu_percent"], "unavailable",
+                            "the rendered CPU figure says unavailable while psutil is "
+                            "reporting every 250 ms")
+        self.assertIn("%", report["card_figures"]["system_cpu_percent"],
+                      "and it is a percentage, not a bare number or a word")
+        # The accelerators keep their measured-unavailable wording; see R1 below.
+        for device in ("gpu_utilisation_percent", "npu_utilisation_percent"):
+            self.assertEqual(report["card_figures"][device], "unavailable",
+                             f"{device}: no counter exists for it, and 'unavailable' is "
+                             f"the honest rendering")
+        # **The activity line, which is where `ai_fps` and the frame ages are.**
+        activity = report["activity_cpu"]
+        self.assertTrue(activity, "the CPU card rendered no activity line at all")
+        self.assertNotIn("unavailable", activity,
+                         f"the rendered activity line claims everything is unavailable "
+                         f"while the supervisor is analysing frames: {activity!r}")
+        self.assertIn("analysis fps ", activity, activity)
+        self.assertIn("frame age p50 ", activity, activity)
+        # And it states the window those percentiles are taken over. Without it, a p50 of
+        # 2 s over a 17 s window and a p50 of 11 s over a 26 s one are not comparable
+        # claims, and the label carried neither.
+        self.assertIn("most recent", activity,
+                      f"the frame-age percentiles must say what they are percentiles "
+                      f"of: {activity!r}")
+        self.assertRegex(activity, r"most recent \d+ analysed frames",
+                         f"and the count: {activity!r}")
+        self.assertTrue(report["age_window_note"], "the bridge's own window note is empty")
+        self.assertIn("telemetry fresh", report["staleness_text_rendered"],
                       "the rendered control bar must report fresh telemetry once samples "
-                      f"have arrived: {self.report['staleness_text_rendered']!r}")
+                      f"have arrived: {report['staleness_text_rendered']!r}")
+
+    def test_the_old_card_names_that_read_nothing_are_recorded_as_absent(self):
+        """The vacuousness, kept as a test so it cannot come back unnoticed.
+
+        The M1 version asserted `card_text[key] != "unavailable"` over three keys, two of
+        which name items that do not exist. This test says so in one place: those two keys
+        **are** absent, and they read `""` - which is why the old loop proved nothing. It
+        is a test about a *negative*, so it cannot fail if the screen changes; it exists
+        so that anyone re-adding a `cardText_ai_fps` name sees why it was wrong, and so
+        that `card_names` above is cross-checked against a second reading of the scene.
+        """
+        report = self.report
+        for missing in ("ai_fps", "frame_age_p50_ms"):
+            self.assertEqual(report["card_text"][missing], "",
+                             f"cardText_{missing} reads '' on a live run - no such item "
+                             f"exists, which is exactly why the old assertion proved "
+                             f"nothing")
+            self.assertNotIn(f"cardText_{missing}", report["card_names"],
+                             f"cardText_{missing} is not one of the figures the screen "
+                             f"renders")
 
     def test_the_cpu_card_does_not_claim_a_utilisation_counter_is_failing(self):
         # R1. `cpu_available` is `system_cpu_percent is not None`, which is `None` at
@@ -1428,23 +1506,29 @@ class LiveWindowedPath(unittest.TestCase):
         self.assertGreater(self.report["frames_submitted"], 0, self.report)
 
     @staticmethod
-    def _drive() -> dict:
+    def _drive(extra_args: Sequence[str] = (), seconds: float | None = None) -> dict:
         """Run `run_windowed` in a child and report what its own bridge ended up holding.
 
         A subprocess because `run_windowed` constructs a `QGuiApplication` and other
         tests in this suite construct one too. The child is written to a **file**, not
         passed to `python -c`, because `multiprocessing` cannot spawn from `-c` without
         tripping its `__main__` guard - which is the defect the first input-ack probe had.
+
+        `extra_args` reaches `run_windowed` as real CLI arguments, so the presenter-driven
+        and fault-injection paths under test are the ones the application actually has -
+        not a patched `Supervisor` called from a test.
         """
         script_text = _LIVE_DRIVER % str(REPO_ROOT)
         env = dict(os.environ)
         env["QT_QPA_PLATFORM"] = "offscreen"
         env["PYTHONPATH"] = str(REPO_ROOT)
+        if seconds is not None:
+            env["ROADSHOW_LIVE_SECONDS"] = str(float(seconds))
         with tempfile.TemporaryDirectory(prefix="roadshow-live-") as tmp:
             script = Path(tmp) / "drive_live.py"
             script.write_text(script_text, encoding="utf-8")
             completed = subprocess.run(
-                [sys.executable, str(script), "--device", "CPU"],
+                [sys.executable, str(script), "--device", "CPU", *extra_args],
                 capture_output=True, text=True, timeout=420,
                 cwd=str(REPO_ROOT), env=env)
         report: dict = {"returncode": completed.returncode,
@@ -1466,6 +1550,11 @@ class LiveWindowedPath(unittest.TestCase):
                         "card_text": {}, "staleness_text_rendered": "",
                         "unavailable_notice": {}, "window_note_text": "",
                         "window_note_visible": False, "event_count_text": "",
+                        "card_names": [], "card_items_present": {},
+                        "activity_cpu": "", "card_figures": {},
+                        "age_window_note": "", "samples": [], "select_lines": [],
+                        "stream_states": {}, "error_message": "",
+                        "fell_back": False, "stream_route_state": "",
                         "overlay_boxes": [], "expected_boxes": [],
                         "frame_extents": [0, 0]}
         for line in completed.stdout.splitlines():
@@ -1475,6 +1564,8 @@ class LiveWindowedPath(unittest.TestCase):
                 badge = json.loads(line[len("BADGE "):])
                 report["badge_at_load"] = badge.get("at_load", "")
                 report["badge_after_route"] = badge.get("after_route", "")
+        report["select_lines"] = [ln for ln in report["boot_lines"]
+                                  if ln.startswith("[select]")]
         if not any(ln.startswith("REPORT ") for ln in report["boot_lines"]):
             raise AssertionError(
                 "the live-path probe produced no report; `run_windowed` did not reach its "
@@ -1606,6 +1697,9 @@ app = {"qobject": None}
 def spy_gui():
     qobject = _real_gui()
     app["qobject"] = qobject
+    # Installed before `run_windowed` has built its bridge, so `sample_badge` skips the
+    # first ticks rather than raising: it returns early until both objects exist.
+    install_sampler(qobject)
     QTimer.singleShot(int(SECONDS * 1000), finish_and_quit)
     return qobject
 
@@ -1650,6 +1744,62 @@ def find_visible(object_name):
         if item is not None:
             return bool(item.property("visible"))
     return None
+
+
+def find_property(object_name, property_name, default=""):
+    """A named QML item's **bound property**, or `default` if the item is absent.
+
+    Not a substitute for `find_text` where a rendered `Text` exists - `find_text` is one
+    step closer to the screen. It is here for the strings a `Text` does not name: the
+    metric cards' `activityText` carries `ai_fps` and the frame-age percentiles, and the
+    M1 driver invented `cardText_ai_fps` / `cardText_frame_age_p50_ms` item names that do
+    not exist, so two of its three card assertions read `""` and passed vacuously.
+
+    `ComputeCard.qml` binds its activity `Text` straight to `card.activityText` with no
+    transformation in between (`text: card.activityText`), so reading the property reads
+    what the label renders.
+    """
+    for root in engine_roots():
+        item = root.findChild(object, object_name)
+        if item is not None:
+            value = item.property(property_name)
+            return "" if value is None else str(value)
+    return default
+
+
+def find_all_texts(object_name_prefix):
+    """Every item in the scene whose `objectName` starts with `object_name_prefix`.
+
+    Walks the tree itself rather than using `findChildren(type, "prefix*")`: Qt's
+    `QObject::findChildren` does **not** match a wildcard in the name, so that call
+    silently returns nothing - which is the same shape of fault this task is fixing, and
+    the first version of this helper walked into it.
+    """
+    found = []
+    for root in engine_roots():
+        stack = [root]
+        while stack:
+            item = stack.pop()
+            stack.extend(item.children())
+            try:
+                name = str(item.objectName())
+            except (AttributeError, RuntimeError):
+                continue
+            if name.startswith(object_name_prefix):
+                found.append(name)
+    return sorted(found)
+
+
+def find_item_exists(object_name):
+    """Whether a named QML item exists in the scene at all.
+
+    Separate from `find_text` because an absent item and an item whose text is `""` are
+    different faults and the M1 driver could not tell them apart.
+    """
+    for root in engine_roots():
+        if root.findChild(object, object_name) is not None:
+            return True
+    return False
 
 
 def _expected_boxes(tracker, width, height):
@@ -1698,6 +1848,46 @@ def engine_load(self, url):
 
 QQmlApplicationEngine.load = engine_load
 
+# -- 4b. M2 Task 4: sample the badge against the supervisor's own truth, on the UI thread -
+#
+# "The badge shows the CONFIRMED device, never the requested one" is a claim about a
+# *sequence*, so one read cannot settle it: a single read taken at the wrong instant would
+# pass against a badge that jumps to the requested device the moment it is asked.
+#
+# So this samples, every 100 ms on the UI thread, and records for each sample what the
+# badge rendered next to what the supervisor had actually proved at that instant. The
+# parent then checks the **invariant** across every sample: the badge may only name a
+# device the supervisor has confirmed. A badge that flashed the requested device would be
+# caught in the sample where it happened, and there are 200-220 of them per run
+# (measured 200, 217 and 218 across three runs).
+samples = []
+
+
+def sample_badge():
+    """One sample, read on the UI thread. `samples` is bounded; this run is seconds long."""
+    bridge = holder.get("bridge")
+    supervisor = holder.get("supervisor")
+    if bridge is None or supervisor is None:
+        return
+    if len(samples) >= 600:
+        return
+    stats = supervisor.stream_stats("A") if "A" in supervisor.stream_ids else None
+    samples.append({
+        "badge": badge_text(),
+        "bridge_confirmed": str(bridge.device_confirmed or ""),
+        "bridge_state": str(bridge.route_state),
+        "supervisor_confirmed": list(stats.confirmed_devices) if stats else [],
+        "supervisor_requested": str(stats.requested_device) if stats else "",
+        "supervisor_state": str(stats.state) if stats else "",
+    })
+
+
+def install_sampler(application):
+    timer = QTimer(application)
+    timer.timeout.connect(sample_badge)
+    timer.start(100)
+    holder["sampler"] = timer
+
 
 def finish_and_quit():
     bridge = holder.get("bridge")
@@ -1731,6 +1921,41 @@ def finish_and_quit():
         for key in ("system_cpu_percent", "ai_fps", "frame_age_p50_ms"):
             card_values[key] = find_text("cardText_" + key)
         report["card_text"] = card_values
+        # **M2 Task 4: what the screen actually renders, and proof the names exist.**
+        #
+        # The three cards are created for `system_cpu_percent`, `gpu_utilisation_percent`
+        # and `npu_utilisation_percent`, so `cardText_ai_fps` and
+        # `cardText_frame_age_p50_ms` name items that do not exist and `find_text` returns
+        # `""` for both - and `"" != "unavailable"` passes. Two of that test's three keys
+        # asserted nothing, on a live run. So:
+        #
+        # - `card_text` keeps its old shape for the record, and `card_names` says which of
+        #   those names actually exist, so the vacuous pair is visible rather than assumed;
+        # - `activity_cpu` reads the CPU card's **bound** activity line, which is where
+        #   `ai_fps` and the frame-age percentiles really are;
+        # - `card_figures` reads the three cards' own figures.
+        report["card_names"] = find_all_texts("cardText_")
+        report["card_items_present"] = {
+            name: find_item_exists(name)
+            for name in ("card_CPU", "card_GPU", "card_NPU")}
+        report["activity_cpu"] = find_property("card_CPU", "activityText")
+        report["card_figures"] = {
+            key: find_text("cardText_" + key)
+            for key in ("system_cpu_percent", "gpu_utilisation_percent",
+                        "npu_utilisation_percent")
+        }
+        report["age_window_note"] = str(getattr(bridge, "age_window_note", ""))
+        # M2 Task 4: the badge/fallback/failure state and the per-stream route map, plus
+        # the badge time series the invariant is checked over.
+        report["samples"] = samples
+        report["stream_states"] = {k: str(v) for k, v in
+                                   dict(getattr(bridge, "stream_states", {})).items()}
+        report["stream_route_state"] = str(bridge.route_state)
+        report["stream_routes"] = {k: {kk: (list(vv) if isinstance(vv, tuple) else vv)
+                                       for kk, vv in v.items()}
+                                   for k, v in
+                                   dict(getattr(bridge, "stream_routes", {})).items()}
+        report["error_message"] = str(getattr(bridge, "error_message", ""))
         report["staleness_text_rendered"] = find_text("stalenessText")
         # R1: the per-card "no figure" wording, as rendered.
         report["unavailable_notice"] = {
@@ -1783,6 +2008,372 @@ def finish_and_quit():
 if __name__ == "__main__":
     sys.exit(main_module.main(sys.argv[1:] + ["--windowed"]))
 '''
+
+
+class PresenterSelectionAndObservedFallback(unittest.TestCase):
+    """M2 Task 4: a presenter can move a camera, and a real worker death is visible.
+
+    Two extra live runs, **~40 s**, each through `app.main.run_windowed` with real CLI
+    arguments rather than a patched `Supervisor`:
+
+    - `--select A=GPU` - the presenter's move. Closes M1's open criterion 2.
+    - `--fail-stream A` - the worker really raises before compiling. Closes the **visible**
+      half of M0's unmet gate 9.
+
+    ## What "the badge shows the confirmed device, never the requested one" needs
+
+    One read cannot settle it. A badge that jumped to the requested device the instant it
+    was asked would pass a test that sampled after the confirmation. So the driver samples
+    the rendered badge **every 100 ms on the UI thread** - 200-220 samples per run, measured - beside
+    what the supervisor had actually proved at that instant, and the assertions are
+    invariants over that series rather than comparisons at one instant.
+
+    The direction of the invariant matters and is stated in the test: the bridge may **lag**
+    the supervisor by a queued hop, and did; it may never **lead** it. Leading would be a
+    device on screen that nothing has run on.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        reason = _provisioned()
+        if reason:
+            raise unittest.SkipTest(
+                f"cannot run the real pipeline: {reason}. The live path is not exercised "
+                f"on this machine and no claim is made about it.")
+        cls.moved = LiveWindowedPath._drive(extra_args=["--select", "A=GPU"], seconds=24.0)
+        cls.faulted = LiveWindowedPath._drive(extra_args=["--fail-stream", "A"],
+                                              seconds=14.0)
+
+    # -- criterion 2: a presenter can move a camera, and the screen follows the proof ----
+
+    def test_the_presenters_move_is_acknowledged_and_the_badge_follows_the_proof(self):
+        report = self.moved
+        self.assertEqual(report["returncode"], 0, report["stderr"])
+        self.assertTrue(report["select_lines"],
+                        f"the presenter move printed nothing at all: "
+                        f"{report['stdout'][-2000:]}")
+        move = next((line for line in report["select_lines"]
+                     if "acknowledged=" in line), "")
+        self.assertIn("acknowledged=True", move,
+                      f"the presenter's move was not acknowledged, so nothing on screen "
+                      f"may claim it happened: {report['select_lines']}")
+        self.assertIn("bounded_by='confirmed'", move, move)
+        self.assertIn("confirmed={'A': ['GPU.0']}", move,
+                      f"the GPU's own EXECUTION_DEVICES reading is what confirms it, and "
+                      f"the dotted form is what it reports: {report['select_lines']}")
+        # It started from a camera that had proved where it was, not mid-cold-compile.
+        self.assertIn("[select] starting from 'active'", "\n".join(report["select_lines"]),
+                      f"the move must be issued from a settled route or the badge change "
+                      f"proves nothing: {report['select_lines']}")
+        # **And the screen reached the new device.**
+        self.assertEqual(report["qml_badge"], "device: GPU.0",
+                         f"the rendered badge never reached the confirmed GPU: "
+                         f"{report['qml_badge']!r}")
+        self.assertEqual(report["confirmed"], "GPU.0",
+                         f"and the bridge agrees: {report['confirmed']!r}")
+
+    def test_the_badge_never_named_a_device_the_supervisor_had_never_proved(self):
+        """Review Focus #1, as an invariant over a series: **the badge is always at or
+        behind the supervisor's own proof, and never more than a hop behind.**
+
+        Two clauses, and the second is where the honesty is:
+
+        - **Never ahead.** Where the sampler can see a confirmed placement, the badge must
+          not name a *different* device. That is a device on screen that the current route
+          did not prove.
+        - **At most a hop behind.** `state_changed` reaches the UI thread as a queued
+          call, so a payload that was true when it was emitted can be applied after the
+          route has moved on. And the proof window itself can be **shorter than the
+          sampling interval**: `_await_settled` issues the presenter's move within about
+          50 ms of the CPU placement confirming, so `confirmed_devices` can hold
+          `("CPU",)` for less time than one 100 ms tick and a sampler can miss it
+          entirely. Measured one such sample in six runs, showing `device: CPU` for one hop
+          after the request.
+
+        Two earlier versions of this test were **unsound rather than flaky**, and both are
+        worth recording. The first asserted **zero** lag and failed intermittently. The
+        second asserted "every device the badge ever named was proved at *some* sample" and
+        failed for the same root cause: a sampler cannot see a proof that was withdrawn
+        between two of its own reads. The bound below is the one statement here that is
+        actually true.
+        """
+        report = self.moved
+        samples = report["samples"]
+        self.assertGreater(len(samples), 50,
+                           f"only {len(samples)} samples; the invariant needs a series, "
+                           f"not a single read")
+        confirmed_seen = [i for i, s in enumerate(samples) if s["supervisor_confirmed"]]
+        self.assertTrue(confirmed_seen,
+                        "no sample caught a confirmed placement, so this run cannot show "
+                        f"anything about the badge: {samples[:5]}")
+        ahead = [(i, s["bridge_confirmed"], s["supervisor_confirmed"])
+                 for i, s in enumerate(samples)
+                 if s["supervisor_confirmed"]
+                 and s["bridge_confirmed"]
+                 and s["bridge_confirmed"] != ", ".join(s["supervisor_confirmed"])]
+        self.assertEqual(
+            ahead, [],
+            f"the screen named a device the current route had not proved, at these "
+            f"samples: {ahead[:3]}")
+        behind = [i for i, s in enumerate(samples)
+                  if not s["supervisor_confirmed"] and s["bridge_confirmed"]]
+        self.assertLessEqual(
+            len(behind), 2,
+            f"{len(behind)} samples where the screen still named a device the supervisor "
+            f"had already withdrawn: {behind}. A queued hop is one hop, and a proof window "
+            f"can be shorter than one 100 ms tick; before the teardown-ordering fix the "
+            f"lag was the whole ~1.1 s teardown, about 11 samples at this interval.")
+
+    def test_the_badge_showed_the_old_device_while_the_new_one_was_only_requested(self):
+        # **The specific moment, not just the invariant.** There are samples in which the
+        # supervisor's `requested_device` is already the GPU, its `confirmed_devices` is
+        # already empty, **and the screen has caught up** - so the badge must be reading
+        # "pending", not a device. That is what distinguishes "never on request" from
+        # "eventually, after confirmation".
+        #
+        # "Caught up" is part of the premise because of the queued hop documented in the
+        # test above: a payload that was true when it was emitted can be applied after the
+        # route moved on, and counting that as "the badge claimed the GPU" would be
+        # blaming the screen for the thread boundary.
+        report = self.moved
+        settled = [s for s in report["samples"]
+                   if s["supervisor_requested"] == "GPU"
+                   and not s["supervisor_confirmed"]
+                   and not s["bridge_confirmed"]]
+        self.assertTrue(
+            settled,
+            "no sample caught the requested-but-unconfirmed state with the screen caught "
+            f"up, so this run cannot show the badge refusing to move on request: "
+            f"{report['samples'][:8]}")
+        for sample in settled:
+            # **The pending form is allowed to name the requested device** - "pending -
+            # GPU not yet confirmed" is exactly what spec section 5 asks for, and it
+            # claims nothing. What is forbidden is the *confirmed* form, `"device: GPU"`,
+            # which is the badge asserting a placement.
+            self.assertTrue(
+                sample["badge"].startswith("device: pending -"),
+                f"while the GPU is requested but unproved the badge must read as pending; "
+                f"it read {sample['badge']!r}, which claims a placement or hides the move")
+
+    def test_the_badge_passed_through_a_pending_word_for_the_new_device(self):
+        # Spec section 5 asks for "Moving Camera B inference to CPU..." with pending vs
+        # actual. So the badge is not allowed to jump straight from one confirmed device to
+        # the other: the unconfirmed state has to be on screen.
+        report = self.moved
+        badges = [s["badge"] for s in report["samples"]]
+        self.assertIn("device: pending - GPU not yet confirmed", badges,
+                      "the unconfirmed state must be rendered, not skipped: the distinct "
+                      f"badges were {sorted(set(badges))}")
+
+    # -- criterion 6, the VISIBLE half: a worker that really dies ------------------------
+
+    def test_a_real_worker_death_is_visible_on_the_live_scene_graph(self):
+        report = self.faulted
+        self.assertEqual(report["returncode"], 0, report["stderr"])
+        states = report["samples"][-1] if report["samples"] else {}
+        # **The failure reached the screen.** The rendered badge, read off the `Text` item.
+        self.assertEqual(report["qml_badge"], "device: failed - no device is running",
+                         f"a dead worker must not leave the badge reading a device: "
+                         f"{report['qml_badge']!r}")
+        self.assertEqual(report["stream_route_state"], "failed",
+                         f"the bound stream's own state: {report['stream_states']}")
+        self.assertEqual(report["stream_states"], {"A": "failed"},
+                         f"and it is the per-stream state, not the aggregate: "
+                         f"{report['stream_states']}")
+        # **It claims no device.** The single most important part: a route that failed must
+        # not keep naming the device it asked for, or the screen reads "running here".
+        self.assertEqual(report["confirmed"], "",
+                         f"a failed route must claim no confirmed device: "
+                         f"{report['confirmed']!r}")
+        self.assertEqual(report["stream_routes"]["A"]["confirmed"], [],
+                         f"and its own record agrees: {report['stream_routes']}")
+        self.assertEqual(report["stream_routes"]["A"]["requested"], "CPU",
+                         "the requested device is still recorded - the operator asked for "
+                         "it and it did not work")
+        # **And the reason is on screen, naming the stream and the device.**
+        text = report["error_message"]
+        self.assertTrue(text, "the failure produced no stated reason on screen")
+        self.assertIn("stream 'A'", text,
+                      f"the reason must name the stream it is about: {text[:300]!r}")
+        self.assertIn("CPU", text, f"and the device: {text[:300]!r}")
+        self.assertIn("worker exit code 1", text,
+                      f"and the real exit code, which is what makes it an observation "
+                      f"rather than a simulation: {text[:300]!r}")
+        # The fault really happened: frames were offered and nothing was analysed.
+        self.assertGreater(report["frames_submitted"], 0, report)
+        self.assertEqual(report["frames_analysed"], 0, report)
+
+    def test_the_failed_route_reports_no_fallback_because_nothing_ran_elsewhere(self):
+        """**`fell_back` is `False` here, and that is the honest answer.**
+
+        The brief asks for `fell_back: true` on this screen. That needs a **confirmed
+        reading on a device other than the one requested** - which is a *silent* fallback,
+        and on this machine every device executes where it is asked, so it does not happen.
+        `compile_failure` kills the worker before it runs anything, so nothing executed
+        anywhere else and `fell_back: False` is what the truth says.
+
+        This is recorded as **not observed** rather than worked around. Fabricating it -
+        by requesting a device nothing implements, or by comparing the requested device to
+        something other than the confirmed one - would put a claim on the booth screen that
+        no measurement supports.
+        """
+        report = self.faulted
+        self.assertIs(report["fell_back"], False,
+                      "`fell_back` must be False here: nothing ran on any device, so "
+                      "nothing fell back from anything")
+        self.assertIs(report["stream_routes"]["A"]["fell_back"], False, report)
+
+
+class PerStreamRouteMigration(unittest.TestCase):
+    """`app.main._on_route` must publish **each stream's own** state.
+
+    The 22-line warning this replaces said: *"`requested` and `confirmed` are read per
+    stream, but `state` is `plan.state`, which since M2 is the aggregate over every
+    stream... **With three streams a plan where Camera A is running and Camera C has failed
+    publishes `"state": "active"`**, and a card bound to Camera A would render a healthy
+    route while Camera C is a dead one."* Task 4 owns the migration; this is it.
+
+    **Driven from a real three-stream `Supervisor`**, not a hand-built plan, so the plan
+    under test is the one the application builds. `_on_route` is called exactly as
+    `state_changed`'s live lambda calls it, and the payload it emits is fed to
+    `UiBridge.apply_route` exactly as `run_windowed` does.
+
+    No hardware and no window: the properties here are about which stream's word reaches
+    which card, and a QML render would not make that any more true.
+    """
+
+    @staticmethod
+    def _wired_bridge():
+        """A `UiBridge` connected exactly as `run_windowed` connects it.
+
+        **The connection is the point.** `_on_route` emits a signal; a bridge nobody is
+        connected to sees nothing at all, and the first version of these tests called
+        `apply_route`'s absence "the migration does not work". `run_windowed` makes these
+        four connections immediately after building the bridge, and the test makes the same
+        four so the path under test is the live one.
+        """
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        bridge.routeArrived.connect(bridge.apply_route)
+        bridge.errorArrived.connect(bridge.apply_error)
+        bridge.frameArrivedFromWorker.connect(bridge.apply_frame)
+        bridge.samplesArrived.connect(bridge.apply_samples)
+        return bridge
+
+    def _publish(self, plan):
+        from app.main import _on_route
+
+        bridge = self._wired_bridge()
+        _on_route(bridge, plan)
+        return bridge
+
+    def test_a_failed_camera_does_not_make_another_camera_s_card_read_active(self):
+        # The exact case the warning described. A is running, C has failed, and the plan's
+        # **aggregate** is `active` because one of three streams proved a placement.
+        from app.contracts.route_plan import RoutePlan
+
+        plan = RoutePlan(
+            generation=2,
+            requested={"A": "CPU", "B": "CPU", "C": "CPU"},
+            confirmed={"A": ("CPU",), "B": ()},
+            state="active",  # the aggregate, and deliberately misleading on its own
+            stream_states={"A": "active", "B": "pending", "C": "failed"},
+            errors=("stream 'C' failed",))
+        bridge = self._publish(plan)
+
+        self.assertEqual(plan.state, "active",
+                         "premise: the aggregate really does read active")
+        self.assertEqual(bridge.route_state, "active",
+                         f"Camera A's card must read A's own state, and A is running: "
+                         f"{bridge.route_state!r}")
+        self.assertEqual(dict(bridge.stream_states),
+                         {"A": "active", "B": "pending", "C": "failed"},
+                         f"every stream's own state is recorded separately: "
+                         f"{dict(bridge.stream_states)}")
+        # And the card bound to the *failed* camera reads failed, with no device claimed -
+        # which is what would have been lost by publishing the aggregate for every stream.
+        bridge.set_route_stream("C")
+        self.assertEqual(bridge.route_state, "failed")
+        self.assertIsNone(bridge.device_confirmed,
+                          "a failed camera's card must claim no device")
+        self.assertEqual(bridge.device_display, "failed - no device is running",
+                         bridge.device_display)
+        # **The negative control for the whole point:** on the *aggregate*, every camera's
+        # card would read active. Asserting it here is what makes the per-stream values
+        # above meaningful rather than coincidental.
+        self.assertEqual(plan.state, "active")
+        self.assertEqual(plan.stream_state("C"), "failed")
+
+    def test_a_payload_for_one_camera_cannot_move_another_cameras_card(self):
+        from app.contracts.route_plan import RoutePlan
+        from app.main import _on_route
+
+        bridge = self._wired_bridge()
+        active = RoutePlan(generation=1, requested={"A": "CPU"},
+                           confirmed={"A": ("CPU",)}, state="active",
+                           stream_states={"A": "active"})
+        _on_route(bridge, active)
+        self.assertEqual(bridge.device_confirmed, "CPU")
+        # Camera B's plan arrives. It must be recorded and must change nothing on screen.
+        other = RoutePlan(generation=2, requested={"A": "CPU", "B": "GPU"},
+                          confirmed={"A": ("CPU",)}, state="active",
+                          stream_states={"A": "active", "B": "failed"})
+        _on_route(bridge, other)
+        self.assertEqual(bridge.device_confirmed, "CPU",
+                         f"Camera B's payload moved Camera A's badge: "
+                         f"{bridge.device_confirmed!r}")
+        self.assertEqual(bridge.route_state, "active")
+        self.assertEqual(dict(bridge.stream_states),
+                         {"A": "active", "B": "failed"})
+        # And pointing the card at B does move it, from B's own record.
+        bridge.set_route_stream("B")
+        self.assertEqual(bridge.route_state, "failed")
+        self.assertEqual(bridge.device_confirmed, None,
+                         "B failed, so B's card claims no device")
+
+    def test_the_route_payload_carries_no_errors_key_at_all(self):
+        # `RoutePlan` has no per-stream error channel, so the payload carries none. The
+        # aggregate `plan.errors` under a per-stream label is the defect being removed, and
+        # a test that merely stopped reading it would leave the door open.
+        from app.contracts.route_plan import RoutePlan
+        from app.main import _on_route
+
+        emitted = []
+
+        class _Signal:
+            def emit(self, payload):
+                emitted.append(dict(payload))
+
+        class _Spy:
+            routeArrived = _Signal()
+
+        plan = RoutePlan(generation=1, requested={"A": "CPU"},
+                         confirmed={"A": ("CPU",)}, state="active",
+                         stream_states={"A": "active"},
+                         errors=("something about a different camera",))
+        _on_route(_Spy(), plan)
+        self.assertEqual(len(emitted), 1)
+        self.assertNotIn("errors", emitted[0],
+                         f"the payload must not carry errors at all: {emitted[0]}")
+        self.assertEqual(set(emitted[0]),
+                         {"stream", "requested", "confirmed", "state", "fell_back"},
+                         f"and its shape is fixed, so a new field has to be a decision: "
+                         f"{sorted(emitted[0])}")
+
+    def test_a_stream_that_declared_no_state_is_absent_rather_than_healthy(self):
+        from app.contracts.route_plan import RoutePlan
+        from app.main import _on_route
+
+        bridge = self._wired_bridge()
+        plan = RoutePlan(generation=1, requested={"A": "CPU", "B": "CPU"},
+                         confirmed={"A": ("CPU",)}, state="active",
+                         stream_states={"A": "active"})
+        _on_route(bridge, plan)
+        self.assertEqual(dict(bridge.stream_states), {"A": "active"},
+                         "B declared no state, so B is absent - unproven, not pending "
+                         "and not healthy")
+        self.assertNotIn("B", bridge.stream_states)
 
 
 class RealHeadlessRun(unittest.TestCase):

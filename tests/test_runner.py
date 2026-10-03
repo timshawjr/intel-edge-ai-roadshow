@@ -1093,6 +1093,122 @@ class SupersededResults(unittest.TestCase):
         self.assertTrue(stats.reconciles(), stats.to_json())
 
 
+class TeardownOrdering(unittest.TestCase):
+    """**M2 Task 4: the stop sentinel goes in *before* the join, and the output is drained
+    while the worker exits.** Both were found as costs, not as suspicions.
+
+    - `stop()` used to join the threads first and put the sentinel after, so a feeder
+      blocked writing to a full pipe waited out its full `STOP_GRACE_SECONDS` grace:
+      **measured 15.18 s before, 0.84 s after**, three streams, same probe.
+    - `_apply_devices` and `_restart` never sent the sentinel at all, so `join(timeout=1.0)`
+      always ran out before `terminate()`. That was **~1.08 s per moved stream** of the
+      warm-transition time.
+    - And the sentinel alone was not enough: a worker blocked in `out_queue.put(result)`
+      never comes back to read it, so one worker in three still waited out its whole grace
+      and `stop()` took **5.16 s**. The parent has to drain while it waits.
+
+    These are hardware tests and they skip loudly. The bounds are generous on purpose: the
+    property is "did not wait out the grace", not "was instant".
+    """
+
+    def setUp(self):
+        self._made: list[Supervisor] = []
+
+    def tearDown(self):
+        for supervisor in self._made:
+            supervisor.stop()
+
+    def _live(self, device_ids=("CPU", "GPU", "NPU")):
+        """A started supervisor with a **running 15 fps feed** on every stream.
+
+        The feed is not optional: `begin_transition`'s own docstring says a transition
+        cannot confirm anything by itself, because a confirmation is an inference and an
+        inference needs a frame. The first version of `_live` started the workers and no
+        feeder, and every stream sat at `pending` for ever - which is correct behaviour and
+        useless as a premise.
+        """
+        reason = _require_devices(*device_ids)
+        if reason:
+            self.skipTest(f"cannot build real workers: {reason}")
+        supervisor = Supervisor(device_ids=device_ids)
+        self._made.append(supervisor)
+        feeder = _Feeder(supervisor)
+        feeder.start()
+        self.addCleanup(feeder.stop)
+        supervisor.start()
+        _wait_for(lambda: all(supervisor.stream_state(sid) == "active"
+                              for sid in supervisor.stream_ids),
+                  seconds=120.0)
+        self.assertTrue(all(supervisor.stream_state(sid) == "active"
+                            for sid in supervisor.stream_ids),
+                        f"premise: every worker must really be running; states are "
+                        f"{ {sid: supervisor.stream_state(sid) for sid in supervisor.stream_ids} } "
+                        f"and errors {supervisor.errors()[:1]!r}")
+        return supervisor
+
+    def test_a_retiring_worker_is_asked_to_stop_before_it_is_waited_for(self):
+        # The mechanism, asserted on the call rather than only on the clock: `_signal_stop`
+        # must be reached, and it must be reached *before* `_halt_threads`, because a
+        # feeder blocked on `in_queue.put` is unblocked by the worker draining that pipe
+        # and nothing else.
+        supervisor = self._live()
+        order: list[str] = []
+        real_signal = supervisor._signal_stop
+        real_halt = supervisor._halt_threads
+
+        def signal(in_queue):
+            order.append("signal")
+            return real_signal(in_queue)
+
+        def halt(stream_id):
+            order.append("halt")
+            return real_halt(stream_id)
+
+        supervisor._signal_stop = signal
+        supervisor._halt_threads = halt
+        supervisor.select_devices({"B": "CPU"})
+        self.assertEqual(order[:2], ["signal", "halt"],
+                         f"the sentinel must precede the join; the order was {order[:6]} "
+                         f"for a one-stream move")
+        self.assertGreaterEqual(order.count("signal"), 1,
+                                "a retiring worker must be asked to stop at all")
+
+    def test_a_route_change_does_not_wait_out_a_join_grace_per_moved_stream(self):
+        supervisor = self._live()
+        started = time.perf_counter()
+        transition = supervisor.begin_transition({"B": "CPU"})
+        supervisor.await_transition(transition, timeout_s=60.0)
+        setup = time.perf_counter() - started
+        # Measured on this machine after the fix: setup p50 0.723 s for the 50-toggle
+        # walk, 0.866 s for a single-camera move in the six-toggle probe, and 1.1 s for a
+        # two-camera move. Before the fix a single-camera move's setup was 1.127 s and a
+        # two-camera move's 2.174 s - i.e. ~1.08 s of pure join grace per stream. The bound
+        # here is deliberately loose: it catches "still waiting out the grace" and not a
+        # slow machine.
+        self.assertLess(
+            setup, 3.0,
+            f"the teardown of one moved stream took {setup:.2f} s; before the fix this "
+            f"was a full join(1.0) before terminate(), and two streams cost 2.17 s")
+
+    def test_stopping_a_busy_three_stream_supervisor_does_not_wait_out_the_thread_grace(self):
+        supervisor = self._live()
+        # Let the queues fill, so a feeder is genuinely blocked writing to a full pipe -
+        # which is the state that cost the full grace per stream.
+        _wait_for(lambda: supervisor.drops > 0, seconds=30.0)
+        started = time.perf_counter()
+        supervisor.stop()
+        elapsed = time.perf_counter() - started
+        # Three streams. `STOP_GRACE_SECONDS` is 5.0 and `_halt_threads` joins three
+        # threads per stream, so waiting out the grace for every stream is at least 15 s.
+        # Measured 15.18 s before the fix and 0.84 s after.
+        self.assertLess(
+            elapsed, runner.STOP_GRACE_SECONDS,
+            f"stopping a busy three-stream supervisor took {elapsed:.2f} s, which is at "
+            f"least one thread's full {runner.STOP_GRACE_SECONDS} s grace on one stream "
+            f"and much more than that on three; the sentinel must reach the worker before "
+            f"the join, and the parent must drain its output while it exits")
+
+
 class DeadWorkerVisibility(unittest.TestCase):
     """**A worker that dies must become a failure somebody can see.** Task 3's first job.
 

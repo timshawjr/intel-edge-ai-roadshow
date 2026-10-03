@@ -106,6 +106,7 @@ class _Extents:
 
 __all__ = [
     "CPU_UNAVAILABLE_TEXT",
+    "DEFAULT_ROUTE_STREAM",
     "EXPLANATIONS",
     "FrameImageProvider",
     "RECORDED_FOOTAGE_LABEL",
@@ -116,6 +117,11 @@ __all__ = [
     "UTILISATION_UNAVAILABLE_TEXT",
     "UiBridge",
 ]
+
+#: The stream the booth screen is bound to. **One camera, one card** - Task 5 adds the
+#: other two. It is a named constant rather than a literal in three places so the bound
+#: stream is one decision, and so a test can import it instead of repeating `"A"`.
+DEFAULT_ROUTE_STREAM = "A"
 
 #: Spec §4: displayed continuously. **Not optional and not per-screen.**
 RECORDED_FOOTAGE_LABEL = "Recorded footage • live inference"
@@ -469,24 +475,62 @@ class UiBridge(QObject):
 
     @Slot(object)
     def apply_route(self, payload: object) -> None:
-        """Apply a route plan payload, on the UI thread. Guarded; see `apply_frame`.
+        """Apply **one stream's** route payload, on the UI thread. Guarded; see
+        `apply_frame`.
 
         **The whole reason these four slots exist is that nothing called them.** Until the
         live path was wired, `run_windowed` connected supervisor lambdas that emitted these
         signals and then nothing consumed them, so the badge, the metrics, the frame and
         the event counts stayed at their cold-start values for the whole session with no
         error anywhere.
+
+        ## M2 Task 4: the payload is per stream, and that is the whole change
+
+        `_on_route` used to publish one payload for "the first stream" whose `state` was
+        the **aggregate** `RoutePlan.state`. With one camera the aggregate is that camera's
+        state, so it was harmless; with three it is a lie - a plan where Camera A is running
+        and Camera C has failed publishes `"state": "active"`, and Camera A's card renders
+        a healthy route over a dead camera.
+
+        So each stream's payload is recorded separately in `_stream_routes`, and the card
+        reads **only** the stream named by `route_stream`. Two consequences worth stating:
+
+        - **A payload for another stream cannot move this card.** Its state, badge and
+          fallback flag are stored and never consulted by `device_display`.
+        - **`errors` is no longer part of the route payload.** `RoutePlan` carries no
+          per-stream error channel, so there is nothing per-stream to forward, and
+          forwarding the aggregate under a per-stream label is the defect being removed.
+          Stated reasons still reach the screen through `apply_error`, which is a running
+          log naming the stream it is about rather than a per-camera claim. Task 5, which
+          renders three cards, will need a real per-stream reason and this is where it
+          goes.
         """
         try:
             data = dict(payload)  # type: ignore[arg-type]
-            self.set_route(requested=data.get("requested"),
-                           confirmed=tuple(data.get("confirmed") or ()),
-                           state=str(data.get("state") or "pending"))
-            errors = tuple(str(e) for e in (data.get("errors") or ()))
-            if errors:
-                self.set_error(errors[-1])
+            stream = str(data.get("stream") or self._route_stream)
+            record = {
+                "requested": data.get("requested"),
+                "confirmed": tuple(data.get("confirmed") or ()),
+                # `None` when the stream has declared no state, kept as `None` so
+                # `stream_states` **omits** it rather than asserting a word for it. The
+                # coercion to a renderable word happens below, for the card only.
+                "state": data.get("state"),
+                "fell_back": data.get("fell_back"),
+            }
+            if self._stream_routes.get(stream) != record:
+                self._stream_routes[stream] = record
+                self.streamStatesChanged.emit()
+            if stream == self._route_stream:
+                # **The coercion is here and only here.** "Declared nothing" is drawn as
+                # `pending`, which claims nothing about health; the stored record keeps the
+                # `None` so anything reading `stream_states` sees the absence.
+                self.set_route(requested=record["requested"],
+                               confirmed=record["confirmed"],
+                               state=str(record["state"] or "pending"),
+                               fell_back=record["fell_back"])
             self.routeChanged.emit({"state": self._route_state,
-                                    "confirmed": self._device_confirmed})
+                                    "confirmed": self._device_confirmed,
+                                    "stream": stream})
         except Exception as exc:  # noqa: BLE001 - a slot failure is not a crash
             self._report_slot_failure("apply_route", exc)
 
@@ -653,6 +697,13 @@ class UiBridge(QObject):
     windowNotesChanged = Signal()
     #: The number of analysed frames changed. See `frames_analysed`.
     framesAnalysedChanged = Signal()
+    #: The **per-stream** route map changed. **M2 Task 4.**
+    #:
+    #: Declared separately from `routeStateChanged` because `route_state` is the state of
+    #: the *one* stream this screen is bound to, and a three-stream plan must not move it.
+    #: A screen with three cards (Task 5) will read `stream_states` per card; this signal
+    #: is what lets it re-read.
+    streamStatesChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -662,7 +713,20 @@ class UiBridge(QObject):
         self._device_requested: str | None = None
         self._route_state = "pending"
         self._route_fell_back = False
+        #: **Which stream this screen is showing.** The booth renders one camera, so one
+        #: card, and this names whose route that card is allowed to read. Everything the
+        #: card shows comes from this stream and nothing else - which is the point of the
+        #: per-stream migration, because the aggregate would put Camera A's card on Camera
+        #: C's health.
+        self._route_stream = str(DEFAULT_ROUTE_STREAM)
+        #: `stream_id -> {requested, confirmed, state, fell_back}`, kept for every stream
+        #: the supervisor has published, whether or not this card shows it.
+        self._stream_routes: dict[str, dict[str, Any]] = {}
         self._metrics: dict[str, float | None] = {name: None for name in OPTIONAL_METRICS}
+        #: How many analysed frames the `frame_age_*` percentiles are taken over. `0` means
+        #: "nobody has said", and `age_window_note` then renders nothing rather than a
+        #: number. See `_get_age_window_note`.
+        self._age_window_samples = 0
         #: The `MetricSample` each optional metric came from. Held so `window_text` can
         #: branch on `validity` - the obligation is about the *ordering*, and that needs
         #: the record, not just its value.
@@ -719,6 +783,55 @@ class UiBridge(QObject):
         return self._route_state
 
     route_state = Property(str, _get_route_state, notify=routeStateChanged)
+
+    def _get_route_stream(self) -> str:
+        """Which stream's route the single card is reading."""
+        return self._route_stream
+
+    route_stream = Property(str, _get_route_stream, notify=streamStatesChanged)
+
+    def _get_stream_states(self) -> dict:
+        """`stream_id -> that stream's own state`.
+
+        **`RoutePlan.state` is the aggregate and is not in here.** With three streams a
+        plan where Camera A is running and Camera C has failed publishes
+        `state == "active"`, and a card reading that shows a healthy route over a dead
+        camera. Each entry here is `RoutePlan.stream_state(stream)` - this camera's own
+        answer - and a stream that has declared none is **absent**, which QML must read
+        as unknown rather than as healthy.
+        """
+        return {sid: str(entry["state"]) for sid, entry in self._stream_routes.items()
+                if entry.get("state")}
+
+    stream_states = Property("QVariantMap", _get_stream_states,
+                             notify=streamStatesChanged)
+
+    def _get_stream_routes(self) -> dict:
+        """Every stream's route record: requested, confirmed, state, fell_back."""
+        return {sid: dict(entry) for sid, entry in self._stream_routes.items()}
+
+    stream_routes = Property("QVariantMap", _get_stream_routes,
+                             notify=streamStatesChanged)
+
+    def set_route_stream(self, stream_id: str) -> None:
+        """Point the single card at another camera's route.
+
+        The **only** per-stream field the card reads. Until Task 5 renders three cards
+        this is what makes "the screen is showing Camera A" a fact rather than an
+        assumption, and it is deliberately not reachable from QML: a binding that wrote it
+        would let the screen point itself at whichever stream answered last.
+        """
+        wanted = str(stream_id)
+        if wanted == self._route_stream:
+            return
+        self._route_stream = wanted
+        entry = self._stream_routes.get(wanted)
+        self.set_route(
+            requested=(entry or {}).get("requested"),
+            confirmed=tuple((entry or {}).get("confirmed") or ()),
+            state=str((entry or {}).get("state") or "pending"),
+            fell_back=(entry or {}).get("fell_back"))
+        self.streamStatesChanged.emit()
 
     def _get_ai_fps(self):
         return self._metrics["ai_fps"]
@@ -950,6 +1063,59 @@ class UiBridge(QObject):
         return {name: self.window_text(name) for name in self._metrics}
 
     window_notes = Property("QVariantMap", _get_window_notes, notify=windowNotesChanged)
+
+    def _get_age_window_note(self) -> str:
+        """What the `frame_age_p50_ms`/`p95_ms` figures are percentiles **of**.
+
+        ## Why this exists, and why it is a count and not a duration
+
+        Those two are percentiles of the supervisor's retained frame ages, which is a
+        `deque(maxlen=FRAME_AGE_WINDOW)`. They are **not** measured over a second, a tick,
+        or the session. The window is *the most recent N analysed frames*, and how many
+        seconds that is **depends on how fast the stream is being analysed** - which is the
+        number nobody can read off a percentile.
+
+        Measured on 2026-10-03, three streams on the CPU, 15 fps offered each:
+
+        - a stream keeping up at ~15 fps analyses ~15 frames/s, so 256 ages span **~17 s**;
+        - the same three cameras under six CPU saturators analysed ~3.5 fps (28 frames per
+          8 s), so 256 ages span **~73 s**;
+        - all three on the CPU with no saturators - spec section 5 row 4, the app's own
+          steady-state load - analysed 9.60-9.80 fps, so ~26 s, with a measured frame age
+          **p50 10.8-11.3 s over three consecutive 120 s holds** (Task 3). An earlier,
+          shorter hold read p50 8239 ms; the longer, repeated measurement is the one to
+          quote and the two are not interchangeable.
+
+        So a p50 of 8 seconds is the p50 of a ~26 s window and a p50 of 2 seconds is the
+        p50 of a ~17 s one. **Without the window the two are not comparable**, and the
+        field name does not carry it.
+
+        The count is **published, not imported**: `app.main` passes
+        `FRAME_AGE_WINDOW` in, so the constant stays in one place
+        (`app/supervisor/runner.py`) and this only formats what it is told. A bridge that
+        imported the supervisor to read the constant would drag the worker stack into the
+        UI module for a number.
+        """
+        samples = self._age_window_samples
+        if samples <= 0:
+            return ""
+        text = f"most recent {samples} analysed frames"
+        fps = self._metrics.get("ai_fps")
+        if fps is not None and fps > 0:
+            return f"{text} - about {samples / fps:.0f} s at {fps:.1f} fps"
+        # Not a guess and not a placeholder: the span is genuinely unknown until the
+        # stream's own rate has been measured, and saying so beats implying 15 fps.
+        return f"{text} - span depends on this stream's own rate"
+
+    age_window_note = Property(str, _get_age_window_note, notify=windowNotesChanged)
+
+    def set_age_window(self, samples: int) -> None:
+        """Record how many frame ages the percentiles are taken over. See the property."""
+        wanted = int(samples)
+        if wanted == self._age_window_samples:
+            return
+        self._age_window_samples = wanted
+        self.windowNotesChanged.emit()
 
     def _get_unavailable_notice(self) -> dict:
         """`deviceId -> what to show when that card has no figure`.
