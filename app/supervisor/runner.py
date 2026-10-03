@@ -1641,7 +1641,48 @@ class Supervisor(QObject):
                 self.accept_result(stream_id, generation, item)
 
     def _watch(self, stream_id: str, generation: int) -> None:
-        """Notice one worker that has exited. `multiprocessing` gives no usable callback."""
+        """Notice one worker that has exited. `multiprocessing` gives no usable callback.
+
+        ## What this is responsible for, and what it is not
+
+        **It is responsible for one thing: a child process that stops being alive becomes
+        a stated reason.** It polls `is_alive()` every `EXIT_POLL_SECONDS` (0.05 s),
+        works out *why* the process is gone - the injected compile-failure text plus which
+        stream and which device it happened to, or the bare exit code - and hands it to
+        `_on_failure`, which restarts the stream once and then fails it visibly.
+
+        It does **not** wait for a result, and it must not: a worker that wedges without
+        exiting is a different failure, and one that exits without producing anything is
+        exactly the case this handles. `is_alive()` is the only signal that does not
+        depend on the child cooperating.
+
+        ## Why it returns instead of failing the stream
+
+        Each of these returns is a case where this watchdog has nothing to say, and
+        getting that wrong is how a healthy transition turns into a failed one:
+
+        - `self._stopping` - `stop()` owns the outcome from here.
+        - `stream.generation != generation` - **a superseded worker dying says nothing
+          about the route that replaced it.** The replacement brought its own watchdog,
+          bound to its own generation; two of them racing to fail one stream would be the
+          bug, not the fix.
+        - `process is None` - the stream has been detached (by `_apply_devices`,
+          `_restart` or `stop`) and either has a new generation or is going away.
+
+        ## The invariant this depends on, and where it was broken
+
+        **A stream can only be watched if it was spawned.** There is no separate
+        liveness check for "pending with no process", so a stream that reaches `pending`
+        without a worker is invisible to every mechanism in this class: no child to die, no
+        watchdog to notice, no restart, no failure. That is not hypothetical - it is
+        exactly what happened (Task 3) while `_running` was also being used as a global
+        "some stream is failed" flag, which suppressed the spawn in
+        `_apply_devices`. `_running` no longer carries that meaning; see `_on_failure`.
+
+        The reason is the asymmetry: **a false negative here is silent and permanent, and a
+        false positive is a stated error an operator can act on.** Every loop above prefers
+        to stay quiet rather than blame the wrong generation.
+        """
         while True:
             time.sleep(EXIT_POLL_SECONDS)
             with self._lock:
@@ -2206,8 +2247,22 @@ class Supervisor(QObject):
             stream.state = "failed"
             # The load-bearing part: a failed route must not keep claiming a device.
             stream.confirmed = ()
-            self._running = self._running and any(
-                s.state != "failed" for s in self._streams.values())
+            # **Nothing else changes here, and that is the fix.** This used to read
+            # `self._running = self._running and any(s.state != "failed" ...)`, so once
+            # *every* stream had failed, `_running` went `False` - and `_running` is what
+            # gates the spawn: `_apply_devices` computes
+            # `running = self._running and not self._stopping` and skips `_spawn`
+            # altogether, and `_restart` returns early on the same flag. The consequence
+            # was measured (Task 3): after all three cameras had really died, the
+            # operator's retry left all three `pending` with **no process, no watchdog and
+            # `restart_count` 0**, for ever. Nothing could fail them and nothing could
+            # bring them back, and the recovery's published remedy - "re-selected on the
+            # same device, which does spawn a worker" - was false in exactly that state.
+            #
+            # A stream's health is `stream.state`, which `RoutePlan` and `StreamStats`
+            # already publish per stream. `_running` means what it is documented to mean
+            # and only that: *never started, or already stopped*. Conflating the two made
+            # a per-stream failure a global stop.
         guidance = (
             f"{reason}. The restart budget for stream {stream_id!r} at generation "
             f"{generation} is spent, so this route is failed and no device is being "

@@ -1,0 +1,62 @@
+{
+  "claim": "spec section 5 row 4, three streams on the CPU, no route change and no churn - the app's steady state. NOT comparable with the stress's frame ages, which are measured under churn.",
+  "seconds": 120.00705229991581,
+  "fps_offered_per_stream": 15.0,
+  "fps_offered_total": 45.0,
+  "frame_age_p50_ms": 11319.160400016699,
+  "frame_age_p95_ms": 12286.011129943654,
+  "per_stream": [
+    {
+      "stream_id": "A",
+      "requested_device": "CPU",
+      "state": "active",
+      "confirmed_devices": [
+        "CPU"
+      ],
+      "frames_accepted": 1800,
+      "frames_refused": 1,
+      "drops": 0,
+      "frames_analysed": 1613,
+      "frames_invalidated": 0,
+      "backlog": 187,
+      "frame_age_p50_ms": 11695.152150001377,
+      "frame_age_p95_ms": 12314.692449988797,
+      "window_samples": 256
+    },
+    {
+      "stream_id": "B",
+      "requested_device": "CPU",
+      "state": "active",
+      "confirmed_devices": [
+        "CPU"
+      ],
+      "frames_accepted": 1800,
+      "frames_refused": 1,
+      "drops": 0,
+      "frames_analysed": 1627,
+      "frames_invalidated": 0,
+      "backlog": 173,
+      "frame_age_p50_ms": 10671.560050046537,
+      "frame_age_p95_ms": 11423.528775048908,
+      "window_samples": 256
+    },
+    {
+      "stream_id": "C",
+      "requested_device": "CPU",
+      "state": "active",
+      "confirmed_devices": [
+        "CPU"
+      ],
+      "frames_accepted": 1800,
+      "frames_refused": 1,
+      "drops": 0,
+      "frames_analysed": 1620,
+      "frames_invalidated": 0,
+      "backlog": 180,
+      "frame_age_p50_ms": 11103.835350018926,
+      "frame_age_p95_ms": 11901.465550006833,
+      "window_samples": 256
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,2085 @@
+{
+  "transitions": 50,
+  "warm_elapsed_p50": 4.376046549936291,
+  "warm_elapsed_p95": 5.5259576300450135,
+  "warm_elapsed_max": 5.543193700024858,
+  "over_two_second": 50,
+  "discarded_results": 28,
+  "rss_start": 97996800,
+  "rss_end": 105721856,
+  "leak_bytes": 7725056,
+  "stale_overlays": 0,
+  "mislabelled_devices": 0,
+  "crashes": 0,
+  "warm_elapsed_min": 3.227537799975835,
+  "warm_elapsed_samples": [
+    3.259601900004782,
+    5.483283899957314,
+    3.2543976000742987,
+    5.483214700012468,
+    3.251987099996768,
+    5.467894300003536,
+    3.238660200033337,
+    5.477220400003716,
+    3.273659700062126,
+    5.4982361000729725,
+    3.3042504999320954,
+    5.4966562000336125,
+    3.288293099962175,
+    5.532198500004597,
+    3.258979900041595,
+    5.499859899980947,
+    3.2510075999889523,
+    5.5219231999944896,
+    3.26227549999021,
+    5.4940571000333875,
+    3.2362878000130877,
+    5.442338599939831,
+    3.2460951999528334,
+    5.526360200019553,
+    3.2481556000420824,
+    5.512701499974355,
+    3.227537799975835,
+    5.502641999977641,
+    3.232368600089103,
+    5.467602299991995,
+    3.2533710999414325,
+    5.50738960003946,
+    3.236227500019595,
+    5.5115440000081435,
+    3.309754499932751,
+    5.5254656000761315,
+    3.2662105000345036,
+    5.50546559994109,
+    3.236277899937704,
+    5.543193700024858,
+    3.2554494999349117,
+    5.4946328001096845,
+    3.261057600029744,
+    5.509929700056091,
+    3.228562399977818,
+    5.511125099961646,
+    3.267530499957502,
+    5.462733200052753,
+    3.2422506000148132,
+    5.461748900008388
+  ],
+  "setup_p50": 2.161278499988839,
+  "setup_p95": 2.1945652249618433,
+  "setup_max": 2.2135928999632597,
+  "setup_samples": [
+    2.169215300003998,
+    2.160609900020063,
+    2.1647450000746176,
+    2.1409092999529094,
+    2.1626834999769926,
+    2.147440299973823,
+    2.178441600059159,
+    2.1517179999500513,
+    2.1845345000037923,
+    2.1706433000508696,
+    2.212972200009972,
+    2.1400938000297174,
+    2.2014346999349073,
+    2.1630906999344006,
+    2.1804498999845237,
+    2.149510500021279,
+    2.1533909999998286,
+    2.1639527999795973,
+    2.185703699942678,
+    2.1597657999955118,
+    2.1595517999958247,
+    2.152753899921663,
+    2.158606300014071,
+    2.180199900059961,
+    2.1720231000799686,
+    2.161947099957615,
+    2.148534300038591,
+    2.163215299951844,
+    2.1630204000975937,
+    2.1579107000725344,
+    2.1861691999947652,
+    2.164375799940899,
+    2.1597718000411987,
+    2.1631266999756917,
+    2.2135928999632597,
+    2.1503644000040367,
+    2.1694359000539407,
+    2.1485498999245465,
+    2.1780007999623194,
+    2.1581708999583498,
+    2.1563923000358045,
+    2.1539307000348344,
+    2.1815336999716237,
+    2.1527059000218287,
+    2.1573547000298277,
+    2.1372901999857277,
+    2.1571158999577165,
+    2.1446140999905765,
+    2.1634197999956086,
+    2.133263000054285
+  ],
+  "wait_p50": 2.199990749999415,
+  "wait_p95": 3.371677060017828,
+  "wait_max": 3.38496039994061,
+  "acknowledged": 50,
+  "unconfirmed_samples": [],
+  "timeout_s": 30.0,
+  "censored_at_gate": false,
+  "over_two_second_confirmed": 50,
+  "wait_over_two_second": 25,
+  "retained_transitions_start": 1,
+  "retained_transitions_end": 51,
+  "retained_queues_start": 6,
+  "retained_queues_end": 206,
+  "leak_bytes_after_release": -3911680,
+  "rss_peak": 105721856,
+  "leak_bytes_per_transition": 154501.12,
+  "objects_before_release": 56083,
+  "objects_after_release": 50190,
+  "placements_confirmed": 50,
+  "placement_pids_matched": 50,
+  "discarded_mismatched": 0,
+  "frames_submitted": 7014,
+  "frames_refused": 2991,
+  "drops": 2988,
+  "results_delivered": 4765,
+  "error_results": 0,
+  "per_stream": [
+    {
+      "stream_id": "A",
+      "requested_device": "CPU",
+      "confirmed_devices": [
+        "CPU"
+      ],
+      "frames_accepted": 3334,
+      "frames_refused": 1,
+      "frames_refused_reasons": {
+        "not_running": 1
+      },
+      "drops": 0,
+      "state": "active",
+      "generations_seen": [
+        1
+      ],
+      "frame_attempts": 3335,
+      "frames_analysed": 3333,
+      "generation": 1,
+      "frames_invalidated": 0,
+      "reconciles": true,
+      "fell_back": false
+    },
+    {
+      "stream_id": "B",
+      "requested_device": "GPU",
+      "confirmed_devices": [
+        "GPU.0"
+      ],
+      "frames_accepted": 1840,
+      "frames_refused": 1,
+      "frames_refused_reasons": {
+        "not_running": 1
+      },
+      "drops": 1494,
+      "state": "active",
+      "generations_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "frame_attempts": 3335,
+      "frames_analysed": 1331,
+      "generation": 51,
+      "frames_invalidated": 100,
+      "reconciles": true,
+      "fell_back": false
+    },
+    {
+      "stream_id": "C",
+      "requested_device": "NPU",
+      "confirmed_devices": [
+        "NPU"
+      ],
+      "frames_accepted": 1840,
+      "frames_refused": 1,
+      "frames_refused_reasons": {
+        "not_running": 1
+      },
+      "drops": 1494,
+      "state": "active",
+      "generations_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "frame_attempts": 3335,
+      "frames_analysed": 51,
+      "generation": 51,
+      "frames_invalidated": 100,
+      "reconciles": true,
+      "fell_back": false
+    }
+  ],
+  "frame_age_p50_ms": 53.46329999156296,
+  "frame_age_p95_ms": 1594.5958500495176,
+  "stale_overlay_detail": [],
+  "mislabelled_detail": [],
+  "errors_at_end": [],
+  "pattern": "both",
+  "faulted_stream": null,
+  "fault_recovery": null,
+  "samples": [
+    {
+      "index": 0,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 2,
+      "elapsed_s": 3.259601900004782,
+      "transition_elapsed_s": 1.0903177000582218,
+      "setup_s": 2.169215300003998,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 25216,
+        "C": 27016
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 25216,
+        "C": 27016
+      },
+      "rss_before": 97996800
+    },
+    {
+      "index": 1,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 3,
+      "elapsed_s": 5.483283899957314,
+      "transition_elapsed_s": 3.3226024999748915,
+      "setup_s": 2.160609900020063,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 26964,
+        "C": 26184
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 26964,
+        "C": 26184
+      },
+      "rss_before": 93437952
+    },
+    {
+      "index": 2,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 4,
+      "elapsed_s": 3.2543976000742987,
+      "transition_elapsed_s": 1.0895887999795377,
+      "setup_s": 2.1647450000746176,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 17344,
+        "C": 24900
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 17344,
+        "C": 24900
+      },
+      "rss_before": 98648064
+    },
+    {
+      "index": 3,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 5,
+      "elapsed_s": 5.483214700012468,
+      "transition_elapsed_s": 3.3421889001037925,
+      "setup_s": 2.1409092999529094,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 24292,
+        "C": 3312
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 24292,
+        "C": 3312
+      },
+      "rss_before": 94060544
+    },
+    {
+      "index": 4,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 6,
+      "elapsed_s": 3.251987099996768,
+      "transition_elapsed_s": 1.0892510999692604,
+      "setup_s": 2.1626834999769926,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 11728,
+        "C": 4080
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 11728,
+        "C": 4080
+      },
+      "rss_before": 99131392
+    },
+    {
+      "index": 5,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 7,
+      "elapsed_s": 5.467894300003536,
+      "transition_elapsed_s": 3.320416699978523,
+      "setup_s": 2.147440299973823,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 25152,
+        "C": 26896
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 25152,
+        "C": 26896
+      },
+      "rss_before": 94289920
+    },
+    {
+      "index": 6,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 8,
+      "elapsed_s": 3.238660200033337,
+      "transition_elapsed_s": 1.0601550999563187,
+      "setup_s": 2.178441600059159,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 26796,
+        "C": 24448
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 26796,
+        "C": 24448
+      },
+      "rss_before": 99422208
+    },
+    {
+      "index": 7,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 9,
+      "elapsed_s": 5.477220400003716,
+      "transition_elapsed_s": 3.3254498000023887,
+      "setup_s": 2.1517179999500513,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 16164,
+        "C": 28396
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 16164,
+        "C": 28396
+      },
+      "rss_before": 95055872
+    },
+    {
+      "index": 8,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 10,
+      "elapsed_s": 3.273659700062126,
+      "transition_elapsed_s": 1.0890550999902189,
+      "setup_s": 2.1845345000037923,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 15024,
+        "C": 21856
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 15024,
+        "C": 21856
+      },
+      "rss_before": 99688448
+    },
+    {
+      "index": 9,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 11,
+      "elapsed_s": 5.4982361000729725,
+      "transition_elapsed_s": 3.3276053000008687,
+      "setup_s": 2.1706433000508696,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 6856,
+        "C": 16688
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 6856,
+        "C": 16688
+      },
+      "rss_before": 95682560
+    },
+    {
+      "index": 10,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 12,
+      "elapsed_s": 3.3042504999320954,
+      "transition_elapsed_s": 1.0912253999849781,
+      "setup_s": 2.212972200009972,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 22768,
+        "C": 28216
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 22768,
+        "C": 28216
+      },
+      "rss_before": 100012032
+    },
+    {
+      "index": 11,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 13,
+      "elapsed_s": 5.4966562000336125,
+      "transition_elapsed_s": 3.356528100091964,
+      "setup_s": 2.1400938000297174,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 24972,
+        "C": 16036
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 24972,
+        "C": 16036
+      },
+      "rss_before": 95375360
+    },
+    {
+      "index": 12,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 14,
+      "elapsed_s": 3.288293099962175,
+      "transition_elapsed_s": 1.0868338999571279,
+      "setup_s": 2.2014346999349073,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 25060,
+        "C": 14940
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 25060,
+        "C": 14940
+      },
+      "rss_before": 100806656
+    },
+    {
+      "index": 13,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 15,
+      "elapsed_s": 5.532198500004597,
+      "transition_elapsed_s": 3.3690694000106305,
+      "setup_s": 2.1630906999344006,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 20856,
+        "C": 25508
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 20856,
+        "C": 25508
+      },
+      "rss_before": 95916032
+    },
+    {
+      "index": 14,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 16,
+      "elapsed_s": 3.258979900041595,
+      "transition_elapsed_s": 1.078470200067386,
+      "setup_s": 2.1804498999845237,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 25748,
+        "C": 26628
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 25748,
+        "C": 26628
+      },
+      "rss_before": 100691968
+    },
+    {
+      "index": 15,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 17,
+      "elapsed_s": 5.499859899980947,
+      "transition_elapsed_s": 3.350334200076759,
+      "setup_s": 2.149510500021279,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 5088,
+        "C": 21048
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 5088,
+        "C": 21048
+      },
+      "rss_before": 95870976
+    },
+    {
+      "index": 16,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 18,
+      "elapsed_s": 3.2510075999889523,
+      "transition_elapsed_s": 1.0975783000467345,
+      "setup_s": 2.1533909999998286,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 3300,
+        "C": 16980
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 3300,
+        "C": 16980
+      },
+      "rss_before": 100384768
+    },
+    {
+      "index": 17,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 19,
+      "elapsed_s": 5.5219231999944896,
+      "transition_elapsed_s": 3.357938200002536,
+      "setup_s": 2.1639527999795973,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 27200,
+        "C": 13864
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 27200,
+        "C": 13864
+      },
+      "rss_before": 95784960
+    },
+    {
+      "index": 18,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 20,
+      "elapsed_s": 3.26227549999021,
+      "transition_elapsed_s": 1.0765497999964282,
+      "setup_s": 2.185703699942678,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 17376,
+        "C": 7860
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 17376,
+        "C": 7860
+      },
+      "rss_before": 101150720
+    },
+    {
+      "index": 19,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 21,
+      "elapsed_s": 5.4940571000333875,
+      "transition_elapsed_s": 3.334226100007072,
+      "setup_s": 2.1597657999955118,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 28268,
+        "C": 28448
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 28268,
+        "C": 28448
+      },
+      "rss_before": 96563200
+    },
+    {
+      "index": 20,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 22,
+      "elapsed_s": 3.2362878000130877,
+      "transition_elapsed_s": 1.076670299982652,
+      "setup_s": 2.1595517999958247,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 20504,
+        "C": 26644
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 20504,
+        "C": 26644
+      },
+      "rss_before": 101421056
+    },
+    {
+      "index": 21,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 23,
+      "elapsed_s": 5.442338599939831,
+      "transition_elapsed_s": 3.2895650999853387,
+      "setup_s": 2.152753899921663,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 26396,
+        "C": 17712
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 26396,
+        "C": 17712
+      },
+      "rss_before": 96886784
+    },
+    {
+      "index": 22,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 24,
+      "elapsed_s": 3.2460951999528334,
+      "transition_elapsed_s": 1.0874695000238717,
+      "setup_s": 2.158606300014071,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 21380,
+        "C": 6148
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 21380,
+        "C": 6148
+      },
+      "rss_before": 101019648
+    },
+    {
+      "index": 23,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 25,
+      "elapsed_s": 5.526360200019553,
+      "transition_elapsed_s": 3.3461233000271022,
+      "setup_s": 2.180199900059961,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 16020,
+        "C": 26408
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 16020,
+        "C": 26408
+      },
+      "rss_before": 97107968
+    },
+    {
+      "index": 24,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 26,
+      "elapsed_s": 3.2481556000420824,
+      "transition_elapsed_s": 1.076119799981825,
+      "setup_s": 2.1720231000799686,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 25908,
+        "C": 22272
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 25908,
+        "C": 22272
+      },
+      "rss_before": 101875712
+    },
+    {
+      "index": 25,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 27,
+      "elapsed_s": 5.512701499974355,
+      "transition_elapsed_s": 3.350742500042543,
+      "setup_s": 2.161947099957615,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 10880,
+        "C": 28504
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 10880,
+        "C": 28504
+      },
+      "rss_before": 97083392
+    },
+    {
+      "index": 26,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 28,
+      "elapsed_s": 3.227537799975835,
+      "transition_elapsed_s": 1.0789776999736205,
+      "setup_s": 2.148534300038591,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 16096,
+        "C": 19468
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 16096,
+        "C": 19468
+      },
+      "rss_before": 101761024
+    },
+    {
+      "index": 27,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 29,
+      "elapsed_s": 5.502641999977641,
+      "transition_elapsed_s": 3.3393919999944046,
+      "setup_s": 2.163215299951844,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 12984,
+        "C": 24636
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 12984,
+        "C": 24636
+      },
+      "rss_before": 97366016
+    },
+    {
+      "index": 28,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 30,
+      "elapsed_s": 3.232368600089103,
+      "transition_elapsed_s": 1.0692906000185758,
+      "setup_s": 2.1630204000975937,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 20288,
+        "C": 19036
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 20288,
+        "C": 19036
+      },
+      "rss_before": 102662144
+    },
+    {
+      "index": 29,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 31,
+      "elapsed_s": 5.467602299991995,
+      "transition_elapsed_s": 3.309633099939674,
+      "setup_s": 2.1579107000725344,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 12776,
+        "C": 26140
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 12776,
+        "C": 26140
+      },
+      "rss_before": 97611776
+    },
+    {
+      "index": 30,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 32,
+      "elapsed_s": 3.2533710999414325,
+      "transition_elapsed_s": 1.0671803000150248,
+      "setup_s": 2.1861691999947652,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 15508,
+        "C": 27116
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 15508,
+        "C": 27116
+      },
+      "rss_before": 102924288
+    },
+    {
+      "index": 31,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 33,
+      "elapsed_s": 5.50738960003946,
+      "transition_elapsed_s": 3.342989700031467,
+      "setup_s": 2.164375799940899,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 26828,
+        "C": 23696
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 26828,
+        "C": 23696
+      },
+      "rss_before": 98254848
+    },
+    {
+      "index": 32,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 34,
+      "elapsed_s": 3.236227500019595,
+      "transition_elapsed_s": 1.0764422999927774,
+      "setup_s": 2.1597718000411987,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 6204,
+        "C": 28440
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 6204,
+        "C": 28440
+      },
+      "rss_before": 103051264
+    },
+    {
+      "index": 33,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 35,
+      "elapsed_s": 5.5115440000081435,
+      "transition_elapsed_s": 3.3483951999805868,
+      "setup_s": 2.1631266999756917,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 24920,
+        "C": 27596
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 24920,
+        "C": 27596
+      },
+      "rss_before": 98611200
+    },
+    {
+      "index": 34,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 36,
+      "elapsed_s": 3.309754499932751,
+      "transition_elapsed_s": 1.0961110000498593,
+      "setup_s": 2.2135928999632597,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 21468,
+        "C": 11364
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 21468,
+        "C": 11364
+      },
+      "rss_before": 103141376
+    },
+    {
+      "index": 35,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 37,
+      "elapsed_s": 5.5254656000761315,
+      "transition_elapsed_s": 3.3750381000572816,
+      "setup_s": 2.1503644000040367,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 22772,
+        "C": 9436
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 22772,
+        "C": 9436
+      },
+      "rss_before": 98217984
+    },
+    {
+      "index": 36,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 38,
+      "elapsed_s": 3.2662105000345036,
+      "transition_elapsed_s": 1.0967326000100002,
+      "setup_s": 2.1694359000539407,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 13436,
+        "C": 1724
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 13436,
+        "C": 1724
+      },
+      "rss_before": 103751680
+    },
+    {
+      "index": 37,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 39,
+      "elapsed_s": 5.50546559994109,
+      "transition_elapsed_s": 3.3568672999972478,
+      "setup_s": 2.1485498999245465,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 24768,
+        "C": 9080
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 24768,
+        "C": 9080
+      },
+      "rss_before": 98807808
+    },
+    {
+      "index": 38,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 40,
+      "elapsed_s": 3.236277899937704,
+      "transition_elapsed_s": 1.0582465999759734,
+      "setup_s": 2.1780007999623194,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 6264,
+        "C": 14548
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 6264,
+        "C": 14548
+      },
+      "rss_before": 103923712
+    },
+    {
+      "index": 39,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 41,
+      "elapsed_s": 5.543193700024858,
+      "transition_elapsed_s": 3.38496039994061,
+      "setup_s": 2.1581708999583498,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 17168,
+        "C": 21996
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 17168,
+        "C": 21996
+      },
+      "rss_before": 98889728
+    },
+    {
+      "index": 40,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 42,
+      "elapsed_s": 3.2554494999349117,
+      "transition_elapsed_s": 1.0989861999405548,
+      "setup_s": 2.1563923000358045,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 21460,
+        "C": 13912
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 21460,
+        "C": 13912
+      },
+      "rss_before": 104542208
+    },
+    {
+      "index": 41,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 43,
+      "elapsed_s": 5.4946328001096845,
+      "transition_elapsed_s": 3.340627899975516,
+      "setup_s": 2.1539307000348344,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 6172,
+        "C": 19148
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 6172,
+        "C": 19148
+      },
+      "rss_before": 99303424
+    },
+    {
+      "index": 42,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 44,
+      "elapsed_s": 3.261057600029744,
+      "transition_elapsed_s": 1.0794714000076056,
+      "setup_s": 2.1815336999716237,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 20524,
+        "C": 27740
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 20524,
+        "C": 27740
+      },
+      "rss_before": 104517632
+    },
+    {
+      "index": 43,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 45,
+      "elapsed_s": 5.509929700056091,
+      "transition_elapsed_s": 3.3571906000142917,
+      "setup_s": 2.1527059000218287,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 14172,
+        "C": 24060
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 14172,
+        "C": 24060
+      },
+      "rss_before": 99647488
+    },
+    {
+      "index": 44,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 46,
+      "elapsed_s": 3.228562399977818,
+      "transition_elapsed_s": 1.071140700019896,
+      "setup_s": 2.1573547000298277,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 26352,
+        "C": 6712
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 26352,
+        "C": 6712
+      },
+      "rss_before": 104599552
+    },
+    {
+      "index": 45,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 47,
+      "elapsed_s": 5.511125099961646,
+      "transition_elapsed_s": 3.3738106000237167,
+      "setup_s": 2.1372901999857277,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 1220,
+        "C": 11580
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 1220,
+        "C": 11580
+      },
+      "rss_before": 100126720
+    },
+    {
+      "index": 46,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 48,
+      "elapsed_s": 3.267530499957502,
+      "transition_elapsed_s": 1.1104164000134915,
+      "setup_s": 2.1571158999577165,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 21620,
+        "C": 1964
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 21620,
+        "C": 1964
+      },
+      "rss_before": 105357312
+    },
+    {
+      "index": 47,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 49,
+      "elapsed_s": 5.462733200052753,
+      "transition_elapsed_s": 3.3181018999312073,
+      "setup_s": 2.1446140999905765,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 27504,
+        "C": 24112
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 27504,
+        "C": 24112
+      },
+      "rss_before": 100290560
+    },
+    {
+      "index": 48,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 50,
+      "elapsed_s": 3.2422506000148132,
+      "transition_elapsed_s": 1.0787643999792635,
+      "setup_s": 2.1634197999956086,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 20364,
+        "C": 17236
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 20364,
+        "C": 17236
+      },
+      "rss_before": 105304064
+    },
+    {
+      "index": 49,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 51,
+      "elapsed_s": 5.461748900008388,
+      "transition_elapsed_s": 3.3284517000429332,
+      "setup_s": 2.133263000054285,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 28140,
+        "B": 22212,
+        "C": 22604
+      },
+      "pids_after": {
+        "A": 28140,
+        "B": 22212,
+        "C": 22604
+      },
+      "rss_before": 100728832
+    }
+  ],
+  "leak_after_retention": 11636736,
+  "host": {
+    "pid": 27004,
+    "python": "3.12.10"
+  },
+  "note": "frame_age_p50_ms/p95_ms here are measured under churn and are NOT the app's steady-state latency; spec section 5 row 4 unsaturated is the M2 headline."
+}

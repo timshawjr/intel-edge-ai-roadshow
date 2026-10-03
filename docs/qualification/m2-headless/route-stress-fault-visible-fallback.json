@@ -1,0 +1,388 @@
+{
+  "transitions": 6,
+  "warm_elapsed_p50": 2.9006425500265323,
+  "warm_elapsed_p95": 2.9461047000077087,
+  "warm_elapsed_max": 2.9591830000281334,
+  "over_two_second": 6,
+  "discarded_results": 4,
+  "rss_start": 96059392,
+  "rss_end": 150188032,
+  "leak_bytes": 54128640,
+  "stale_overlays": 0,
+  "mislabelled_devices": 0,
+  "crashes": 0,
+  "warm_elapsed_min": 2.142607699963264,
+  "warm_elapsed_samples": [
+    2.142607699963264,
+    2.8972849999554455,
+    2.9591830000281334,
+    2.6984543000580743,
+    2.906869799946435,
+    2.904000100097619
+  ],
+  "setup_p50": 1.1038119500153698,
+  "setup_p95": 1.1540816250781063,
+  "setup_max": 1.1640577000798658,
+  "setup_samples": [
+    1.124153400072828,
+    1.0975632999325171,
+    1.1640577000798658,
+    1.0889696000376716,
+    1.1021031000418589,
+    1.1055207999888808
+  ],
+  "wait_p50": 1.737005299946759,
+  "wait_p95": 1.765607524983352,
+  "wait_max": 1.7661874999757856,
+  "acknowledged": 2,
+  "unconfirmed_samples": [
+    1,
+    2,
+    4,
+    5
+  ],
+  "timeout_s": 30.0,
+  "censored_at_gate": true,
+  "over_two_second_confirmed": 2,
+  "wait_over_two_second": 0,
+  "retained_transitions_start": 1,
+  "retained_transitions_end": 7,
+  "retained_queues_start": 10,
+  "retained_queues_end": 58,
+  "leak_bytes_after_release": 49119232,
+  "rss_peak": 150183936,
+  "leak_bytes_per_transition": 9021440.0,
+  "objects_before_release": 52068,
+  "objects_after_release": 50569,
+  "placements_confirmed": 2,
+  "placement_pids_matched": 0,
+  "discarded_mismatched": 0,
+  "frames_submitted": 2576,
+  "frames_refused": 1042,
+  "drops": 144,
+  "results_delivered": 2231,
+  "error_results": 0,
+  "per_stream": [
+    {
+      "stream_id": "A",
+      "requested_device": "CPU",
+      "confirmed_devices": [
+        "CPU"
+      ],
+      "frames_accepted": 1205,
+      "frames_refused": 1,
+      "frames_refused_reasons": {
+        "not_running": 1
+      },
+      "drops": 0,
+      "state": "active",
+      "generations_seen": [
+        1
+      ],
+      "frame_attempts": 1206,
+      "frames_analysed": 1202,
+      "generation": 1,
+      "frames_invalidated": 0,
+      "reconciles": true,
+      "fell_back": false
+    },
+    {
+      "stream_id": "B",
+      "requested_device": "GPU",
+      "confirmed_devices": [
+        "GPU.0"
+      ],
+      "frames_accepted": 1118,
+      "frames_refused": 1,
+      "frames_refused_reasons": {
+        "not_running": 1
+      },
+      "drops": 87,
+      "state": "active",
+      "generations_seen": [
+        1,
+        5,
+        6,
+        8,
+        10,
+        11,
+        13
+      ],
+      "frame_attempts": 1206,
+      "frames_analysed": 1010,
+      "generation": 13,
+      "frames_invalidated": 12,
+      "reconciles": true,
+      "fell_back": false
+    },
+    {
+      "stream_id": "C",
+      "requested_device": "NPU",
+      "confirmed_devices": [],
+      "frames_accepted": 253,
+      "frames_refused": 896,
+      "frames_refused_reasons": {
+        "not_running": 1,
+        "failed": 895
+      },
+      "drops": 57,
+      "state": "pending",
+      "generations_seen": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14
+      ],
+      "frame_attempts": 1206,
+      "frames_analysed": 0,
+      "generation": 14,
+      "frames_invalidated": 13,
+      "reconciles": true,
+      "fell_back": false
+    }
+  ],
+  "frame_age_p50_ms": 36.512000020593405,
+  "frame_age_p95_ms": 993.3805199922061,
+  "stale_overlay_detail": [],
+  "mislabelled_detail": [],
+  "errors_at_end": [
+    "route transition to generation 13 was not acknowledged: stream(s) ['C'] did not confirm a placement on {'C': 'CPU'} within 1.733 s (bounded_by='timeout'). 0 result(s) from the superseded generation were discarded. Recovering {'C': 'NPU'} - the last healthy route - and stating the failure rather than claiming the requested device. What the failing route said: stream C: (\"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'CPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'CPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'CPU'). The restart budget for stream 'C' at generation 13 is spent, so this route is failed and no device is being claimed for it. The requested device 'CPU' is recorded; re-select one to try again. The other streams are unaffected.\")"
+  ],
+  "pattern": "table",
+  "faulted_stream": "C",
+  "fault_recovery": {
+    "stream": "C",
+    "state": "failed",
+    "requested_device": "NPU",
+    "confirmed_devices": [],
+    "pid": null,
+    "restart_count": 1,
+    "errors": [
+      "route transition to generation 1 was not acknowledged: stream(s) ['C'] did not confirm a placement on {'C': 'NPU'} within 1.825 s (bounded_by='timeout'). 0 result(s) from the superseded generation were discarded. Nothing to recover for stream(s) ['C']: they are already on {'C': 'NPU'}, the device the recovery wanted, so there was no route change to make. They were **failed** with no worker, so they have been re-selected on the same device, which does spawn a worker and gives them a fresh restart budget. What the failing route said: stream C: (\"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU'). The restart budget for stream 'C' at generation 1 is spent, so this route is failed and no device is being claimed for it. The requested device 'NPU' is recorded; re-select one to try again. The other streams are unaffected.\")",
+      "COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')",
+      "COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')",
+      "COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU'). The restart budget for stream 'C' at generation 2 is spent, so this route is failed and no device is being claimed for it. The requested device 'NPU' is recorded; re-select one to try again. The other streams are unaffected."
+    ],
+    "states_a_failed_route_must_never_claim": true,
+    "after_reselect_state": "failed",
+    "after_reselect_device": "CPU",
+    "after_reselect_confirmed": [],
+    "after_reselect_pid": null
+  },
+  "samples": [
+    {
+      "index": 0,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 5,
+      "elapsed_s": 2.142607699963264,
+      "transition_elapsed_s": 1.0184041999746114,
+      "setup_s": 1.124153400072828,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 18992,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 18992,
+        "C": null
+      },
+      "rss_before": 106278912
+    },
+    {
+      "index": 1,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "CPU"
+      },
+      "acknowledged": false,
+      "bounded_by": "timeout",
+      "generation": 6,
+      "elapsed_s": 2.8972849999554455,
+      "transition_elapsed_s": 1.7638676000060514,
+      "setup_s": 1.0975632999325171,
+      "unconfirmed": [
+        "C"
+      ],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 5780,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 5780,
+        "C": 24628
+      },
+      "rss_before": 114802688
+    },
+    {
+      "index": 2,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "acknowledged": false,
+      "bounded_by": "timeout",
+      "generation": 8,
+      "elapsed_s": 2.9591830000281334,
+      "transition_elapsed_s": 1.7408987999660894,
+      "setup_s": 1.1640577000798658,
+      "unconfirmed": [
+        "C"
+      ],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 9272,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 9272,
+        "C": 25068
+      },
+      "rss_before": 123473920
+    },
+    {
+      "index": 3,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "acknowledged": true,
+      "bounded_by": "confirmed",
+      "generation": 10,
+      "elapsed_s": 2.6984543000580743,
+      "transition_elapsed_s": 1.6094516000011936,
+      "setup_s": 1.0889696000376716,
+      "unconfirmed": [],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 8672,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 8672,
+        "C": null
+      },
+      "rss_before": 127451136
+    },
+    {
+      "index": 4,
+      "target": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "NPU"
+      },
+      "acknowledged": false,
+      "bounded_by": "timeout",
+      "generation": 11,
+      "elapsed_s": 2.906869799946435,
+      "transition_elapsed_s": 1.7661874999757856,
+      "setup_s": 1.1021031000418589,
+      "unconfirmed": [
+        "C"
+      ],
+      "confirmed": {
+        "B": [
+          "CPU"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 19996,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 19996,
+        "C": 6368
+      },
+      "rss_before": 136429568
+    },
+    {
+      "index": 5,
+      "target": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "CPU"
+      },
+      "acknowledged": false,
+      "bounded_by": "timeout",
+      "generation": 13,
+      "elapsed_s": 2.904000100097619,
+      "transition_elapsed_s": 1.7331117999274284,
+      "setup_s": 1.1055207999888808,
+      "unconfirmed": [
+        "C"
+      ],
+      "confirmed": {
+        "B": [
+          "GPU.0"
+        ]
+      },
+      "discarded_results": 0,
+      "pids_at_confirm": {
+        "A": 3432,
+        "B": 22716,
+        "C": null
+      },
+      "pids_after": {
+        "A": 3432,
+        "B": 22716,
+        "C": 23708
+      },
+      "rss_before": 140652544
+    }
+  ],
+  "leak_after_retention": 5009408,
+  "host": {
+    "pid": 14240,
+    "python": "3.12.10"
+  },
+  "note": "frame_age_p50_ms/p95_ms here are measured under churn and are NOT the app's steady-state latency; spec section 5 row 4 unsaturated is the M2 headline."
+}

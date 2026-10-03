@@ -1093,6 +1093,158 @@ class SupersededResults(unittest.TestCase):
         self.assertTrue(stats.reconciles(), stats.to_json())
 
 
+class DeadWorkerVisibility(unittest.TestCase):
+    """**A worker that dies must become a failure somebody can see.** Task 3's first job.
+
+    The symptom was found while proving that a `failed` stream reaches the no-move
+    recovery branch, and reported as *"a worker that dies without producing a result
+    leaves its stream `pending` for ever - `restart_count` 0, `pid_for` returns `None`,
+    and the watchdog does not treat it as a failure"*.
+
+    **The watchdog was not at fault, and the honest root cause is one level up.** Measured
+    with every camera `compile_failure`-injected: after all three had really died,
+    `Supervisor._running` was `False`; `begin_transition` computes
+    `running = self._running and not self._stopping` (`runner.py:1813`) and therefore
+    **skipped `_spawn` altogether**. The streams went `pending` with no process, so there
+    was no child to die, no watchdog to notice, and nothing that could ever move them again.
+    `restart_count` was 0 because `_on_failure` had not been called once.
+
+    That also made round 2's published remedy false in this state - *"they have been
+    re-selected on the same device, which does spawn a worker"* - when every stream is
+    failed, because `_apply_devices` refused to spawn for exactly the same reason.
+
+    So the class asserts the property, not the mechanism: **after every stream has failed,
+    a route change that names them must give each one a worker**, and a stream with no
+    worker must not sit at `pending` for ever.
+    """
+
+    def setUp(self):
+        self._made: list[Supervisor] = []
+
+    def tearDown(self):
+        for supervisor in self._made:
+            supervisor.stop()
+
+    def _all_failed(self):
+        """A started supervisor whose every stream really died, and is really `failed`.
+
+        `compile_failure` makes the child process raise before it compiles, so this is a
+        real death with a real exit code and a real watchdog noticing it - not an injected
+        state variable.
+        """
+        reason = _require_cpu()
+        if reason:
+            self.skipTest(f"cannot build a real dead worker: {reason}")
+        supervisor = Supervisor(device_ids=("CPU", "CPU", "CPU"),
+                                compile_failure=["A", "B", "C"])
+        self._made.append(supervisor)
+        supervisor.start()
+        gone = _wait_for(
+            lambda: all(supervisor.stream_state(sid) == "failed"
+                        for sid in ("A", "B", "C")),
+            seconds=120.0)
+        self.assertTrue(gone,
+                        "premise: every stream must really have failed first; "
+                        f"A={supervisor.stream_state('A')} "
+                        f"B={supervisor.stream_state('B')} "
+                        f"C={supervisor.stream_state('C')}")
+        # `errors()` and not the `error_raised` signal: the signal is emitted from the
+        # watchdog thread and Qt **queues** it to this thread, which has no event loop
+        # running, so listening for it here would measure the absence of a `QApplication`
+        # rather than the presence of a stated reason. `errors()` is the recorded text,
+        # which is what a card reads anyway.
+        errors = supervisor.errors()
+        for sid in ("A", "B", "C"):
+            self.assertTrue(any(f"stream {sid!r}" in text for text in errors),
+                            f"the death of {sid} must be stated on the supervisor; "
+                            f"errors={errors!r}")
+        return supervisor, errors
+
+    def test_a_retry_after_every_stream_failed_brings_the_workers_back(self):
+        supervisor, _errors = self._all_failed()
+        before = len(supervisor.errors())
+
+        # The operator's action: re-select the devices every stream is already recorded on.
+        # `failed` is always `affected`, so all three are named and the generation moves -
+        # the route change is real and must be followed by a real spawn.
+        supervisor.select_devices({"A": "CPU", "B": "CPU", "C": "CPU"})
+
+        # **A worker exists for each one, synchronously, by the time the call returns.**
+        # Read on the internal `_Stream` because the public `pid_for` is liveness-aware:
+        # these children raise immediately, so a live pid is not observable and asserting
+        # on it would be asserting on a race. The claim here is "a process was started".
+        for sid in ("A", "B", "C"):
+            self.assertIsNotNone(_private_stream(supervisor, sid).process,
+                                 f"stream {sid} was re-selected but no worker was spawned; "
+                                 f"state={supervisor.stream_state(sid)!r}. A stream with "
+                                 f"no worker has no watchdog, so nothing can ever fail it "
+                                 f"or bring it back.")
+
+        # And the outcome is visible: each stream must leave `pending` and end `failed`
+        # again, with the death stated. Before the fix this wait ran out with all three
+        # still `pending` and `restart_count` 0.
+        for sid in ("A", "B", "C"):
+            self.assertIsNotNone(supervisor.restart_count_for(sid),
+                                 f"premise: {sid} spent its budget once already")
+
+        resolved = _wait_for(
+            lambda: all(supervisor.stream_state(sid) == "failed"
+                        for sid in ("A", "B", "C")),
+            seconds=120.0)
+        self.assertTrue(
+            resolved,
+            "a re-selected failed stream must end up failed again with the death stated, "
+            f"not pending for ever: "
+            + ", ".join(f"{sid}={supervisor.stream_state(sid)!r}"
+                        for sid in ("A", "B", "C")))
+        self.assertGreater(len(supervisor.errors()), before - 3,
+                           f"the retry's own deaths must be on record; errors so far: "
+                           f"{supervisor.errors()!r}")
+        # **Generation-scoped, which is what makes it the retry's deaths rather than the
+        # originals replayed.** `select_devices` clears each affected stream's errors and
+        # moves the generation on, so the guidance left after a retry names the *new*
+        # generation. Before the fix nothing was re-spawned, so the only text on record
+        # still named generation 1.
+        for sid in ("A", "B", "C"):
+            self.assertTrue(
+                any(f"restart budget for stream {sid!r} at generation 2" in text
+                    for text in supervisor.errors()),
+                f"the retry of {sid} failed at generation 2 and must say so; "
+                f"errors={supervisor.errors()!r}")
+
+    def test_a_retry_brings_back_exactly_one_stream_and_leaves_the_others_failed(self):
+        # The negative control for the test above: a route change that names **one**
+        # failed stream must not quietly revive the others. Without this, a fix that simply
+        # cleared the failure bookkeeping would pass the test above while resurrecting
+        # cameras the operator had not touched.
+        supervisor, _errors = self._all_failed()
+        before = {sid: _private_stream(supervisor, sid).process
+                  for sid in ("A", "B", "C")}
+        supervisor.select_devices({"B": "CPU"})
+        self.assertIsNotNone(_private_stream(supervisor, "B").process,
+                             "the named stream must get a worker")
+        self.assertIsNot(before["B"], _private_stream(supervisor, "B").process,
+                         "and it must be a *new* process, not the dead one it had")
+        for sid in ("A", "C"):
+            self.assertEqual(supervisor.stream_state(sid), "failed",
+                             f"{sid} was not named and must be left exactly as it was")
+            # Identity, not existence: a stream that has already died keeps its dead
+            # `Process` object attached on purpose, because `stop()` and `_restart` need
+            # it to join and terminate. `pid_for` already reports that as no worker. So
+            # "nothing was started for A" means the object is *the same one*.
+            self.assertIs(before[sid], _private_stream(supervisor, sid).process,
+                          f"{sid} was not named, so no new process may have been started")
+            self.assertIsNone(supervisor.pid_for(sid),
+                              f"{sid} was not named and its old child is dead, so it has "
+                              f"no worker")
+        # A and C keep the reasons they already had; nothing new is claimed about them.
+        for sid in ("A", "C"):
+            self.assertTrue(any(f"restart budget for stream {sid!r} at generation 1" in text
+                                for text in supervisor.errors()),
+                            f"the original failure of {sid} is still on record, at the "
+                            f"generation it happened: {supervisor.errors()!r}")
+
+
 class FailedStreamRecovery(unittest.TestCase):
     """**The Critical finding:** a recovery that cannot recover must not claim it did.
 
