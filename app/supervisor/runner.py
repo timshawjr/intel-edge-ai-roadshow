@@ -870,6 +870,15 @@ class Supervisor(QObject):
                 state=self._aggregate_state(),
                 errors=self._all_errors(),
                 stream_states={sid: s.state for sid, s in self._streams.items()},
+                # **M2 Task 5: the per-stream reason channel.** `_Stream.errors` has
+                # always been per stream - it is cleared by that stream's own
+                # `clear_proof()` and appended to by that stream's own failures - and only
+                # the *concatenation* was ever published. The concatenation is the wrong
+                # thing to put on a card: with three streams it shows Camera C's failure
+                # carrying Camera A's and B's sentences, and a card reading `failed` with
+                # no reason of its own asks the presenter to work out which camera died.
+                stream_errors={sid: tuple(s.errors) for sid, s in self._streams.items()
+                               if s.errors},
             )
 
     def _aggregate_state(self) -> str:
@@ -1239,6 +1248,24 @@ class Supervisor(QObject):
             for sid in self._order:
                 out.extend(self._streams[sid].frame_ages_ms)
             return tuple(out)
+
+    def stream_frame_ages_ms(self, stream_id: str) -> tuple[float, ...]:
+        """**This one stream's** recent frame ages, in milliseconds.
+
+        **M2 Task 5 addition, and it is not a convenience.** `frame_ages_ms()` merges all
+        three streams into one population, and the measured unsaturated three-stream
+        condition - spec section 5 row 4, all three on the CPU - is bimodal enough that a
+        merged p50 is a number about no camera at all. A card that shows it would be
+        showing the average lateness of three streams on a card for one of them, and the
+        presenter would read it as that camera's.
+
+        Same bounded window as the merged accessor: the most recent
+        `FRAME_AGE_WINDOW` ages **for this stream**, so the merged figure is not the mean
+        of three windows either - it is the percentile of up to 3 x 256 samples.
+        """
+        with self._lock:
+            stream = self._streams.get(str(stream_id))
+            return tuple(stream.frame_ages_ms) if stream is not None else ()
 
     # -- generation-scoped result acceptance -------------------------------------------
 

@@ -841,6 +841,13 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
         return 2
 
     supervisor.start()
+    # **Declare the cameras before the event loop starts**, so the metrics column holds one
+    # card per camera from the very first rendered frame with honest cold values -
+    # `pending`, `unavailable`, no device - instead of being empty until the first route
+    # payload arrives. An empty column on a cold start is indistinguishable from a broken
+    # screen. Declaring a stream claims nothing: every figure still reads `unavailable`
+    # until something is measured.
+    bridge.set_streams(list(supervisor.stream_ids))
     _start_feeders(bridge, supervisor, clip)
     _start_telemetry(bridge, supervisor, application)
     if select:
@@ -1037,13 +1044,19 @@ def _on_route(bridge: Any, plan: Any) -> None:
     - **one payload per stream**, each carrying `plan.stream_state(stream)` - that
       camera's own answer, not the panel's;
     - `fell_back` per stream, from `plan.fell_back(stream)`, which is also per stream and
-      was previously never published at all;
-    - **no `errors` key.** `RoutePlan` has no per-stream error channel, so there is
-      nothing per-stream to forward, and forwarding `plan.errors` under a per-stream label
-      is the same defect with a different field name. Stated reasons still reach the
-      screen through `_append_error` -> `apply_error`, a running log that names its stream.
-      Task 5's three cards will need a real per-stream reason; that gap is recorded there
-      rather than papered over here.
+      was previously never published at all.
+
+    ## M2 Task 5: `errors` comes back, and it is that stream's own
+
+    Task 4 removed the `errors` key and said why: `RoutePlan` had no per-stream error
+    channel, so forwarding `plan.errors` under a per-stream label would be the same defect
+    with a different field name. **Task 5 added the channel** - `RoutePlan.stream_errors`,
+    populated by `Supervisor.route_plan()` - so the reason a camera's card reads is now
+    that camera's reason.
+
+    The gap Task 4 recorded is therefore closed rather than papered over: a card showing
+    `failed` no longer leaves the presenter to work out which of three cameras died and
+    why, and it cannot show another camera's sentences instead.
 
     Emitting per stream rather than one payload with a map keeps the payload shape a plain
     flat dict, which is what `UiBridge.apply_route` already guards and what a queued
@@ -1062,6 +1075,9 @@ def _on_route(bridge: Any, plan: Any) -> None:
             # only at the point of rendering.
             "state": plan.stream_state(stream),
             "fell_back": plan.fell_back(stream),
+            # **This stream's own reasons**, newest last. Never `plan.errors`, which is
+            # the concatenation of all three.
+            "errors": list(plan.stream_reasons(stream)),
         })
 
 
@@ -1249,7 +1265,12 @@ def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
 
     - **Three streams on the CPU, no saturators** (spec section 5 row 4, the app's own
       load): each analysed 9.60-9.80 fps while being offered 15, so the window spans
-      **~26 s** and the reported p50/p95 are 8239 ms / 12469 ms.
+      **~26 s** and the frame ages over three consecutive 120 s holds were p50
+      **10767 / 11085 / 11319 ms** and p95 **11626 / 11905 / 12286 ms** (Task 3's
+      `measure_steady_state`, one camera per hold). **An earlier, shorter hold read p50
+      8239 ms / p95 12469 ms** and those numbers are the ones this docstring used to quote;
+      the longer repeated measurement is the one to quote, and the two are not
+      interchangeable.
     - **Six CPU saturators alongside the app** (the §5 hardware proof, a synthetic
       stand-in for "a busy machine", not the app's own load): the same three cameras
       analysed ~3.5 fps - 28 frames per 8 s - so the window spans **~73 s**.
@@ -1315,8 +1336,78 @@ def _publish_derived_metrics(bridge: Any, supervisor: Any,
     # results, so the row does not flicker between "unavailable" and `0` every time a
     # result is queued but its slot has not run yet.
     bridge.set_frames_analysed(analysed)
+    _publish_stream_metrics(bridge, supervisor, previous, window)
     previous["at"] = now
     previous["analysed"] = analysed
+
+
+def _publish_stream_metrics(bridge: Any, supervisor: Any,
+                            previous: dict[str, float], window: float) -> None:
+    """Push **each stream's own** lateness, backlog and rate to the bridge. UI thread.
+
+    ## Why this exists: the merged figure is the most dangerous number this project has
+
+    Measured, unsaturated, three streams on the CPU - which is spec section 5 row 4, a
+    state the booth will be in on a quiet day - gives per-stream frame age **p50 10767 /
+    11085 / 11319 ms** and **p95 11626 / 11905 / 12286 ms**, a backlog of **170-187 frames
+    per stream**, each stream analysing about **13.5 of the 15 fps** offered, **zero
+    drops**, and all three streams reporting `active`.
+
+    That is a picture **eleven seconds old**, while every counter on the old screen reads
+    healthy: no drops, an active state, a plausible fps. Nothing said the picture was stale.
+    So the per-stream number is published, and the card says it in words
+    (`UiBridge.STALE_AFTER_SECONDS`, quoted from spec section 7).
+
+    **Frame age is not inference cost, and the two are never added or averaged.** On the
+    NPU the measured p95 frame age is seconds while the inference itself costs ~5.9 ms; the
+    gap is queue wait. They are two different claims with two different words, and merging
+    them would produce a number that is true of neither.
+
+    **Per stream, never merged.** `supervisor.frame_ages_ms()` returns the percentile of up
+    to 3 x 256 samples across all three cameras, which is a figure about no camera; a card
+    showing it would be showing an average on a card for one of them. So this reads
+    `stream_frame_ages_ms(stream)` for each stream and computes its own percentiles.
+
+    **Backlog** is `frames_accepted - frames_analysed - frames_invalidated`: submitted,
+    taken off the queue and thrown away by a route change are all excluded, so what is
+    left is the queue's own depth. The frame age is a consequence of that backlog rather
+    than a cause of it, which is why the card shows both.
+
+    **Per-stream fps is a real second derivative** - the previous tick's count for the same
+    stream, not the aggregate - so one camera's backlog cannot make another's card look
+    fast. `None` before a stream has analysed anything, which the card renders as
+    `unavailable` rather than `0 fps`: a camera that has done no work is not a camera
+    running at zero frames per second.
+
+    **`window` is passed in** rather than measured again here. It is the interval the caller
+    already computed for its own aggregate rate, and re-reading `perf_counter()` here would
+    measure a *different, slightly shorter* interval - so the per-stream rates and the
+    aggregate rate would be over slightly different windows and neither could be checked
+    against the other. It also makes the publisher testable without a clock.
+    """
+    counters = previous.setdefault("per_stream", {})
+    for stats in supervisor.per_stream():
+        sid = stats.stream_id
+        ages = supervisor.stream_frame_ages_ms(sid)
+        p50 = _percentile(ages, 0.50)
+        p95 = _percentile(ages, 0.95)
+        prior = counters.get(sid)
+        fps = None
+        if window > 0 and prior is not None and stats.frames_analysed >= prior:
+            fps = (stats.frames_analysed - prior) / window
+        counters[sid] = stats.frames_analysed
+        backlog = (stats.frames_accepted - stats.frames_analysed
+                   - stats.frames_invalidated)
+        bridge.set_stream_metrics(
+            sid,
+            age_p50_ms=p50,
+            age_p95_ms=p95,
+            # **`None` before any frame has been analysed**, so a stream that has done no
+            # work renders "unavailable", never "0 frames of backlog" - which would read as
+            # a healthy empty queue.
+            backlog=backlog if stats.frames_accepted > 0 else None,
+            analysis_fps=fps,
+            window_samples=len(ages))
 
 
 # --------------------------------------------------------------------------------------

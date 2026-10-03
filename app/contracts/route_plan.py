@@ -112,6 +112,17 @@ class RoutePlan:
     #: the same convention `confirmed` uses: an unmentioned stream is unproven, not
     #: pending-and-fine.
     stream_states: Mapping[str, str] = field(default_factory=dict)
+    #: Per-stream stated reasons. **M2 Task 5 addition**, and the reason it exists is a
+    #: screen: with three streams, `errors` is the **concatenation** of every stream's
+    #: reasons, so a card showing Camera C's failure also displays Camera A's and B's. A card
+    #: that says `failed` with no reason of its own is a card asking the presenter to guess
+    #: which of three cameras is the one that died and why - and a card that shows the
+    #: *wrong* camera's reason is worse still.
+    #:
+    #: **Same convention as `stream_states` and `confirmed`**: an absent stream has stated
+    #: no reason, which is not the same as having stated none. Read it with
+    #: `stream_errors(stream)`, never by scanning `errors`.
+    stream_errors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.generation, bool) or not isinstance(self.generation, int):
@@ -191,6 +202,33 @@ class RoutePlan:
                 f"mention. A per-stream state for a route nobody requested describes "
                 f"work this plan does not account for."
             )
+        object.__setattr__(self, "stream_errors", MappingProxyType({
+            _require_text("stream_errors key", str(key)):
+                _require_devices(f"stream_errors[{key!r}]", value)
+            for key, value in self.stream_errors.items()
+        }))
+        unreasoned = sorted(set(self.stream_errors) - set(self.requested))
+        if unreasoned:
+            raise ValueError(
+                f"stream_errors carries streams {unreasoned} that requested does not "
+                f"mention. A stated reason for a route nobody requested describes work "
+                f"this plan does not account for."
+            )
+        failed_without_reason = sorted(
+            stream for stream, state in self.stream_states.items()
+            if state == "failed" and not self.stream_errors.get(stream))
+        if failed_without_reason:
+            # **The rule this field exists to enforce.** A per-stream `failed` with no
+            # reason of its own is a card that says `failed` and leaves the presenter to
+            # work out which of three cameras died and why. The aggregate `errors` may
+            # well hold the reason, but a card cannot show the whole aggregate and still
+            # be about one camera.
+            raise ValueError(
+                f"streams {failed_without_reason} are 'failed' with no per-stream "
+                f"stated reason. Put the reason in `stream_errors[stream]`; a card that "
+                f"says 'failed' with nothing else is a card asking the presenter to "
+                f"guess."
+            )
         if self.state == "failed" and not self.errors:
             raise ValueError(
                 "a RoutePlan in state 'failed' must carry at least one stated reason. "
@@ -258,6 +296,22 @@ class RoutePlan:
         """
         return self.stream_states.get(str(stream_id))
 
+    def stream_reasons(self, stream_id: str) -> tuple[str, ...]:
+        """This stream's own stated reasons, or `()` when it has stated none.
+
+        **Never `self.errors`.** That is the concatenation of every stream's reasons, so a
+        card built from it shows Camera C's failure with Camera A's and B's reasons
+        attached, and the presenter cannot tell which sentence is about the camera they
+        are looking at.
+
+        Named `stream_reasons` rather than `stream_errors` because the field it reads is
+        `stream_errors`, and a method cannot share a name with a dataclass field without
+        one silently shadowing the other. Same accessor discipline as `stream_state` and
+        `confirmed_devices`, and for the same reason: the correct lookup is a named, tested
+        call.
+        """
+        return tuple(self.stream_errors.get(str(stream_id), ()))
+
     def to_json(self) -> dict[str, Any]:
         """A `json.dumps`-acceptable payload. Mappings become objects, tuples lists."""
         return {
@@ -267,6 +321,7 @@ class RoutePlan:
             "state": self.state,
             "errors": list(self.errors),
             "stream_states": dict(self.stream_states),
+            "stream_errors": {k: list(v) for k, v in self.stream_errors.items()},
         }
 
 

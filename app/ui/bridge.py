@@ -112,6 +112,7 @@ __all__ = [
     "RECORDED_FOOTAGE_LABEL",
     "SCOPE_NOTE_LABEL",
     "SLOT_CALLS_SAFE_IN_A_QML_BINDING",
+    "STALE_AFTER_SECONDS",
     "ThemeTokens",
     "UNAVAILABLE_TEXT",
     "UTILISATION_UNAVAILABLE_TEXT",
@@ -315,6 +316,54 @@ def _fps(value: float) -> str:
     return f"{value:.2f} fps"
 
 
+def _summary_line(*, fps: float | None, age_p50: float | None,
+                  age_p95: float | None) -> str:
+    """One camera's activity line: its rate and both of its ages.
+
+    **Composed here rather than in QML** so the card cannot concatenate three different
+    cards' figures into one line, and so the unit words (`fps`, `s`, `ms`) are decided in
+    the same module as the formatters.
+
+    **The window is deliberately NOT in here.** It has its own line on the card, labelled
+    `window:`, because a percentile of a bounded deque is not comparable with a percentile
+    of a different one - and the first render of this layout overflowed the card by one
+    line with both on one string.
+
+    **Frame age only. Never inference cost.** On the NPU the measured p95 frame age is
+    seconds and the inference itself is about 5.9 ms; the difference is queue wait. Two
+    claims, two words, and putting them in one number would produce a figure that is true
+    of neither.
+    """
+    rate = UNAVAILABLE_TEXT if fps is None else _fps(fps)
+    p50 = UNAVAILABLE_TEXT if age_p50 is None else _age(age_p50)
+    p95 = UNAVAILABLE_TEXT if age_p95 is None else _age(age_p95)
+    # "analysis fps" is kept verbatim from M1's line - "analysis fps 13.40 fps" is clumsy,
+    # but a test in this repository asserts that prefix and renaming it here would change
+    # the meaning of an assertion written against a different metric.
+    return f"analysis fps {rate}  \u00b7  frame age p50 {p50}  p95 {p95}"
+
+
+#: Spec section 7, verbatim: *"Values older than 2 s are `stale`."* The one threshold in
+#: this project that comes from a document rather than from a measurement, so it is
+#: quoted rather than approximated - and it is a **time**, unlike the frame-age window
+#: below, which is a count.
+STALE_AFTER_SECONDS: float = 2.0
+
+
+def _age(value_ms: float) -> str:
+    """A frame age, in **seconds** once it reaches a second, milliseconds below.
+
+    A rendering decision, and the reason is legibility at a glance: the measured
+    unsaturated three-stream condition is a p50 of **10.8-11.3 s**, and `11319.0 ms` is
+    not something a presenter reads as "eleven seconds old" while a booth visitor is
+    talking to them. `315.5 ms` is still the right precision below a second, so the
+    switch happens at the unit boundary rather than at some chosen cutoff.
+    """
+    if value_ms >= 1000.0:
+        return f"{value_ms / 1000.0:.1f} s"
+    return _ms(value_ms)
+
+
 #: name -> formatter. Chosen here rather than in QML so the rounding is one decision.
 _FORMATTERS = {
     "ai_fps": _fps,
@@ -497,13 +546,15 @@ class UiBridge(QObject):
 
         - **A payload for another stream cannot move this card.** Its state, badge and
           fallback flag are stored and never consulted by `device_display`.
-        - **`errors` is no longer part of the route payload.** `RoutePlan` carries no
-          per-stream error channel, so there is nothing per-stream to forward, and
-          forwarding the aggregate under a per-stream label is the defect being removed.
-          Stated reasons still reach the screen through `apply_error`, which is a running
-          log naming the stream it is about rather than a per-camera claim. Task 5, which
-          renders three cards, will need a real per-stream reason and this is where it
-          goes.
+
+        ## M2 Task 5: the record also carries that stream's own stated reasons
+
+        Task 4 dropped `errors` because `RoutePlan` had no per-stream channel. Task 5
+        added `RoutePlan.stream_errors` and `Supervisor.route_plan()` populates it, so
+        `errors` is back - and it is **that stream's** reasons, never the aggregate. A card
+        reading `failed` with an empty `errors` list is still a card asking the presenter
+        to guess, so `stream_card` renders the word "no reason was stated" rather than
+        leaving the line blank. See `stream_reasons`.
         """
         try:
             data = dict(payload)  # type: ignore[arg-type]
@@ -516,6 +567,10 @@ class UiBridge(QObject):
                 # coercion to a renderable word happens below, for the card only.
                 "state": data.get("state"),
                 "fell_back": data.get("fell_back"),
+                # This camera's own reasons. A `None`/absent entry means it has stated
+                # none, which is different from stating none, so it is kept as a tuple and
+                # never replaced with the aggregate.
+                "errors": tuple(str(e) for e in (data.get("errors") or ())),
             }
             if self._stream_routes.get(stream) != record:
                 self._stream_routes[stream] = record
@@ -704,6 +759,14 @@ class UiBridge(QObject):
     #: A screen with three cards (Task 5) will read `stream_states` per card; this signal
     #: is what lets it re-read.
     streamStatesChanged = Signal()
+    #: The **per-stream card records** changed. **M2 Task 5.**
+    #:
+    #: Declared separately from `streamStatesChanged` because a card is more than a route:
+    #: it also carries this stream's measured frame age, backlog and analysis rate, which
+    #: move on the telemetry tick with no route change at all. One signal for both would
+    #: mean a card re-reads the whole record set on every metric tick, and - worse - would
+    #: make it impossible to tell which of the two caused a repaint.
+    streamCardsChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -722,6 +785,15 @@ class UiBridge(QObject):
         #: `stream_id -> {requested, confirmed, state, fell_back}`, kept for every stream
         #: the supervisor has published, whether or not this card shows it.
         self._stream_routes: dict[str, dict[str, Any]] = {}
+        #: `stream_id -> {age_p50_ms, age_p95_ms, backlog, analysis_fps,
+        #: window_samples}`. **Separate from the route record on purpose**: these arrive
+        #: from the telemetry tick on a different clock, and merging them on arrival would
+        #: let a route change look like a measurement. `stream_cards` merges them once, at
+        #: read time.
+        self._stream_metrics: dict[str, dict[str, Any]] = {}
+        #: How many cameras this screen shows a card for, declared by `set_streams` rather
+        #: than inferred from what has arrived. See `_get_stream_ids`.
+        self._declared_streams: set[str] = set()
         self._metrics: dict[str, float | None] = {name: None for name in OPTIONAL_METRICS}
         #: How many analysed frames the `frame_age_*` percentiles are taken over. `0` means
         #: "nobody has said", and `age_window_note` then renders nothing rather than a
@@ -812,6 +884,220 @@ class UiBridge(QObject):
 
     stream_routes = Property("QVariantMap", _get_stream_routes,
                              notify=streamStatesChanged)
+
+    def stream_reasons(self, stream_id: str) -> str:
+        """One stream's own stated reasons as **one renderable line**, or `""`.
+
+        **Only that stream's.** With three streams the supervisor's `errors` is the
+        concatenation of all three, and a card showing the concatenation reads as Camera
+        C's failure with Camera A's and Camera B's sentences attached - a presenter cannot
+        tell which sentence is about the camera in front of them.
+
+        `""` when the stream has stated none. That is a real state - a stream that is
+        `pending` has nothing to explain yet - and `stream_card` renders its own words for
+        it rather than printing an empty line that reads like a rendering failure.
+        """
+        entry = self._stream_routes.get(str(stream_id)) or {}
+        reasons = entry.get("errors") or ()
+        if not reasons:
+            return ""
+        # Newest last, so the most recent cause is the last thing read, which is the one a
+        # presenter needs. `_Stream.errors` is only ever appended to and is cleared by
+        # that stream's own `clear_proof()`.
+        return "  ".join(str(reason) for reason in reasons)
+
+    # -- the per-stream card payload --------------------------------------------------
+    #
+    # **One owner for the route, one for the measurement, merged once.** The route record
+    # (requested / confirmed / state / fell_back / errors) is owned by `apply_route`,
+    # because it arrives from the supervisor. The measured numbers (frame ages, backlog,
+    # this stream's own analysis rate) are owned by `set_stream_metrics`, because they
+    # arrive from the telemetry tick. `stream_cards` merges them and formats **once**,
+    # in Python, so no card string is composed in QML and there is nowhere for two cards to
+    # disagree about one stream.
+
+    def set_stream_metrics(self, stream_id: str, *, age_p50_ms: float | None,
+                           age_p95_ms: float | None, backlog: int | None,
+                           analysis_fps: float | None,
+                           window_samples: int) -> None:
+        """Record one stream's measured lateness and rate. UI thread; from the tick.
+
+        Every argument is `float | None` and **`None` is preserved**. `None` means "not
+        measured yet" and renders as `unavailable`; it never becomes `0`. A stream that has
+        analysed nothing showing `age 0.0 ms · backlog 0` is the most dangerous card this
+        project can draw, because it looks exactly like a healthy one.
+
+        `backlog` is passed in rather than derived here because only the supervisor knows
+        what a drop was and what an invalidation was; see `app.main`.
+        """
+        wanted = {
+            "age_p50_ms": None if age_p50_ms is None else float(age_p50_ms),
+            "age_p95_ms": None if age_p95_ms is None else float(age_p95_ms),
+            "backlog": None if backlog is None else int(backlog),
+            "analysis_fps": None if analysis_fps is None else float(analysis_fps),
+            "window_samples": int(window_samples),
+        }
+        if self._stream_metrics.get(str(stream_id)) == wanted:
+            return
+        self._stream_metrics[str(stream_id)] = wanted
+        self.streamCardsChanged.emit()
+
+    def _card_device(self, route: dict[str, Any]) -> str:
+        """`"CPU"` / `"GPU"` / `"NPU"` / `""` for a route record.
+
+        From the **confirmed** reading first, because that is the placement claim, and
+        from the requested device only when nothing has confirmed anything. `""` for a
+        failed or unstarted stream, and the card then says so in words - a failed route
+        claims no device and must not borrow the one that was asked for.
+        """
+        from app.inference.devices import plugin_class
+
+        confirmed = tuple(route.get("confirmed") or ())
+        if confirmed:
+            # `'GPU.0'` -> `'GPU'`, through the module that owns that spelling. Not a
+            # substring test here, which is the trap `plugin_class` exists to remove.
+            return str(plugin_class(confirmed[0]))
+        requested = route.get("requested")
+        if route.get("state") == "failed":
+            return ""
+        return str(requested or "")
+
+    def _stream_card(self, stream_id: str) -> dict[str, Any]:
+        """One card's record. Every string is already formatted and already honest."""
+        route = self._stream_routes.get(stream_id) or {}
+        metrics = self._stream_metrics.get(stream_id) or {}
+        state = route.get("state") or "pending"
+        confirmed = tuple(route.get("confirmed") or ())
+        requested = route.get("requested")
+        device = self._card_device(route)
+
+        age_p50 = metrics.get("age_p50_ms")
+        age_p95 = metrics.get("age_p95_ms")
+        backlog = metrics.get("backlog")
+        fps = metrics.get("analysis_fps")
+        window_samples = int(metrics.get("window_samples") or 0)
+
+        # **Staleness, in words.** `stale` is only ever true from a measured p50, never
+        # from an absent one, and the sentence carries the same number the age line shows
+        # so the two cannot disagree.
+        stale = age_p50 is not None and age_p50 > STALE_AFTER_SECONDS * 1000.0
+        if stale:
+            # **Short enough to fit two lines.** The first wording - "STALE - the picture on
+            # screen is 10.8 s old (over the 2 s in spec section 7)" - wrapped to three
+            # lines at this card's width and pushed the activity line **below the card's
+            # bottom edge**, where a Repeater delegate draws it anyway because nothing
+            # clips. The age is repeated deliberately: the numeral above is the figure and
+            # this is the sentence, and the ruling asks for the word as well as the number.
+            staleness = (f"STALE - this picture is {_age(age_p50)} old; "
+                         f"the limit is {STALE_AFTER_SECONDS:.0f} s")
+        else:
+            staleness = ""
+
+        reasons = tuple(route.get("errors") or ())
+        if reasons:
+            reason = "  ".join(str(entry) for entry in reasons)
+        elif state == "failed":
+            # Reachable only if a caller built a failed route by hand. Printed rather than
+            # left blank, because a blank reason line reads as a rendering failure and
+            # "failed" with nothing after it asks the presenter to guess.
+            reason = "failed, and no reason was stated for this stream"
+        elif state == "pending":
+            reason = ""
+        else:
+            reason = ""
+
+        badge = ", ".join(confirmed) if confirmed else "no device is running"
+        if route.get("fell_back") and requested:
+            badge = f"{badge} (fell back from {requested})"
+
+        return {
+            "stream": stream_id,
+            "state": str(state),
+            "device": device,
+            "requested": str(requested or ""),
+            "confirmed": ", ".join(confirmed),
+            "fell_back": bool(route.get("fell_back")),
+            "badge": badge,
+            "age_p50_text": UNAVAILABLE_TEXT if age_p50 is None else _age(age_p50),
+            "age_p95_text": UNAVAILABLE_TEXT if age_p95 is None else _age(age_p95),
+            "fps_text": UNAVAILABLE_TEXT if fps is None else _fps(fps),
+            "backlog_text": UNAVAILABLE_TEXT if backlog is None else f"{int(backlog)} frames",
+            "window_text": (f"{window_samples} analysed frames"
+                            if window_samples > 0 else UNAVAILABLE_TEXT),
+            "stale": bool(stale),
+            "staleness": staleness,
+            "reason": reason,
+            "summary_text": _summary_line(fps=fps, age_p50=age_p50, age_p95=age_p95),
+        }
+
+    def _get_stream_cards_by_id(self) -> dict:
+        """`stream_id -> that camera's card record`. **The QML binding surface.**
+
+        A map rather than a list because a card knows *which camera it is* and has to
+        index; finding a record in a `QVariantList` from QML needs a loop or a helper Slot,
+        and a helper Slot in a binding is the defect the standing guard exists for.
+
+        Every value is a complete record - there is no key whose value is `undefined` -
+        so no card can read a property of nothing. A stream with no route and no metrics
+        yet still gets a cold record: `pending`, every figure `unavailable`, and no device.
+        """
+        return {stream_id: self._stream_card(stream_id) for stream_id in self.stream_ids}
+
+    stream_cards_by_id = Property("QVariantMap", _get_stream_cards_by_id,
+                                  notify=streamCardsChanged)
+
+    def _get_stream_ids(self) -> list:
+        """Every stream id this screen shows a card for, sorted.
+
+        **The declared set, not just what has been published.** `set_streams` is called by
+        `run_windowed` immediately after the supervisor is built, so the three cards exist
+        from the first rendered frame with honest cold values - `pending`, `unavailable`,
+        no device - rather than the metrics column being empty until the first route
+        payload arrives. An empty column on a cold start is indistinguishable from a
+        broken screen, which is the same defect as a card frozen at its first evaluation.
+        """
+        return sorted(self._declared_streams | set(self._stream_routes)
+                      | set(self._stream_metrics))
+
+    stream_ids = Property("QStringList", _get_stream_ids, notify=streamStatesChanged)
+
+    @Slot("QStringList")
+    def set_streams(self, stream_ids: list) -> None:
+        """Declare which cameras this screen shows a card for. UI thread.
+
+        **A declaration, not a measurement**: it says how many cameras there are, not what
+        any of them is doing. Every figure on those cards still reads `unavailable` until
+        something is measured, so declaring a stream cannot make a card claim anything.
+        """
+        wanted = {str(entry) for entry in stream_ids if str(entry)}
+        if wanted == self._declared_streams:
+            return
+        self._declared_streams = wanted
+        self.streamStatesChanged.emit()
+        self.streamCardsChanged.emit()
+
+
+    def _get_stream_cards(self) -> list:
+        """One record per stream this supervisor owns, in a stable order.
+
+        Built fresh on every read rather than cached, because it is a merge of two dicts
+        and a cached copy is one more thing that can go stale. The list is only read when
+        a binding re-evaluates, which the telemetry tick and every route change cause.
+        """
+        return [self._stream_card(stream_id) for stream_id in self.stream_ids]
+
+    stream_cards = Property("QVariantList", _get_stream_cards,
+                            notify=streamCardsChanged)
+
+    def stream_card(self, stream_id: str) -> dict:
+        """One camera's card record, for a card that knows which camera it is.
+
+        A plain method rather than a Slot, so it is **not** what a QML binding should
+        call: a method call in a binding declares no property dependency and is evaluated
+        once. `stream_cards` is the binding surface; this exists for Python-side reads and
+        for the tests, which assert on the record rather than on the pixels.
+        """
+        return self._stream_card(str(stream_id))
 
     def set_route_stream(self, stream_id: str) -> None:
         """Point the single card at another camera's route.

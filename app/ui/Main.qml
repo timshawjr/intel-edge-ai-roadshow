@@ -243,89 +243,43 @@ Window {
                     anchors.bottom: parent.bottom
                     spacing: Theme.GAP
 
-                    // Three compute cards. CPU is measurable; GPU and NPU are not, and
-                    // say so.
-                    ComputeCard {
-                        // A name on each card, so a test can read this card's
-                        // **bound** strings - the activity line carries `ai_fps` and
-                        // the frame-age percentiles, which no `cardText_*` item shows.
-                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
-                        // `cardText_frame_age_p50_ms`, and no such items exist, so
-                        // those two lookups returned "" and asserted nothing.
-                        objectName: "card_CPU"
-                        width: parent.width
-                        height: (parent.height - Theme.GAP * 2) / 3
-                        deviceId: "CPU"
-                        // Measured per sample, not hardcoded. `psutil` can fail and the
-                        // collector reports that as UNAVAILABLE rather than 0; a card
-                        // that claimed availability unconditionally would render that
-                        // absence in the live colour.
-                        utilisationAvailable: bridgeUi.cpuUtilisationAvailable
-                        metricName: "system_cpu_percent"
-                        secondaryMetricName: "app_cpu_percent"
-                        // Read from the bridge's notified `metric_text` map, never by calling
-                        // `display_text(...)`: a binding that calls a method declares no
-                        // property dependency, so Qt evaluates it once and the activity
-                        // line stayed "unavailable" for a whole live session while the
-                        // bridge held real figures.
-                        activityText: "analysis fps " + bridge.metric_text["ai_fps"]
-                                       + "  \u00b7  frame age p50 "
-                                       + bridge.metric_text["frame_age_p50_ms"]
-                                       + "  p95 " + bridge.metric_text["frame_age_p95_ms"]
-                                       // **The window, stated on screen.** The two
-                                       // figures above are percentiles of the most
-                                       // recent N analysed frames, and N is a count - how
-                                       // many seconds that spans depends on this
-                                       // stream's own rate, which the reader cannot see
-                                       // from a percentile. Read from a notified
-                                       // property, never a Slot call: see
-                                       // `UiBridge._get_metric_text`.
-                                       + (bridge.age_window_note.length > 0
-                                          ? "  (" + bridge.age_window_note + ")" : "")
-                        explainKey: "cpu"
-                        onExplainRequested: key => window.pinnedExplanationKey = key
-                    }
+                    // -- one card per CAMERA, not per device (M2 Task 5) -------------
+                    //
+                    // The card is about a stream: its own confirmed device, its own frame
+                    // age with the window that age is taken over, its own backlog and
+                    // analysis rate, and its own stated reason. Three cameras therefore
+                    // produce three cards, and the `Repeater` builds one per stream the
+                    // supervisor actually owns rather than three fixed ones - a supervisor
+                    // with one stream draws one card, and one with four draws four, so a
+                    // card can never exist for a camera that is not there.
+                    //
+                    // **`modelData`, not an index.** `streamId` is the model's own value, so
+                    // a card reads its own record and not `modelData` from a shared
+                    // delegate scope.
+                    Repeater {
+                        id: streamCards
+                        model: bridge.stream_ids
 
-                    ComputeCard {
-                        // A name on each card, so a test can read this card's
-                        // **bound** strings - the activity line carries `ai_fps` and
-                        // the frame-age percentiles, which no `cardText_*` item shows.
-                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
-                        // `cardText_frame_age_p50_ms`, and no such items exist, so
-                        // those two lookups returned "" and asserted nothing.
-                        objectName: "card_GPU"
-                        width: parent.width
-                        height: (parent.height - Theme.GAP * 2) / 3
-                        deviceId: "GPU"
-                        // Measured false on this machine, and the reason is in
-                        // bridge.gpu_reason. This is not a hardcoded lie: it is a
-                        // measurement that is not available.
-                        utilisationAvailable: bridgeUi.gpuUtilisationAvailable
-                        metricName: "gpu_utilisation_percent"
-                        // What is shown instead of a utilisation figure. Not a number, and
-                        // not the word "unavailable" alone either - this says what is
-                        // missing and points at the alternative that *is* real.
-                        activityText: bridge.gpu_reason
-                        explainKey: "utilisation"
-                        onExplainRequested: key => window.pinnedExplanationKey = key
-                    }
-
-                    ComputeCard {
-                        // A name on each card, so a test can read this card's
-                        // **bound** strings - the activity line carries `ai_fps` and
-                        // the frame-age percentiles, which no `cardText_*` item shows.
-                        // M2 Task 4: the M1 driver read `cardText_ai_fps` and
-                        // `cardText_frame_age_p50_ms`, and no such items exist, so
-                        // those two lookups returned "" and asserted nothing.
-                        objectName: "card_NPU"
-                        width: parent.width
-                        height: (parent.height - Theme.GAP * 2) / 3
-                        deviceId: "NPU"
-                        utilisationAvailable: bridgeUi.npuUtilisationAvailable
-                        metricName: "npu_utilisation_percent"
-                        activityText: bridge.npu_reason
-                        explainKey: "utilisation"
-                        onExplainRequested: key => window.pinnedExplanationKey = key
+                        delegate: ComputeCard {
+                            // Named for the camera, so a test can read this card's bound
+                            // strings and cannot accidentally read another's.
+                            objectName: "card_" + modelData
+                            streamId: modelData
+                            width: parent.width
+                            // A column of `n` cards in a fixed height: each gets its share.
+                            //
+                            // **`bridge.stream_ids.length`, not `count`.** Inside a
+                            // delegate `count` was not in scope, so the division produced
+                            // `NaN`, `Math.max` passed the `NaN` straight through, and the
+                            // cards were **all zero-height and invisible** - the offscreen
+                            // render came back with a completely empty metrics column and
+                            // no QML warning at all, because a `NaN` geometry is legal. The
+                            // model's own length is always in scope.
+                            height: Math.max(Theme.TYPE_NUMERAL,
+                                             parent.height / Math.max(1, bridge.stream_ids.length))
+                            explainKey: "cpu"
+                            onExplainRequested: key => window.pinnedExplanationKey = key
+                        }
                     }
                 }
             }

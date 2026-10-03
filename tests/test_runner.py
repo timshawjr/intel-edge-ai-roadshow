@@ -513,13 +513,23 @@ class RoutePlanMultiStream(unittest.TestCase):
     def test_the_aggregate_state_is_failed_only_when_every_stream_failed(self):
         mixed = RoutePlan(generation=2, requested={"A": "CPU", "C": "NPU"},
                           confirmed={"A": ("CPU",)}, state="pending",
-                          stream_states={"A": "active", "C": "failed"})
+                          stream_states={"A": "active", "C": "failed"},
+                          errors=("C died",),
+                          # **M2 Task 5**: a per-stream `failed` with no reason of its own
+                          # is now refused, so this plan has to carry one. The aggregate is
+                          # still what `state` is about; the per-stream map is what a card
+                          # reads.
+                          stream_errors={"C": ("C died",)})
         self.assertEqual(mixed.state, "pending")
         self.assertEqual(mixed.stream_state("C"), "failed")
         self.assertEqual(mixed.stream_state("A"), "active")
         all_failed = RoutePlan(generation=2, requested={"A": "CPU", "C": "NPU"},
                                state="failed", errors=("A died", "C died"),
-                               stream_states={"A": "failed", "C": "failed"})
+                               stream_states={"A": "failed", "C": "failed"},
+                               # **M2 Task 5**: the contract now refuses a failed stream
+                               # with no reason of its own, so both have to carry one - and
+                               # each its own, which is the point.
+                               stream_errors={"A": ("A died",), "C": ("C died",)})
         self.assertEqual(all_failed.state, "failed")
 
     def test_a_stream_with_no_declared_state_is_unknown_not_pending(self):
@@ -1091,6 +1101,85 @@ class SupersededResults(unittest.TestCase):
         self.assertEqual(stats.frames_refused, 0)
         self.assertEqual(s.discarded_results, 1)
         self.assertTrue(stats.reconciles(), stats.to_json())
+
+
+class PerStreamStatedReasons(unittest.TestCase):
+    """**M2 Task 5**: `route_plan()` must publish each stream's **own** reasons.
+
+    The obligation this closes: with three streams, `RoutePlan.errors` is the concatenation
+    of every stream's reasons, so a card built from it shows Camera C's failure carrying
+    Camera A's and Camera B's sentences, and a presenter cannot tell which sentence is
+    about the camera they are looking at. A card showing `failed` with no reason of its own
+    is worse: it asks the presenter to guess.
+
+    Built with `compile_failure=["B"]` so Camera B's worker really raises before compiling -
+    the real dead-worker path, not a stub. Two cameras on the CPU so the test needs one
+    device and does not assert anything about the accelerators.
+    """
+
+    def setUp(self):
+        self._made = []
+
+    def tearDown(self):
+        for supervisor in self._made:
+            supervisor.stop()
+
+    def test_one_failed_stream_does_not_publish_its_reason_for_the_others(self):
+        reason = _require_cpu()
+        if reason:
+            self.skipTest(f"cannot run the real pipeline: {reason}")
+        supervisor = Supervisor(device_ids=("CPU", "CPU"),
+                                 compile_failure=["B"])
+        self._made.append(supervisor)
+        feeder = _Feeder(supervisor)
+        feeder.start()
+        self.addCleanup(feeder.stop)
+        supervisor.start()
+        _wait_for(lambda: supervisor.stream_state("B") == "failed", seconds=120.0)
+        _wait_for(lambda: supervisor.stream_state("A") == "active", seconds=120.0)
+        plan = supervisor.route_plan()
+
+        self.assertEqual(plan.stream_state("B"), "failed", plan)
+        self.assertTrue(plan.stream_reasons("B"),
+                        f"camera B failed and published no reason of its own: "
+                        f"{plan.to_json()}")
+        # **The point of the whole field.**
+        self.assertEqual(plan.stream_reasons("A"), (),
+                         f"camera A is running and must not have borrowed B's reason; "
+                         f"aggregate errors are {plan.errors!r}")
+        # And the wording names the stream, so a card built from it is self-describing.
+        joined = "  ".join(plan.stream_reasons("B"))
+        self.assertIn("stream 'B'", joined,
+                      f"the stated reason must name the stream it is about: {joined!r}")
+        self.assertIn("CPU", joined, joined)
+        # The aggregate still exists and still carries B's reason - it was removed from
+        # nothing, it is simply no longer what a card reads.
+        self.assertTrue(any("stream 'B'" in text for text in plan.errors),
+                        f"the aggregate still carries it for M0/M1's readers: {plan.errors!r}")
+
+    def test_the_json_payload_carries_the_per_stream_map(self):
+        import json
+
+        from app.contracts.route_plan import RoutePlan
+
+        plan = RoutePlan(generation=1, requested={"A": "CPU"},
+                         state="failed",
+                         errors=("about A",),
+                         stream_states={"A": "failed"},
+                         stream_errors={"A": ("about A",)})
+        payload = json.loads(json.dumps(plan.to_json()))
+        self.assertEqual(payload["stream_errors"], {"A": ["about A"]}, payload)
+        self.assertEqual(plan.stream_reasons("A"), ("about A",))
+
+    def test_a_healthy_stream_with_a_history_publishes_no_reason_at_all(self):
+        # `clear_proof()` wipes a stream's reasons when its route moves, so a camera that
+        # has recovered must not keep showing the failure it recovered from.
+        supervisor = Supervisor(device_ids=("CPU",))
+        self._made.append(supervisor)
+        plan = supervisor.route_plan()
+        self.assertEqual(plan.stream_reasons("A"), (),
+                         "a supervisor that has just been constructed has stated nothing")
+        self.assertEqual(plan.stream_state("A"), "pending", plan)
 
 
 class TeardownOrdering(unittest.TestCase):

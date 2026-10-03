@@ -50,6 +50,7 @@ module needs no event loop of its own.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,15 +122,69 @@ def _sample(name: str, value, *, validity, window: float = 0.25, now: float = 1.
     )
 
 
-def _render_png(tmpdir: str) -> str:
+#: The seed M1's render has always used: one stream, one confirmed CPU placement with a
+#: fallback off the NPU, and telemetry that is all measured.
+_SINGLE_STREAM_SEED = '''bridge.set_route(requested="NPU", confirmed=("CPU",), state="active")
+bridge.set_metrics(system_cpu_percent=18.4, app_cpu_percent=12.0, ai_fps=14.9,
+                   frame_age_p50_ms=63.0, frame_age_p95_ms=88.0)
+bridge.set_streams(["A"])
+'''
+
+#: **M2 Task 5: the measured unsaturated `allcpu` condition**, spec section 5 row 4.
+#:
+#: Task 3's three consecutive 120 s holds, one stream each: frame age p50 **10767 /
+#: 11085 / 11319 ms**, p95 **11626 / 11905 / 12286 ms**, backlog **170-187 frames**, about
+#: **13.5 of the 15 fps** offered analysed, **zero drops**, and all three streams
+#: `active`.
+#:
+#: That is a picture **eleven seconds old** while every counter reads healthy, and it is
+#: the condition this screen has to make legible. Camera C is additionally given a real
+#: failure with the wording Task 4 proved correct, so the per-stream reason channel is on
+#: screen in the same render - the case the brief calls a card asking the presenter to
+#: guess.
+_ALLCPU_SEED = '''bridge.set_streams(["A", "B", "C"])
+MEASURED_ALLCPU = [
+    ("A", 10767.0, 11626.0, 170, 13.5, "active", []),
+    ("B", 11085.0, 11905.0, 179, 13.4, "active", []),
+    ("C", 11319.0, 12286.0, 187, 13.6, "failed",
+     ["The restart budget for stream 'C' at generation 1 is spent, so this route is "
+      "failed and no device is being claimed for it. The requested device 'CPU' is "
+      "recorded; re-select one to try again."]),
+]
+for _sid, _p50, _p95, _backlog, _fps, _state, _errors in MEASURED_ALLCPU:
+    bridge.apply_route({"stream": _sid, "requested": "CPU",
+                        "confirmed": ["CPU"] if _state == "active" else [],
+                        "state": _state, "fell_back": False, "errors": _errors})
+    bridge.set_stream_metrics(_sid, age_p50_ms=_p50, age_p95_ms=_p95,
+                              backlog=_backlog, analysis_fps=_fps,
+                              window_samples=256)
+'''
+
+
+def _render_png(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> str:
     """Render `app/ui/Main.qml` offscreen at 1920x1080 in a child process.
 
     Returns the PNG path. Raises on a non-zero exit so a QML syntax error fails loudly
     instead of leaving a stale or absent image for the assertions to read.
     """
+    return _render(tmpdir, seed)[0]
+
+
+def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict]:
+    """`(png_path, {objectName: [text, visible]})` for one offscreen render.
+
+    The strings come out of the child's **scene graph**, read from the named items the QML
+    declares - not from the bridge's Python properties, and not from the PNG. A bridge can
+    hold a correct value while the screen is frozen at its first evaluation, and that is the
+    defect class this repository has now found three times (the `constant=True` device
+    badge, the `display_text()` card bindings, the `window_text()` line).
+
+    `seed` chooses what state exists before the scene loads; see `_SINGLE_STREAM_SEED` and
+    `_ALLCPU_SEED`.
+    """
     script = tmpdir.replace("\\", "/") + "/render.py"
     output = tmpdir.replace("\\", "/") + "/main.png"
-    Path(script).write_text(_render_script(), encoding="utf-8")
+    Path(script).write_text(_render_script(seed), encoding="utf-8")
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -142,15 +197,52 @@ def _render_png(tmpdir: str) -> str:
             f"the offscreen render failed (exit {completed.returncode}).\n"
             f"stdout: {completed.stdout[-4000:]}\nstderr: {completed.stderr[-4000:]}"
         )
-    return output
+    strings: dict = {}
+    for line in completed.stdout.splitlines():
+        if line.startswith("SCENESTRINGS "):
+            strings = json.loads(line[len("SCENESTRINGS "):])
+    if not strings:
+        raise AssertionError(
+            "the render published no scene strings, so every string assertion would be "
+            "reading nothing - which is exactly how the M1 card-text assertion proved "
+            "two of three keys.\nstdout: " + completed.stdout[-3000:])
+    return output, strings
 
 
-def _render_script() -> str:
+#: **Three cameras on three devices**, which is the layout the per-device wording is really
+#: about. `AUTO`/`HETERO` are not involved and the confirmed readings are the real ones this
+#: machine reports: CPU, `GPU.0`, NPU.
+#:
+#: Rendered as a **synthetic route**, not measured: the point is which wording reaches which
+#: card, and that does not need the hardware. What it does need is a camera on each device,
+#: which is exactly what the booth's single-stream run cannot provide.
+_THREE_DEVICE_SEED = '''bridge.set_streams(["A", "B", "C"])
+THREE_DEVICES = [
+    ("A", "CPU", ["CPU"]),
+    ("B", "GPU", ["GPU.0"]),
+    ("C", "NPU", ["NPU"]),
+]
+for _sid, _requested, _confirmed in THREE_DEVICES:
+    bridge.apply_route({"stream": _sid, "requested": _requested,
+                        "confirmed": _confirmed, "state": "active",
+                        "fell_back": False, "errors": []})
+    bridge.set_stream_metrics(_sid, age_p50_ms=315.5, age_p95_ms=902.4, backlog=3,
+                              analysis_fps=14.9, window_samples=256)
+'''
+
+
+def _render_script(seed: str = _SINGLE_STREAM_SEED) -> str:
     """The child-process program, built with the repo's real paths substituted in.
 
     Written as one piece with `%`-style placeholders rather than a separate `.py` file in
     `app/ui/`, because a `.py` under `app/ui/` would be imported by nothing and would be a
     second copy of the UI wiring that could drift from `app.main`'s.
+
+    `seed` is the block that publishes route and metric state **before** the scene loads.
+    It is a parameter rather than a second template so that the one-stream M1 render and
+    the three-stream M2 render exercise the *same* QML, the same font registration, the same
+    grab and the same string dump - a second template would be a second thing that can
+    drift, which is how M0 and M1 each produced a vacuous assertion.
     """
     template = _RENDER_TEMPLATE
     # The paths go in as **repr'd literals**, not raw text. The first version substituted
@@ -161,11 +253,13 @@ def _render_script() -> str:
     return (template
             .replace("@REPO@", repr(str(REPO_ROOT)))
             .replace("@FONT@", repr(str(RENDER_FONT)))
-            .replace("@UI@", repr(str(UI_DIR))))
+            .replace("@UI@", repr(str(UI_DIR)))
+            .replace("@SEED@", seed))
 
 
 _RENDER_TEMPLATE = '''
 """Render app/ui/Main.qml offscreen and save a PNG. Run in its own process."""
+import json
 import os
 import shutil
 import sys
@@ -197,6 +291,13 @@ if font_id < 0:
 
 bridge = UiBridge(app)
 theme = ThemeTokens(app)
+# **M2 Task 5: declare the three cameras before the scene loads.** The metrics column is a
+# `Repeater` over `bridge.stream_ids`, and `stream_ids` is a *declaration* rather than
+# something inferred from what has arrived - so with no declaration the column is empty and
+# this render is a render of nothing. That is the same cold-start defect a booth screen
+# would have, which is why `run_windowed` declares too, and it is declared **here** rather
+# than defaulted in the bridge: a default would hide a caller that forgets.
+bridge.set_streams(["A", "B", "C"])
 
 
 class FakeFrame:
@@ -239,10 +340,35 @@ bridge.set_zones([FakeZone()], frame)
 # One current track and one coasted track. Only the current one may be drawn.
 bridge.set_overlay([track(1, (620, 240, 1010, 820), 0),
                     track(2, (1250, 260, 1600, 900), 1)], frame)
-bridge.set_route(requested="NPU", confirmed=("CPU",), state="active")
-bridge.set_metrics(system_cpu_percent=18.4, app_cpu_percent=12.0, ai_fps=14.9,
-                   frame_age_p50_ms=63.0, frame_age_p95_ms=88.0)
+@SEED@
 bridge.set_status("running the retail_checkout clip")
+
+# **M2 Task 5: the render also reports what it drew.** A PNG proves pixels happened; the
+# scene graph's own strings are what the card tests assert on, so the render publishes them
+# rather than only saving an image. The walk starts at `window.contentItem()` and uses
+# `childItems()` because a `Repeater` delegate is a **visual** child: `QObject.findChild`
+# and `QObject.children()` both fail to reach it, which is how a test that reads a
+# delegate's named items by `findChild` silently gets `""` for all of them.
+NAMES = {}
+
+
+def walk_items(item):
+    yield item
+    for child in item.childItems():
+        yield from walk_items(child)
+
+
+def dump_strings():
+    for item in walk_items(window.contentItem()):
+        try:
+            name = str(item.objectName())
+        except Exception:
+            continue
+        if not name:
+            continue
+        NAMES[name] = [str(item.property("text")), bool(item.property("visible"))]
+    print("SCENESTRINGS " + json.dumps(NAMES, sort_keys=True))
+
 
 shutil.rmtree(work, ignore_errors=True)
 shutil.copytree(@UI@, work)
@@ -268,6 +394,7 @@ QTimer.singleShot(500, loop.quit)
 loop.exec()
 
 grab = window.grabWindow()
+dump_strings()
 if grab.isNull() or grab.width() != 1920 or grab.height() != 1080:
     print("grab is %sx%s" % (grab.width(), grab.height()), file=sys.stderr)
     sys.exit(6)
@@ -279,6 +406,594 @@ print("rendered %dx%d with %d overlay boxes"
 shutil.rmtree(work, ignore_errors=True)
 sys.exit(0)
 '''
+
+
+class ThreeStreamBoothLayout(unittest.TestCase):
+    """**M2 Task 5.** Three cameras, three cards, and the one thing the screen must say.
+
+    Every assertion here reads the **rendered strings out of the scene graph**, produced by
+    one offscreen render seeded with the *measured* unsaturated `allcpu` condition - spec
+    section 5 row 4, three streams on the CPU. That condition is: frame age p50
+    **10767 / 11085 / 11319 ms**, p95 **11626 / 11905 / 12286 ms**, backlog **170-187**,
+    **13.5 of 15 fps** analysed, **zero drops**, all three streams `active`.
+
+    So the picture on screen is **eleven seconds old** and every other counter says the
+    system is healthy. Nothing on the M1 screen said so. These tests are what says so.
+
+    ## Two traps this class exists to avoid
+
+    - **A named item that is not there reads as `""`.** The M1 card-text test asserted on
+      `cardText_ai_fps`, which no item was ever named, and `"" != "unavailable"` passed for
+      two of its three keys. So `test_every_item_this_class_reads_is_on_screen` comes
+      **first** and asserts the items exist.
+    - **A `Repeater` delegate is invisible to `QObject.findChild` and to
+      `QObject.children()`.** It is a *visual* child, so it has to be reached with
+      `window.contentItem()` and `childItems()`. The first version of the three-card reader
+      used `findChild` and got `MISSING` for every card item while the PNG plainly showed
+      all three cards drawn - a test that would have "passed" on nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.mkdtemp(prefix="roadshow-allcpu-")
+        cls._tmp = tmp
+        cls.png, cls.strings = _render(tmp, _ALLCPU_SEED)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+
+    def text(self, name: str) -> str:
+        self.assertIn(name, self.strings,
+                      f"{name} is not on screen; the items that are: "
+                      f"{sorted(self.strings)}")
+        return self.strings[name][0]
+
+    def visible(self, name: str) -> bool:
+        self.assertIn(name, self.strings, f"{name} is not on screen at all")
+        return self.strings[name][1]
+
+    def test_every_item_this_class_reads_is_on_screen(self):
+        # **First, and on purpose.** A missing item yields `""`, and every "is this not
+        # empty / not zero" assertion on `""` passes. Naming the item first is the only
+        # thing that stops that.
+        for sid in ("A", "B", "C"):
+            for prefix in ("streamAgeText_", "streamStaleText_", "streamWindowText_",
+                           "streamBadgeText_", "streamBacklogText_", "streamRateText_",
+                           "streamReasonText_", "streamActivityText_"):
+                self.assertIn(prefix + sid, self.strings,
+                              f"camera {sid}'s {prefix} item is missing, so any "
+                              f"assertion about its contents would be asserting about "
+                              f"nothing: {sorted(self.strings)}")
+            self.assertIn("card_" + sid, self.strings,
+                          f"there is no card item for camera {sid}")
+        self.assertEqual(len([n for n in self.strings if n.startswith("card_")
+                              and n != "cardText_system_cpu_percent"]), 3,
+                         f"exactly three cameras, three cards: {sorted(self.strings)}")
+
+    def test_the_eleven_second_old_picture_is_legible_as_stale_in_words(self):
+        # The ruling. Each camera states its own age, **in words as well as a number**, and
+        # the age in the sentence is the age in the numeral.
+        for sid, p50, p95, backlog in (("A", "10.8 s", "11.6 s", "170 frames"),
+                                       ("B", "11.1 s", "11.9 s", "179 frames"),
+                                       ("C", "11.3 s", "12.3 s", "187 frames")):
+            self.assertEqual(self.text(f"streamAgeText_{sid}"), p50,
+                             f"camera {sid}'s measured p50 frame age is not on its card")
+            stale = self.text(f"streamStaleText_{sid}")
+            self.assertTrue(self.visible(f"streamStaleText_{sid}"),
+                            f"camera {sid}'s staleness line is present but not visible, "
+                            f"which is the frozen-binding shape")
+            self.assertIn("STALE", stale,
+                          f"camera {sid}: eleven seconds old must be a WORD, not only a "
+                          f"number. It reads {stale!r}")
+            self.assertIn(p50, stale,
+                          f"camera {sid}: the sentence must carry the age, so the number "
+                          f"and the word cannot disagree: {stale!r}")
+            self.assertIn("2 s", stale,
+                          f"camera {sid}: the sentence must carry the limit it exceeds: "
+                          f"{stale!r}")
+            # The window, the backlog and the rate. All three measured, all three on the
+            # card that camera is on.
+            self.assertEqual(self.text(f"streamWindowText_{sid}"),
+                             "window: 256 analysed frames",
+                             f"camera {sid}: the percentiles are of 256 frames and the "
+                             f"card must say so")
+            self.assertEqual(self.text(f"streamBacklogText_{sid}"),
+                             f"backlog {backlog}",
+                             f"camera {sid}'s backlog is not on its own card")
+            self.assertIn("analysis", self.text(f"streamRateText_{sid}"))
+            self.assertIn(p95, self.text(f"streamActivityText_{sid}"),
+                          f"camera {sid}'s p95 is not on its card")
+
+    def test_a_stale_camera_is_bordered_in_the_warning_colour(self):
+        # The warning has to be visible across a room, not only to a reader of small text.
+        # **Pixels, not a property**: a colour that is not on the screen cannot be asserted
+        # by reading the value that would have produced it, which is the frozen-binding
+        # shape this repository has found three times.
+        import numpy as np
+
+        from PySide6.QtGui import QImage
+
+        image = QImage(self.png)
+        buf = np.frombuffer(bytes(image.constBits()),
+                            dtype=np.uint8).reshape(image.height(), image.bytesPerLine())
+        arr = buf[:, : image.width() * 4].reshape(
+            image.height(), image.width(), 4)[:, :, :3].astype(int)
+        # `Theme.COLOR_WARN` is #f0b429: high R, high G, low B. `QImage.Format_RGB32` is
+        # stored **BGRA** on a little-endian host, so channel 0 is blue - getting that
+        # backwards is why M1's first accent mask counted zero pixels on a render with
+        # 13987 of them.
+        warn = ((arr[:, :, 2] > 200) & (arr[:, :, 1] > 140) & (arr[:, :, 1] < 210)
+                & (arr[:, :, 0] < 120))
+        # The cards' left edges. Measured on this render: x 1313-1314 carries **408**
+        # warning-coloured rows, which is **two** card borders - the two stale cameras. The
+        # third is `failed`, and a failed card is outlined in the bad colour, not the
+        # warning one, so three borders would be a bug.
+        band = warn[:, 1313:1315].any(axis=1)
+        rows = int(band.sum())
+        self.assertGreater(
+            rows, 300,
+            f"only {rows} warning-coloured rows on the cards' left edges; the stale "
+            f"outline is not being drawn. Measured 408 for two stale cards in this "
+            f"layout, so the floor is well below the real figure and well above nothing.")
+
+    def test_a_failed_camera_claims_no_device_and_states_its_own_reason(self):
+        # The case the brief calls a card asking the presenter to guess.
+        self.assertEqual(self.text("streamBadgeText_C"), "no device is running",
+                         "a failed route must claim no device; it certainly must not "
+                         "borrow the one that was requested")
+        reason = self.text("streamReasonText_C")
+        self.assertTrue(self.visible("streamReasonText_C"))
+        self.assertIn("restart budget for stream 'C'", reason,
+                      f"camera C's own reason must be on camera C's card: {reason!r}")
+        self.assertIn("no device is being claimed for it", reason, reason)
+        # **And the other two cards must not carry it.** This is the whole reason the
+        # per-stream error channel exists.
+        for sid in ("A", "B"):
+            self.assertEqual(self.text(f"streamReasonText_{sid}"), "",
+                             f"camera {sid} is active and healthy and must not display "
+                             f"camera C's failure")
+            self.assertFalse(self.visible(f"streamReasonText_{sid}"))
+            self.assertEqual(self.text(f"streamBadgeText_{sid}"), "CPU",
+                             f"camera {sid}'s confirmed placement is on its own card")
+
+    def test_each_camera_carries_its_own_device_and_no_other_cameras(self):
+        for sid in ("A", "B"):
+            self.assertEqual(self.text(f"streamBadgeText_{sid}"), "CPU")
+        self.assertEqual(self.text("streamBadgeText_C"), "no device is running")
+        # The confirmed device drives the device's own utilisation wording. With three
+        # cameras on three devices there is one of each; here all three are on the CPU, so
+        # all three must carry the **CPU** wording - "no CPU sample yet", never the
+        # accelerators' "Utilization unavailable".
+        self.assertEqual(self.text("cardText_system_cpu_percent"), "no CPU sample yet")
+        self.assertNotIn("cardText_gpu_utilisation_percent", self.strings,
+                         "no camera is on the GPU, so no card may claim a GPU metric")
+        self.assertNotIn("cardText_", self.strings,
+                         f"a half-named cardText_ item exists, which is the exact shape "
+                         f"the M1 test was rewritten to stop reaching for: "
+                         f"{sorted(self.strings)}")
+
+    def test_a_camera_with_nothing_measured_reads_unavailable_and_never_zero(self):
+        # A **second render**, seeded with three declared streams and nothing else: no
+        # route, no metrics, no frames. This is the screen's first frame.
+        tmp = tempfile.mkdtemp(prefix="roadshow-cold-")
+        try:
+            _png, strings = _render(tmp, 'bridge.set_streams(["A", "B", "C"])\n')
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        for sid in ("A", "B", "C"):
+            self.assertIn(f"streamAgeText_{sid}", strings,
+                          "a cold card must still be a card; an empty metrics column is "
+                          "indistinguishable from a broken screen")
+            age, age_visible = strings[f"streamAgeText_{sid}"]
+            self.assertEqual(age, "unavailable",
+                             f"camera {sid} has analysed nothing, so its age must be the "
+                             f"word and not 0.0 ms - it reads {age!r}")
+            self.assertTrue(age_visible)
+            for prefix in ("streamWindowText_", "streamBacklogText_", "streamRateText_"):
+                text, _vis = strings[f"{prefix}{sid}"]
+                self.assertIn("unavailable", text,
+                              f"{prefix}{sid} on a cold screen reads {text!r}; "
+                              f"'0 frames of backlog' looks like a healthy empty queue")
+            self.assertEqual(strings[f"streamBadgeText_{sid}"][0],
+                             "no device is running",
+                             "nothing has confirmed anything, so no camera claims a "
+                             "device")
+            self.assertEqual(strings[f"streamReasonText_{sid}"][1], False,
+                             "a pending camera has nothing to explain")
+
+    def test_the_overlay_geometry_is_recomputed_and_a_square_frame_would_not_catch_it(self):
+        # **Obligation: overlay geometry must be checked against an independent
+        # recomputation, and the test must not be vacuous on a square frame.**
+        #
+        # `app.main._frame_payload` normalises a track box by dividing x and w by
+        # `frame.width` and y and h by `frame.height`. Getting either wrong still produces a
+        # box inside [0, 1], so a bounds check cannot catch it - which is exactly what M1
+        # recorded. The live test in `tests/test_main.py` catches it by agreeing with the
+        # tracker's own boxes, and it runs on a 1920x1080 frame.
+        #
+        # This one runs with **no hardware at all**, on a deliberately lopsided frame, and
+        # includes the negative control that proves the control has teeth.
+        import numpy as np
+
+        from app.engine.tracker import Track
+        from app.main import _frame_payload
+
+        class _Frame:
+            # **640x360**, so the two divisors differ by a factor of 1.78 and a swap is
+            # unmissable. A square frame would make them identical, which is why a
+            # square-frame version of this test proves nothing.
+            width = 640
+            height = 360
+            # The payload carries the pixels on to the bridge; a stand-in frame with no
+            # `image` raises before the boxes are even built, which is the first version's
+            # only failure.
+            image = np.zeros((360, 640, 3), np.uint8)
+
+            def __init__(self):
+                self.identity = ("s", "A", 1, 0)
+
+        class _Manifest:
+            def zones_for_event_rules(self):
+                return {}
+
+        class _Tracker:
+            def current_tracks(self):
+                return [Track(track_id=7, class_id=0, box=(64.0, 36.0, 320.0, 180.0),
+                              first_seen=0.0, last_seen=0.0, hits=2, misses=0,
+                              confirmed=True)]
+
+        payload = _frame_payload(_Frame(), _Tracker(), [], _Manifest())
+        self.assertEqual(len(payload["boxes"]), 1, payload)
+        box = payload["boxes"][0]
+        # The correct normalisation, written out longhand.
+        self.assertAlmostEqual(box["x"], 64.0 / 640.0, places=9)
+        self.assertAlmostEqual(box["y"], 36.0 / 360.0, places=9)
+        self.assertAlmostEqual(box["w"], (320.0 - 64.0) / 640.0, places=9)
+        self.assertAlmostEqual(box["h"], (180.0 - 36.0) / 360.0, places=9)
+        # **The negative control.** Swapping the divisors produces numbers that are all
+        # inside [0, 1] and would pass every bounds check - and that differ from the
+        # correct ones, so the agreement assertion above is doing the work.
+        wrong_x, wrong_y = 64.0 / 360.0, 36.0 / 640.0
+        for value in (wrong_x, wrong_y):
+            self.assertGreaterEqual(value, 0.0)
+            self.assertLessEqual(value, 1.0, "a swapped divisor is still legal, which is "
+                                           "the trap")
+        self.assertNotAlmostEqual(wrong_x, box["x"], places=3)
+        self.assertNotAlmostEqual(wrong_y, box["y"], places=3)
+
+
+class PerStreamErrorChannel(unittest.TestCase):
+    """**M2 Task 5's first job: a card showing `failed` with no reason is a card asking
+    the presenter to guess.**
+
+    Task 4 removed `errors` from the per-stream route payload and said why: `RoutePlan` had
+    no per-stream error channel, so forwarding `plan.errors` under a per-stream label would
+    show Camera C's failure carrying Camera A's and Camera B's sentences. This class is
+    the channel itself, and it is tested on the contract rather than on the screen because
+    the screen test (`ThreeStreamBoothLayout`) can only check what the bridge was given.
+    """
+
+    def _plan(self, **kwargs):
+        from app.contracts.route_plan import RoutePlan
+
+        base = dict(generation=1,
+                    requested={"A": "CPU", "B": "CPU", "C": "CPU"},
+                    confirmed={"A": ("CPU",), "B": ("CPU",)},
+                    state="active",
+                    stream_states={"A": "active", "B": "active", "C": "failed"})
+        base.update(kwargs)
+        return RoutePlan(**base)
+
+    def test_a_failed_stream_must_carry_its_own_stated_reason(self):
+        # The refusal this field exists to enforce. The aggregate `errors` may well hold the
+        # reason - and putting it only there is what the card cannot use.
+        from app.contracts.route_plan import RoutePlan
+
+        with self.assertRaises(ValueError) as caught:
+            RoutePlan(generation=1,
+                      requested={"A": "CPU", "C": "CPU"},
+                      confirmed={"A": ("CPU",)},
+                      state="active",
+                      errors=("something about a camera",),
+                      stream_states={"A": "active", "C": "failed"})
+        self.assertIn("C", str(caught.exception))
+        self.assertIn("per-stream", str(caught.exception))
+
+    def test_the_plan_is_accepted_once_each_failed_stream_has_its_reason(self):
+        plan = self._plan(
+            errors=("A note about stream 'C'",),
+            stream_errors={"C": ("The restart budget for stream 'C' at generation 1 is "
+                                 "spent, so this route is failed and no device is being "
+                                 "claimed for it.",)})
+        self.assertEqual(
+            plan.stream_reasons("C"),
+            ("The restart budget for stream 'C' at generation 1 is spent, so this route is "
+             "failed and no device is being claimed for it.",))
+        # **And the two healthy cameras have none of their own.**
+        for sid in ("A", "B"):
+            self.assertEqual(plan.stream_reasons(sid), (),
+                             f"camera {sid} is active; it must not have borrowed C's "
+                             f"reason from the aggregate")
+
+    def test_the_aggregate_still_exists_and_is_still_the_concatenation(self):
+        # Not replaced - removed would break M1 and M0's readers. It is simply no longer
+        # what a card reads, and this test says which is which.
+        plan = self._plan(
+            errors=("first about A", "second about C"),
+            stream_errors={"A": ("first about A",),
+                           "C": ("second about C",)})
+        self.assertEqual(plan.errors, ("first about A", "second about C"))
+        self.assertEqual(plan.stream_reasons("A"), ("first about A",))
+        self.assertEqual(plan.stream_reasons("C"), ("second about C",))
+
+    def test_a_stream_that_is_not_failed_needs_no_reason(self):
+        plan = self._plan(state="active",
+                          stream_states={"A": "active", "B": "pending", "C": "pending"})
+        self.assertEqual(dict(plan.stream_errors), {})
+
+    def test_a_reason_for_a_stream_nobody_requested_is_refused(self):
+        from app.contracts.route_plan import RoutePlan
+
+        with self.assertRaises(ValueError) as caught:
+            RoutePlan(generation=1, requested={"A": "CPU"},
+                      state="active",
+                      stream_errors={"Z": ("about a camera nobody asked for",)})
+        self.assertIn("Z", str(caught.exception))
+
+    def test_the_field_survives_validation_as_tuples_and_json(self):
+        import json
+
+        plan = self._plan(stream_errors={"C": ("reason one", "reason two")})
+        self.assertEqual(plan.stream_errors["C"], ("reason one", "reason two"))
+        self.assertIsInstance(plan.stream_errors["C"], tuple)
+        # A mutable list in a frozen dataclass would be a shared-mutation bug.
+        with self.assertRaises(Exception):
+            plan.stream_errors["C"] = ("other",)
+        payload = json.dumps(plan.to_json())
+        self.assertIn('"stream_errors"', payload)
+
+
+class StreamCardRecord(unittest.TestCase):
+    """The card record, asserted in Python. No window, no hardware.
+
+    The screen test proves the strings reach the screen; this proves each string is the
+    honest one, including the cases the screen cannot easily be driven into - a stream that
+    has measured nothing, and a route that failed after it had.
+    """
+
+    def _bridge(self, sid="A", device="CPU", state="active", confirmed=("CPU",),
+                errors=(), p50=10767.0, p95=11626.0, backlog=170, fps=13.5,
+                window=256, requested="CPU", fell_back=False):
+        bridge = _bridge()
+        bridge.set_streams([sid])
+        bridge.apply_route({"stream": sid, "requested": requested,
+                            "confirmed": list(confirmed), "state": state,
+                            "fell_back": fell_back, "errors": list(errors)})
+        bridge.set_stream_metrics(sid, age_p50_ms=p50, age_p95_ms=p95, backlog=backlog,
+                                  analysis_fps=fps, window_samples=window)
+        return bridge
+
+    def test_a_measured_eleven_second_card_says_so_in_words(self):
+        card = self._bridge().stream_card("A")
+        self.assertEqual(card["age_p50_text"], "10.8 s", card)
+        self.assertEqual(card["age_p95_text"], "11.6 s", card)
+        self.assertEqual(card["backlog_text"], "170 frames", card)
+        self.assertEqual(card["window_text"], "256 analysed frames", card)
+        self.assertTrue(card["stale"], card)
+        self.assertIn("STALE", card["staleness"])
+        self.assertIn("10.8 s", card["staleness"])
+        self.assertIn("2 s", card["staleness"])
+        self.assertEqual(card["badge"], "CPU", card)
+        self.assertEqual(card["device"], "CPU", card)
+
+    def test_a_fresh_picture_is_not_called_stale(self):
+        card = self._bridge(p50=315.5, p95=902.4).stream_card("A")
+        self.assertEqual(card["age_p50_text"], "315.5 ms", card)
+        self.assertFalse(card["stale"], card)
+        self.assertEqual(card["staleness"], "",
+                         "a fresh stream must not carry a STALE sentence with an empty "
+                         "figure in it")
+
+    def test_the_threshold_is_spec_section_sevens_two_seconds_and_it_is_exclusive(self):
+        from app.ui.bridge import STALE_AFTER_SECONDS
+
+        self.assertEqual(STALE_AFTER_SECONDS, 2.0)
+        # **Strictly older, which is what the spec says**: "Values older than 2 s are
+        # `stale`". So exactly 2.000 s is not stale and 2.001 s is. The first version of
+        # this test asserted the inclusive reading and failed; the spec's word is "older",
+        # and picking `>=` to make a test pass would be changing the document's meaning
+        # rather than the code.
+        self.assertFalse(self._bridge(p50=1999.0).stream_card("A")["stale"])
+        self.assertFalse(self._bridge(p50=2000.0).stream_card("A")["stale"],
+                         "2.000 s is not *older than* 2 s")
+        self.assertTrue(self._bridge(p50=2001.0).stream_card("A")["stale"])
+
+    def test_an_unmeasured_stream_reads_unavailable_on_every_figure(self):
+        bridge = _bridge()
+        bridge.set_streams(["A"])
+        bridge.apply_route({"stream": "A", "requested": "CPU", "confirmed": [],
+                            "state": "pending", "fell_back": False, "errors": []})
+        # **No `set_stream_metrics` at all** - the state of the screen's first frame.
+        card = bridge.stream_card("A")
+        for field in ("age_p50_text", "age_p95_text", "fps_text", "backlog_text",
+                      "window_text"):
+            self.assertEqual(card[field], "unavailable",
+                             f"{field} reads {card[field]!r} for a stream that has "
+                             f"measured nothing; '0' here looks exactly like health")
+        self.assertFalse(card["stale"], "an absent age is not a stale age")
+        self.assertEqual(card["staleness"], "")
+        self.assertEqual(card["badge"], "no device is running",
+                         "nothing has confirmed a placement, so the badge claims none")
+        # **The device line is a different question from the badge.** A pending camera that
+        # asked for the CPU legitimately shows the CPU's own utilisation wording - that
+        # counter exists and it is the CPU's - while claiming no placement. The *failed*
+        # case below is the one that must name no device at all, because a camera with no
+        # worker has no device whose utilisation could be relevant.
+        self.assertEqual(card["device"], "CPU", card)
+        self.assertEqual(card["state"], "pending")
+
+    def test_a_failed_route_names_no_device_even_though_one_was_requested(self):
+        card = self._bridge(state="failed", confirmed=(),
+                            errors=("the reason",)).stream_card("A")
+        self.assertEqual(card["badge"], "no device is running", card)
+        self.assertEqual(card["device"], "", "a failed route must not borrow the "
+                                             "requested device for its utilisation line")
+        self.assertEqual(card["requested"], "CPU", card)
+        self.assertEqual(card["reason"], "the reason", card)
+
+    def test_a_failed_route_with_no_reason_says_so_rather_than_leaving_it_blank(self):
+        card = self._bridge(state="failed", confirmed=()).stream_card("A")
+        self.assertIn("no reason was stated", card["reason"],
+                      "a blank reason line reads as a rendering failure and 'failed' with "
+                      "nothing after it asks the presenter to guess")
+
+    def test_a_fallback_shows_the_requested_device_alongside_the_confirmed_one(self):
+        # `fell_back` is **published by the plan**, not computed by the bridge - the
+        # confirmed readings are `GPU.0` and the request is `NPU`, and only
+        # `app.inference.devices.is_device` knows that a mismatch is a real one rather than
+        # a spelling difference. So the bridge stores what it is told, and this test
+        # supplies the truth.
+        card = self._bridge(requested="NPU", confirmed=("CPU",),
+                            fell_back=True).stream_card("A")
+        self.assertTrue(card["fell_back"], card)
+        self.assertEqual(card["badge"], "CPU (fell back from NPU)", card)
+
+    def test_the_dotted_gpu_reading_is_normalised_for_the_device_line(self):
+        # `'GPU.0'` is what the GPU reports. A card that keyed its utilisation wording off
+        # the raw string would find nothing and print "unavailable" for a camera whose
+        # utilisation genuinely has no counter - the right answer for the wrong reason.
+        card = self._bridge(device="GPU", requested="GPU",
+                            confirmed=("GPU.0",)).stream_card("A")
+        self.assertEqual(card["device"], "GPU", card)
+        self.assertEqual(card["badge"], "GPU.0", card)
+
+    def test_frame_age_and_inference_cost_are_never_merged_into_one_number(self):
+        # The standing rule. On the NPU the measured p95 frame age is seconds and the
+        # inference is about 5.9 ms; the gap is queue wait. Nothing here adds them, so this
+        # test asserts the *shape*: the only age on the record is a frame age, in the age
+        # fields, and no field mixes the two units.
+        card = self._bridge().stream_card("A")
+        age_fields = {k: v for k, v in card.items() if "age" in k}
+        self.assertTrue(age_fields, card)
+        for name, value in age_fields.items():
+            self.assertNotIn("fps", str(value),
+                             f"{name} reads {value!r}, which mixes a rate into an age")
+
+    def test_declaring_a_cameras_notifies_the_scene_on_its_own(self):
+        # `set_streams` must emit. A `Repeater` bound to `bridge.stream_ids` has **no other
+        # way** to learn the set changed, and the whole point of declaring the cameras is
+        # that the cards exist from the first rendered frame - a declaration that updates
+        # Python and never tells QML produces an empty metrics column forever, which is
+        # indistinguishable from a broken screen.
+        #
+        # Asserted on the signal itself with **no** route payload and **no** metrics, so it
+        # cannot be satisfied by another path emitting the same signal.
+        bridge = _bridge()
+        route_ticks = []
+        card_ticks = []
+        bridge.streamStatesChanged.connect(lambda: route_ticks.append(1))
+        bridge.streamCardsChanged.connect(lambda: card_ticks.append(1))
+        bridge.set_streams(["A", "B", "C"])
+        self.assertEqual(len(route_ticks), 1,
+                         "`stream_ids` is notified by `streamStatesChanged`, and nothing "
+                         "else emits it here")
+        self.assertEqual(len(card_ticks), 1,
+                         "and the cards themselves are notified, or the QML card bindings "
+                         "would read a cold record")
+        # Declaring the same set again changes nothing, so a 4 Hz caller cannot repaint.
+        bridge.set_streams(["C", "B", "A"])
+        self.assertEqual(route_ticks, [1], "re-declaring the same set is not a change")
+
+    def test_declaring_a_stream_creates_a_card_that_claims_nothing(self):
+        # `set_streams` is a declaration, not a measurement. A card for a camera that has
+        # said nothing must say nothing.
+        bridge = _bridge()
+        bridge.set_streams(["A", "B", "C"])
+        self.assertEqual(list(bridge.stream_ids), ["A", "B", "C"])
+        for sid in ("A", "B", "C"):
+            card = bridge.stream_card(sid)
+            self.assertEqual(card["state"], "pending", card)
+            self.assertEqual(card["age_p50_text"], "unavailable", card)
+            self.assertEqual(card["badge"], "no device is running", card)
+
+    def test_three_cameras_never_share_one_figures(self):
+        bridge = _bridge()
+        bridge.set_streams(["A", "B", "C"])
+        for sid, p50, backlog in (("A", 10767.0, 170), ("B", 11085.0, 179),
+                                  ("C", 11319.0, 187)):
+            bridge.apply_route({"stream": sid, "requested": "CPU",
+                                "confirmed": ["CPU"], "state": "active",
+                                "fell_back": False, "errors": []})
+            bridge.set_stream_metrics(sid, age_p50_ms=p50, age_p95_ms=p50 + 500.0,
+                                      backlog=backlog, analysis_fps=13.5,
+                                      window_samples=256)
+        cards = {c["stream"]: c for c in bridge.stream_cards}
+        self.assertEqual(len(cards), 3, cards)
+        self.assertEqual([cards[s]["age_p50_text"] for s in "ABC"],
+                         ["10.8 s", "11.1 s", "11.3 s"])
+        self.assertEqual([cards[s]["backlog_text"] for s in "ABC"],
+                         ["170 frames", "179 frames", "187 frames"])
+
+    def test_publishing_the_window_notifies_so_a_card_binding_re_reads(self):
+        bridge = _bridge()
+        ticks = []
+        bridge.streamCardsChanged.connect(lambda: ticks.append(1))
+        bridge.set_stream_metrics("A", age_p50_ms=None, age_p95_ms=None, backlog=None,
+                                  analysis_fps=None, window_samples=256)
+        self.assertEqual(len(ticks), 1,
+                         "the card's whole record comes from this one signal; without it "
+                         "a QML binding reads the cold card for the whole session")
+
+    def test_publishing_identical_metrics_does_not_notify(self):
+        # A telemetry tick at 4 Hz must not repaint three cards 4 times a second when
+        # nothing moved. Bounded by "only when a value changed", which is the same rule
+        # `_metrics` follows.
+        bridge = self._bridge()
+        ticks = []
+        bridge.streamCardsChanged.connect(lambda: ticks.append(1))
+        bridge.set_stream_metrics("A", age_p50_ms=10767.0, age_p95_ms=11626.0,
+                                  backlog=170, analysis_fps=13.5, window_samples=256)
+        self.assertEqual(ticks, [])
+
+
+    def test_each_camera_carries_its_own_device_wording_on_a_three_device_render(self):
+        # **Obligation: the CPU card must not wear the accelerator's wording.** M1 checked
+        # this by asserting `unavailable_notice["GPU"] == "Utilization unavailable"` on a
+        # screen that had one camera on the CPU - i.e. on cards that were not there. Now
+        # there really is one camera per device, so each wording is read off the card that
+        # carries it.
+        tmp = tempfile.mkdtemp(prefix="roadshow-devices-")
+        try:
+            _png, strings = _render(tmp, _THREE_DEVICE_SEED)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        expected = {"system_cpu_percent": "no CPU sample yet",
+                    "gpu_utilisation_percent": "Utilization unavailable",
+                    "npu_utilisation_percent": "Utilization unavailable"}
+        for metric, wording in expected.items():
+            name = "cardText_" + metric
+            self.assertIn(name, strings,
+                          f"there must be a card figure named for the {metric}: "
+                          f"{sorted(strings)}")
+            self.assertEqual(strings[name][0], wording,
+                             f"{metric} renders {strings[name][0]!r}; a machine-wide "
+                             f"GPU peak is NOT attributable to this process, so "
+                             f"'Utilization unavailable' is the only honest wording and "
+                             f"the CPU must never borrow it")
+        # And the CPU is genuinely different - the assertion above is not satisfied by all
+        # three saying the same thing.
+        self.assertNotEqual(expected["system_cpu_percent"],
+                            expected["gpu_utilisation_percent"])
+        # Each camera's badge names its own confirmed reading, the dotted form included.
+        self.assertEqual(strings["streamBadgeText_A"][0], "CPU")
+        self.assertEqual(strings["streamBadgeText_B"][0], "GPU.0",
+                         "the GPU's own EXECUTION_DEVICES spelling, not a tidied 'GPU'")
+        self.assertEqual(strings["streamBadgeText_C"][0], "NPU")
+        # None of these three cameras is stale, so none may carry the word.
+        for sid in ("A", "B", "C"):
+            self.assertEqual(strings[f"streamStaleText_{sid}"][1], False,
+                             f"camera {sid} is at 315 ms; it must not be called stale")
 
 
 class FrameAgeWindowAndFallbackRendering(unittest.TestCase):
@@ -657,7 +1372,7 @@ class UtilisationHonesty(unittest.TestCase):
 
     def test_no_qml_mentions_a_utilisation_percentage(self):
         # A source-level check: no QML file may name a utilisation metric with a value,
-        # and **every one of the three cards** must take its availability from the
+        # and **every one of the three device lines** must take its availability from the
         # bridge's measurement, never a literal.
         #
         # I7: the CPU card used to pass `utilisationAvailable: true`, hardcoded, which
@@ -667,19 +1382,31 @@ class UtilisationHonesty(unittest.TestCase):
         # answer the same question of the bridge.
         qml = _qml_sources()
         self.assertNotIn("gpu_utilisation_percent: ", qml.replace('"', ""))
-        # `Main.qml` only. `deviceId: "CPU"` also appears in `ComputeCard.qml` as the
-        # card component's own property declaration, and searching every QML file found
-        # that declaration first and then measured the component rather than its use.
-        main = (REPO_ROOT / "app" / "ui" / "Main.qml").read_text(encoding="utf-8")
-        for name in ("CPU", "GPU", "NPU"):
-            marker = f'deviceId: "{name}"'
-            self.assertIn(marker, main)
-            tail = main.split(marker, 1)[1][:400]
-            self.assertIn("utilisationAvailable: bridgeUi.", tail,
-                          f"the {name} card must take its availability from the bridge's "
-                          f"measurement, never a literal")
         self.assertNotIn("utilisationAvailable: true", qml,
                          "no card may hardcode its own availability")
+        # **M2 Task 5 retarget.** The device-to-metric mapping moved from three hand-written
+        # cards in `Main.qml` into `ComputeCard.qml`, because the card is now per *stream*
+        # and a stream's device is only known at run time - three fixed cards would each
+        # have to claim a device the stream might not be on. The guard's teeth are the two
+        # things it always cared about: **each device maps to its own metric name**, and
+        # **availability is read from the bridge, never asserted**.
+        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in card.splitlines()
+                         if not line.strip().startswith("//"))
+        for device, metric in (("CPU", "system_cpu_percent"),
+                               ("GPU", "gpu_utilisation_percent"),
+                               ("NPU", "npu_utilisation_percent")):
+            self.assertIn(f'deviceId === "{device}" ? "{metric}"', code,
+                          f"the {device} line must name the {device}'s own metric, not a "
+                          f"shared one")
+        self.assertIn("bridge.metric_text[metricName]", code,
+                      "the utilisation figure must come from the bridge's notified map")
+        self.assertIn("bridge.unavailable_text", code,
+                      "and an absent figure must read as the bridge's word, not a 0")
+        # A card may not dim itself on utilisation any more - see ComputeCard.qml's header:
+        # dimming the card that says the NPU stream is eleven seconds stale, because NPU
+        # utilisation cannot be measured, would dim the one warning that matters.
+        self.assertNotIn("opacity: card.utilisationAvailable", code)
 
     def test_the_cpu_card_answers_the_same_question_the_accelerators_do(self):
         # The bridge side of I7: `cpu_available` is derived from the value, so an
@@ -1328,14 +2055,29 @@ class SlotBindingAudit(unittest.TestCase):
         # The specific instance the review named. Named explicitly so a regression to
         # `window_text(...)` in a binding fails here with a message that says what to do,
         # rather than only in the general scan above.
+        #
+        # **M2 Task 5: the mechanism moved, the ban did not.** The card is per stream now,
+        # and the frame-age window is a *count of analysed frames for this camera*, which
+        # is not in `window_notes` at all - that map is the telemetry sampler's windows, one
+        # per metric, and none of them describes a stream's retained ages. So the card reads
+        # it from the bridge's notified per-stream record instead. The guard therefore now
+        # bans the Slot call **anywhere** in the card, which is strictly stronger than
+        # banning it in one property, and requires the window to arrive through a notified
+        # property.
         card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
         code = "\n".join(line for line in card.splitlines()
                          if not line.strip().startswith("//"))
         self.assertNotRegex(
-            code, r"windowNote[^=]*=[^;]*\bwindow_text\s*\(",
-            "windowNote binds to a Slot call, so the 'measured over N ms' line is "
-            "evaluated once at engine.load and never appears again")
-        self.assertIn("bridge.window_notes", code)
+            code, r"\bwindow_text\s*\(",
+            "the card calls the window_text Slot, so the window line is evaluated once at "
+            "engine.load and never appears again")
+        self.assertNotRegex(
+            code, r"\bdisplay_text\s*\(",
+            "display_text is a Slot too, and a Slot call in a binding declares no property "
+            "dependency")
+        self.assertIn("record.window_text", code,
+                      "the window must come from the bridge's notified per-stream record, "
+                      "which is what re-reads when the telemetry tick publishes")
 
     def test_every_device_card_binds_its_unavailable_wording_to_the_bridge(self):
         # R1. The accelerators say "Utilization unavailable" because there is no counter
