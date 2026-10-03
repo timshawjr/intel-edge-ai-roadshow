@@ -1111,6 +1111,11 @@ def _publish_derived_metrics(bridge: Any, supervisor: Any,
     p50 = _percentile(ages, 0.50)
     p95 = _percentile(ages, 0.95)
     bridge.set_metrics(ai_fps=fps, frame_age_p50_ms=p50, frame_age_p95_ms=p95)
+    # R3: the footer's event counts may only read `0` once a frame has actually been
+    # analysed. This is the supervisor's own counter rather than a count of applied
+    # results, so the row does not flicker between "unavailable" and `0` every time a
+    # result is queued but its slot has not run yet.
+    bridge.set_frames_analysed(analysed)
     previous["at"] = now
     previous["analysed"] = analysed
 

@@ -334,38 +334,41 @@ Window {
                                 font.pixelSize: Theme.TYPE_LABEL
                             }
 
-                            Repeater {
-                                model: ["zone_occupancy", "candidate_transfer", "candidate_return"]
-
-                                delegate: Text {
-                                    required property string modelData
-                                    // A kind the bridge has never heard of reads
-                                    // "unavailable", **not 0**.
-                                    //
-                                    // The previous wording here claimed a bare 0 was "a real
-                                    // count: the machine decided there were none". That is
-                                    // only true once something has run; before the first
-                                    // event the bridge has counted nothing, which is an
-                                    // absence and not a measurement of zero. And it was
-                                    // reachable in exactly the state that matters: while the
-                                    // live path was unwired, `record_event` had no caller, so
-                                    // this row rendered a fabricated `0` beside every kind for
-                                    // a whole session.
-                                    //
-                                    // The distinction is drawn where it can be observed: the
-                                    // counts are only meaningful once the route is confirmed,
-                                    // because before a placement is proved no inference has
-                                    // happened and no event could have been counted.
-                                    readonly property bool routeConfirmed:
-                                        bridge.device_confirmed.length > 0
-                                    text: modelData + " "
-                                          + (!routeConfirmed ? "unavailable"
-                                             : (bridge.event_counts[modelData] !== undefined
-                                                ? bridge.event_counts[modelData] : 0))
-                                    color: Theme.TEXT_ON_PANEL
-                                    font.family: Theme.FONT_FAMILY
-                                    font.pixelSize: Theme.TYPE_DETAIL
-                                }
+                            // One Text rather than a Repeater of three.
+                            //
+                            // The row is three small numbers that change together, so a
+                            // single binding is simpler and is readable as a whole - and
+                            // unlike the Repeater's delegates it carries an `objectName` a
+                            // test can actually find, so a regression that makes the row say
+                            // something wrong is visible rather than assumed.
+                            Text {
+                                objectName: "eventCountRow"
+                                // Gated on **frames analysed**, not on the route. A
+                                // confirmed placement is established from the worker's
+                                // route, which arrives before any frame has been analysed -
+                                // so gating on `device_confirmed` left a real window, route
+                                // confirmed and zero frames analysed, in which this row
+                                // printed three hard zeros for an event machine that had not
+                                // run a single frame.
+                                //
+                                // A kind the bridge has never heard of reads 0 **once
+                                // something could have counted one**, and "unavailable"
+                                // before that. The earlier wording called a bare 0 "a real
+                                // count: the machine decided there were none", which is only
+                                // true once the machine has looked at something.
+                                readonly property var kinds: ["zone_occupancy",
+                                                             "candidate_transfer",
+                                                             "candidate_return"]
+                                readonly property bool countedSomethingYet:
+                                    bridge.frames_analysed > 0
+                                text: kinds.map(k => k + " " + (
+                                          !countedSomethingYet ? "unavailable"
+                                          : (bridge.event_counts[k] !== undefined
+                                             ? bridge.event_counts[k] : 0)
+                                      )).join("    ")
+                                color: Theme.TEXT_ON_PANEL
+                                font.family: Theme.FONT_FAMILY
+                                font.pixelSize: Theme.TYPE_DETAIL
                             }
                         }
 

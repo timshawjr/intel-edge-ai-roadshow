@@ -105,10 +105,12 @@ class _Extents:
         self.height = int(height or 0)
 
 __all__ = [
+    "CPU_UNAVAILABLE_TEXT",
     "EXPLANATIONS",
     "FrameImageProvider",
     "RECORDED_FOOTAGE_LABEL",
     "SCOPE_NOTE_LABEL",
+    "SLOT_CALLS_SAFE_IN_A_QML_BINDING",
     "ThemeTokens",
     "UNAVAILABLE_TEXT",
     "UTILISATION_UNAVAILABLE_TEXT",
@@ -137,6 +139,55 @@ UTILISATION_SHORT_REASON = (
     "machine-wide peak is not attributable to this process. Inference activity is shown "
     "instead: frames analysed, latency, and the confirmed device."
 )
+
+#: What the **CPU** card says when a system CPU reading has not landed, and why it is not
+#: the accelerator wording.
+#:
+#: "Utilization unavailable" is the *accelerator* story: the GPU and NPU cards show it
+#: because `psutil` has no counter for those devices at all, `app.telemetry.pdh`'s native
+#: value reads fault this process, and nothing is estimated in place of a measurement. On
+#: the CPU card the same words assert a failure to read a counter that **does** work here -
+#: `psutil.cpu_percent` is called every 250 ms and returns a figure. The true and much
+#: weaker fact is that no sample has landed yet, or that the last delta window was too
+#: short to measure. Those are different claims and a presenter who is asked "why does the
+#: CPU card say unavailable?" deserves the right one.
+CPU_UNAVAILABLE_TEXT = "no CPU sample yet"
+
+#: Calls a QML **binding** may make, because their result depends only on module-level
+#: constants and therefore cannot go stale between evaluations. Qualified by owner, so a
+#: QML helper and a Python Slot cannot be confused for one another.
+#:
+#: A QML binding that calls a method declares no property dependency, so Qt evaluates it
+#: once - at `engine.load` - and never again. That is the defect class this milestone found
+#: three times: the `constant=True` device badge, the metric cards over
+#: `display_text(...)`, and the card's `windowNote` over `window_text(...)`. In each case
+#: the bridge was right and the screen was frozen at its first evaluation.
+#:
+#: **This set is the standing guard.** A QML binding that calls anything else will not
+#: re-evaluate, so `tests/test_ui_contract.py::SlotBindingAudit` fails on any such call
+#: that is not named here. Adding a name is a deliberate act with a stated justification,
+#: not something a binding acquires by existing.
+#:
+#: What qualifies:
+#:
+#: - `bridge.explanation` - reads `EXPLANATIONS`, a module constant, and its argument
+#:   (`explainKey`) is fixed per card.
+#: - `bridgeUi.explain` - a thin QML wrapper over the above; same constant, and its
+#:   argument is a clicked key, so a click re-evaluates the binding anyway.
+#:
+#: What deliberately does **not** qualify:
+#:
+#: - `bridge.display_text`, `bridge.window_text`, `bridge.staleness_text` - all read live
+#:   state. Bind to `metric_text`, `window_notes` and `staleness` instead; those are
+#:   notified properties holding the same formatted values.
+#: - `bridgeUi.confirms` - reads `device_confirmed`, which changes when the first result
+#:   lands. Nothing binds to it; `ComputeCard` has its own `confirmedHere` property bound
+#:   to `bridge.device_confirmed` directly, which does notify. Listed here because a
+#:   binding to it would freeze, and saying so is cheaper than discovering it.
+SLOT_CALLS_SAFE_IN_A_QML_BINDING: frozenset[str] = frozenset({
+    "bridge.explanation",
+    "bridgeUi.explain",
+})
 
 def _shipped_scope_note() -> str:
     """The retail pack's own `scope_note`, read from the pack.
@@ -596,6 +647,12 @@ class UiBridge(QObject):
     metricsTextChanged = Signal()
     #: The staleness word changed, for the same reason.
     stalenessChanged = Signal()
+    #: The per-device "why is there no figure" strings changed.
+    unavailableNoticeChanged = Signal()
+    #: The per-metric window strings changed, for the same reason as the metric map.
+    windowNotesChanged = Signal()
+    #: The number of analysed frames changed. See `frames_analysed`.
+    framesAnalysedChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -618,6 +675,10 @@ class UiBridge(QObject):
         self._latest_identity: tuple[Any, ...] | None = None
         self._frame_image: QImage | None = None
         self._frame_revision = 0
+        #: How many frames have been analysed. Set from the supervisor, not counted here:
+        #: the bridge sees applied results, and "applied" is not the same word as
+        #: "analysed". See `frames_analysed`.
+        self._frames_analysed = 0
 
         # Utilisation is **unavailable**, and it is unavailable for a measured reason. The
         # reasons are the strings `app/telemetry/pdh.py` publishes as
@@ -878,6 +939,67 @@ class UiBridge(QObject):
 
     metric_text = Property("QVariantMap", _get_metric_text, notify=metricsTextChanged)
 
+    def _get_window_notes(self) -> dict:
+        """Every metric's measurement window, already formatted, as `name -> text`.
+
+        The `windowNote` binding used to call `window_text(name)` directly, which is a Slot
+        call and therefore evaluated once at `engine.load` - so the "measured over N ms"
+        line never appeared in a live session, with its `visible:` guard false throughout.
+        See `_get_metric_text` for why a method call cannot work here.
+        """
+        return {name: self.window_text(name) for name in self._metrics}
+
+    window_notes = Property("QVariantMap", _get_window_notes, notify=windowNotesChanged)
+
+    def _get_unavailable_notice(self) -> dict:
+        """`deviceId -> what to show when that card has no figure`.
+
+        **Per card, because the reason is per card.** The GPU and NPU cards show
+        `UTILISATION_UNAVAILABLE_TEXT`, which is true for them: there is no `psutil` counter
+        for those devices, the PDH value reads fault this process, and nothing is estimated
+        in their place. The CPU card shows `CPU_UNAVAILABLE_TEXT`, because the true fact
+        there is that no sample has landed yet - `psutil.cpu_percent` is being called every
+        250 ms and works.
+
+        Sharing one literal made every run announce "Utilization unavailable" on the CPU
+        card during startup, before the first telemetry tick, and asserted a failure to
+        read a counter that is not failing. When a `MetricSample` carries an
+        `unavailable_reason`, that reason is preferred over both, because it is the
+        measurement's own words.
+
+        The three keys are fixed rather than derived from whatever the bridge happens to
+        know, so a card asking for a device with no entry gets an empty string and QML's
+        `!== undefined` guard falls through to `unavailable_text` - never to a blank.
+        """
+        notices = {
+            "CPU": CPU_UNAVAILABLE_TEXT,
+            "GPU": UTILISATION_UNAVAILABLE_TEXT,
+            "NPU": UTILISATION_UNAVAILABLE_TEXT,
+        }
+        sample = self._samples.get("system_cpu_percent")
+        if sample is not None and sample.validity is Validity.UNAVAILABLE:
+            reason = (sample.unavailable_reason or "").strip()
+            if reason:
+                notices["CPU"] = reason
+        return notices
+
+    unavailable_notice = Property("QVariantMap", _get_unavailable_notice,
+                                  notify=unavailableNoticeChanged)
+
+    def _get_frames_analysed(self) -> int:
+        """How many frames have been analysed. `0` before the first result.
+
+        **Not the route state.** The event-count row used to print a measured `0` for
+        every kind as soon as the device was confirmed - but a confirmed placement is
+        established from the worker's route, which arrives *before* any frame has been
+        analysed. So there was a real window, route confirmed and zero frames analysed, in
+        which the footer printed three hard zeros for an event machine that had not run.
+        A count of events may only read `0` once something could have counted one.
+        """
+        return self._frames_analysed
+
+    frames_analysed = Property(int, _get_frames_analysed, notify=framesAnalysedChanged)
+
     @Slot(str, result=str)
     def display_text(self, name: str) -> str:
         """The rendering of one optional metric. **The only path a number takes to QML.**
@@ -940,6 +1062,21 @@ class UiBridge(QObject):
         if window >= 1.0:
             return f"over {window:.2f} s"
         return f"over {window * 1000.0:.0f} ms"
+
+    @Slot(int)
+    def set_frames_analysed(self, count: int) -> None:
+        """Record how many frames the supervisor has analysed. UI thread.
+
+        Distinct from counting applied results in `apply_frame`: that number would be 0
+        whenever a result arrived but the queued slot had not run yet, and the event-count
+        row must not flicker between "unavailable" and `0` on that basis. The supervisor's
+        own counter is the one that says whether anything could have been counted.
+        """
+        value = int(count)
+        if value == self._frames_analysed:
+            return
+        self._frames_analysed = value
+        self.framesAnalysedChanged.emit()
 
     def _get_staleness(self) -> str:
         """`"fresh"`, `"stale"` or `""`, as a **notified property**.
@@ -1023,6 +1160,8 @@ class UiBridge(QObject):
         # rather than a method call for the same reason. See `_get_metric_text`.
         self.metricsTextChanged.emit()
         self.stalenessChanged.emit()
+        self.windowNotesChanged.emit()
+        self.unavailableNoticeChanged.emit()
 
     # -- frames, overlay and events -------------------------------------------------
 

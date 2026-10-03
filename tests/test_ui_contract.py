@@ -47,7 +47,9 @@ the platform pinned and returns the PNG path, so the assertion is on a file and 
 module needs no event loop of its own.
 """
 
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1095,6 +1097,313 @@ class OffscreenRender(unittest.TestCase):
         self.assertGreater(distinct, 40,
                            f"only {distinct} distinct colours in the render: the screen "
                            f"is effectively blank")
+
+
+class SlotBindingAudit(unittest.TestCase):
+    """The standing guard against frozen QML bindings.
+
+    ## The defect class
+
+    **A QML binding that calls a method declares no property dependency, so Qt evaluates
+    it once - at `engine.load` - and never again.** Three times in this milestone:
+
+    1. `device_display` was `constant=True` with no notify signal: the badge's Python value
+       changed and the screen never did.
+    2. every metric card bound to `bridge.display_text(...)`: on a live run whose bridge
+       held `system_cpu_percent: 58.0`, the screen read `unavailable`.
+    3. the card's `windowNote` bound to `bridge.window_text(...)` - eleven lines below the
+       fix for (2) - so the "measured over N ms" line never appeared at all, with its
+       `visible:` guard false for the whole session.
+
+    Fixing an instance does not close the class, and M2/M3 will hit it again. **This is the
+    general form**: any binding to a Slot whose result can change is frozen, and the only
+    safe ones are the ones named in
+    `app.ui.bridge.SLOT_CALLS_SAFE_IN_A_QML_BINDING`.
+
+    ## What it also catches
+
+    A call to a name the object **does not have**. `Main.qml` called `bridgeUi.explain(...)`
+    and `Bridge.qml` had no `explain` function - it had been dropped in an earlier edit.
+    Because the call sits behind `pinnedExplanationKey.length > 0` in a ternary, QML's
+    short-circuit meant it was never evaluated: the window loaded, every card drew, and the
+    "?" buttons were **dead at the booth**. A dangling call is invisible until somebody
+    clicks, which is the worst time to find out.
+
+    ## How it reads the QML
+
+    Line-oriented, not a parser. It scans for `<identifier>(` in a binding expression and
+    reports anything that looks like a call, then requires each to be classified. The
+    tolerance is deliberate: a QML parse tree would be a second, worse way to write the
+    rules, and the property under test is "did somebody add an unclassified call".
+    """
+
+    #: `bridge.<name>(` and `bridgeUi.<name>(` - the two QML-visible entry points.
+    CALL = re.compile(r"\b(bridge|bridgeUi)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+    def _calls(self) -> list:
+        """Every `bridge.x(...)` / `bridgeUi.x(...)` in the QML, with file and line."""
+        found = []
+        for path in sorted(UI_DIR.glob("*.qml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("//"):
+                    continue  # a comment describes code; it does not run
+                for match in self.CALL.finditer(line):
+                    found.append((path.name, number, match.group(1),
+                                  match.group(2), stripped))
+        return found
+
+    def test_the_audit_finds_the_bindings_it_is_meant_to_find(self):
+        # If the scan silently matched nothing it would be a guard that guards nothing,
+        # which is worse than no guard. Assert it found the known bindings.
+        calls = self._calls()
+        names = {(owner, name) for _, _, owner, name, _ in calls}
+        self.assertIn(("bridge", "explanation"), names,
+                      f"the scan found no bridge.explanation call at all, so it is not "
+                      f"reading the QML: {calls}")
+        self.assertTrue(calls, "the scan found no bridge calls in any QML file")
+
+    def test_every_slot_call_in_a_binding_is_classified_constant_safe(self):
+        from app.ui.bridge import SLOT_CALLS_SAFE_IN_A_QML_BINDING
+
+        unsafe = [(f, n, f"{owner}.{name}", text)
+                  for f, n, owner, name, text in self._calls()
+                  if f"{owner}.{name}" not in SLOT_CALLS_SAFE_IN_A_QML_BINDING]
+        self.assertEqual(unsafe, [],
+                         f"a QML binding calls something that is not in "
+                         f"SLOT_CALLS_SAFE_IN_A_QML_BINDING: {unsafe}. A binding over a "
+                         f"method call declares no dependency, so Qt evaluates it once at "
+                         f"engine.load and never again - the metric cards, the device badge "
+                         f"and the window note were all frozen that way. Bind to a notified "
+                         f"property instead, or add the name with a stated justification.")
+
+    def test_the_classified_names_really_exist(self):
+        # A name in the allow-list that no longer exists would make the guard vacuous for
+        # that name: `bridgeUi.explain` was classified the moment it was restored, and if
+        # it were deleted again the guard would keep passing while the panel went dead.
+        import re as _re
+
+        from app.ui.bridge import SLOT_CALLS_SAFE_IN_A_QML_BINDING, UiBridge
+
+        qml_functions = set(_re.findall(
+            r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            (UI_DIR / "Bridge.qml").read_text(encoding="utf-8")))
+        self.assertTrue(SLOT_CALLS_SAFE_IN_A_QML_BINDING,
+                        "the allow-list is empty, so the guard classifies nothing")
+        for qualified in sorted(SLOT_CALLS_SAFE_IN_A_QML_BINDING):
+            owner, _, name = qualified.partition(".")
+            if owner == "bridge":
+                self.assertTrue(hasattr(UiBridge, name),
+                                f"{qualified!r} is classified constant-safe but UiBridge "
+                                f"has no such member")
+            else:
+                self.assertIn(name, qml_functions,
+                              f"{qualified!r} is classified constant-safe but Bridge.qml "
+                              f"defines no such function")
+
+    def test_no_qml_binding_calls_a_function_that_does_not_exist(self):
+        # `bridge.explanation` and every `bridgeUi.*` helper must all be real.
+        # `Main.qml` called `bridgeUi.explain(...)` and `Bridge.qml` had no `explain`
+        # function - it had been dropped in an earlier edit. Because the call sits behind
+        # `pinnedExplanationKey.length > 0` in a ternary, QML's short-circuit meant it was
+        # never evaluated: the window loaded, every card drew, and the "?" buttons were dead
+        # at the booth. A dangling call is invisible until somebody clicks.
+        from app.ui.bridge import UiBridge
+
+        bridge_qml = (UI_DIR / "Bridge.qml").read_text(encoding="utf-8")
+        qml_functions = set(re.findall(r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                                       bridge_qml))
+        missing = []
+        for file_name, line, owner, name, text in self._calls():
+            if owner == "bridge":
+                if not hasattr(UiBridge, name):
+                    missing.append(f"{file_name}:{line} calls bridge.{name}(...) but "
+                                   f"UiBridge has no such member")
+            elif name not in qml_functions:
+                missing.append(f"{file_name}:{line} calls bridgeUi.{name}(...) but "
+                               f"Bridge.qml defines no function {name}()")
+        self.assertEqual(missing, [],
+                         f"a QML binding calls something that does not exist: {missing}. "
+                         f"It loads a perfectly good window and fails only on click.")
+
+    def test_the_window_note_is_read_from_a_notified_map_not_a_slot_call(self):
+        # The specific instance the review named. Named explicitly so a regression to
+        # `window_text(...)` in a binding fails here with a message that says what to do,
+        # rather than only in the general scan above.
+        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in card.splitlines()
+                         if not line.strip().startswith("//"))
+        self.assertNotRegex(
+            code, r"windowNote[^=]*=[^;]*\bwindow_text\s*\(",
+            "windowNote binds to a Slot call, so the 'measured over N ms' line is "
+            "evaluated once at engine.load and never appears again")
+        self.assertIn("bridge.window_notes", code)
+
+    def test_every_device_card_binds_its_unavailable_wording_to_the_bridge(self):
+        # R1. The accelerators say "Utilization unavailable" because there is no counter
+        # for them; the CPU card must say its own thing, because `psutil.cpu_percent` works
+        # here and "no sample yet" is the truth. One shared literal claimed a failure to
+        # read a counter that is not failing.
+        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in card.splitlines()
+                         if not line.strip().startswith("//"))
+        self.assertIn("bridge.unavailable_notice[deviceId]", code,
+                      "the unavailable label must be per-card, keyed by deviceId")
+        self.assertNotIn("text: bridge.utilisation_unavailable_text", code,
+                         "one shared literal on every card is what R1 is about")
+
+    def test_the_event_counts_are_gated_on_frames_analysed_not_on_the_route(self):
+        # R3. A confirmed placement arrives from the worker's route *before* any frame has
+        # been analysed, so gating on it printed three hard zeros for an event machine
+        # that had not run.
+        main_qml = (UI_DIR / "Main.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in main_qml.splitlines()
+                         if not line.strip().startswith("//"))
+        self.assertIn("bridge.frames_analysed > 0", code,
+                      "the event counts must be gated on frames analysed")
+        self.assertNotIn("routeConfirmed", code,
+                         "gating on the route leaves a window where a measured 0 is "
+                         "printed for a machine that has analysed nothing")
+
+
+class EventRowGating(unittest.TestCase):
+    """R3 as a **render**, not a source check: the transition, deterministically.
+
+    The live-path probe cannot catch this on its own. By the time it reads the screen the
+    pipeline has analysed hundreds of frames, so gating on the route and gating on frames
+    analysed produce the same output and a mutation between them passes. The window R3 is
+    about is the startup one, so the test drives it directly: a real render of the real
+    `Main.qml`, with the bridge **route confirmed and nothing analysed** - which is a state
+    the worker genuinely produces, because a placement is established from the route and
+    the route arrives before any result.
+
+    Then one more sample set of frames analysed, and the row must switch to numbers.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rows = cls._render()
+
+    def test_a_confirmed_route_with_nothing_analysed_does_not_print_zero(self):
+        # The exact R3 state: `device_confirmed` non-empty, `frames_analysed == 0`.
+        self.assertTrue(self.rows["route_confirmed"], self.rows)
+        self.assertEqual(self.rows["frames_analysed_at_first_read"], 0, self.rows)
+        self.assertIn("unavailable", self.rows["row_at_first_read"],
+                      f"the footer printed a measured 0 before anything had been "
+                      f"analysed: {self.rows['row_at_first_read']!r}")
+        for kind in ("zone_occupancy", "candidate_transfer", "candidate_return"):
+            self.assertIn(f"{kind} unavailable", self.rows["row_at_first_read"],
+                          self.rows)
+
+    def test_the_row_switches_to_numbers_once_a_frame_has_been_analysed(self):
+        self.assertGreater(self.rows["frames_analysed_at_second_read"], 0, self.rows)
+        self.assertNotIn("unavailable", self.rows["row_at_second_read"],
+                         f"frames have been analysed, so this is a measurement now: "
+                         f"{self.rows['row_at_second_read']!r}")
+        for kind in ("zone_occupancy", "candidate_transfer", "candidate_return"):
+            self.assertIn(kind, self.rows["row_at_second_read"], self.rows)
+
+    @staticmethod
+    def _render() -> dict:
+        """Render `Main.qml` twice against one bridge, reading the event row each time."""
+        code = _EVENT_ROW_SCRIPT.replace("@REPO@", repr(str(REPO_ROOT)))
+        env = dict(os.environ)
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        with tempfile.TemporaryDirectory(prefix="roadshow-eventrow-") as tmp:
+            script = Path(tmp) / "event_row.py"
+            script.write_text(code, encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(script)], capture_output=True, text=True,
+                timeout=420, cwd=str(REPO_ROOT), env=env)
+        if completed.returncode != 0:
+            raise AssertionError("the event-row render failed:\n"
+                                 + completed.stdout + completed.stderr)
+        lines = [ln for ln in completed.stdout.splitlines() if ln.startswith("ROWS ")]
+        if not lines:
+            raise AssertionError("the render printed no rows:\n"
+                                 + completed.stdout + completed.stderr)
+        return json.loads(lines[-1][len("ROWS "):])
+
+
+#: The child for `EventRowGating`. Drives the bridge directly - no pipeline - because the
+#: property under test is a QML binding's reaction to two bridge states, and a pipeline
+#: would make both states unreachable at a chosen moment.
+_EVENT_ROW_SCRIPT = r'''
+import json
+import os
+import sys
+
+sys.path.insert(0, @REPO@)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QEventLoop, QTimer, QUrl, QObject
+from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+
+from app.ui.bridge import ThemeTokens, UiBridge
+from app.ui.provider import FrameImageProvider
+
+# **The application first, the font second.** Measured: calling
+# `QFontDatabase.addApplicationFont` before a `QGuiApplication` exists terminates the
+# process with `0xC0000005` and prints nothing at all - which cost a bisection here. The
+# existing render script has the order right and always did.
+application = QGuiApplication(sys.argv)
+QFontDatabase.addApplicationFont(r"C:\Windows\Fonts\arial.ttf")
+bridge = UiBridge()
+engine = QQmlApplicationEngine()
+engine.addImageProvider("frames", FrameImageProvider(bridge))
+context = engine.rootContext()
+context.setContextProperty("bridge", bridge)
+context.setContextProperty("Theme", ThemeTokens())
+engine.load(QUrl.fromLocalFile(
+    os.path.join(@REPO@, "app", "ui", "Main.qml")))
+roots = engine.rootObjects()
+if not roots:
+    print("no root objects", file=sys.stderr)
+    sys.exit(3)
+root = roots[0]
+
+
+def row():
+    item = root.findChild(object, "eventCountRow")
+    return "" if item is None else str(item.property("text"))
+
+
+def step_two():
+    report["row_at_first_read"] = row()
+    report["frames_analysed_at_first_read"] = bridge.frames_analysed
+    report["route_confirmed"] = bool(bridge.device_confirmed)
+    # Now the state the pipeline reaches a moment later.
+    bridge.set_frames_analysed(7)
+    report["row_at_second_read"] = row()
+    report["frames_analysed_at_second_read"] = bridge.frames_analysed
+    report["rows"] = "printed"
+    print("ROWS " + json.dumps(report), flush=True)
+    sys.stdout.flush()
+    loop.quit()
+
+
+report = {"rows": "", "row_at_first_read": "", "row_at_second_read": "",
+          "frames_analysed_at_first_read": -1, "frames_analysed_at_second_read": -1,
+          "route_confirmed": False}
+
+# **Route confirmed, nothing analysed.** This is a state the worker really produces.
+bridge.set_route(requested="NPU", confirmed=("CPU",), state="active")
+
+# A `QEventLoop`, **not** `application.exec()`. Measured here: driving a `QQuickWindow`
+# through `QGuiApplication.exec()` under the offscreen platform terminates the process with
+# `0xC0000005` on this machine, with nothing on stdout or stderr. The existing render tests
+# use a `QEventLoop` for exactly this reason and are unaffected.
+loop = QEventLoop()
+QTimer.singleShot(600, step_two)
+QTimer.singleShot(30000, loop.quit)   # backstop; a wedged render must not hang a suite
+loop.exec()
+if not report["rows"]:
+    print("NO ROWS", file=sys.stderr)
+    sys.exit(4)
+sys.exit(0)
+'''
 
 
 class TestSuiteHygiene(unittest.TestCase):

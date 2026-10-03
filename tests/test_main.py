@@ -1282,6 +1282,86 @@ class LiveWindowedPath(unittest.TestCase):
                       "the rendered control bar must report fresh telemetry once samples "
                       f"have arrived: {self.report['staleness_text_rendered']!r}")
 
+    def test_the_cpu_card_does_not_claim_a_utilisation_counter_is_failing(self):
+        # R1. `cpu_available` is `system_cpu_percent is not None`, which is `None` at
+        # `engine.load` before the first telemetry tick - so **every** run showed the CPU
+        # card reading the accelerators' "Utilization unavailable" during startup.
+        #
+        # The wording is wrong in principle, not just in frequency: `psutil.cpu_percent` is
+        # called every 250 ms and works here. "Utilization unavailable" asserts a failure
+        # to read a counter that is not failing. The CPU card must say its own thing.
+        notice = self.report["unavailable_notice"]["CPU"]
+        self.assertNotEqual(notice, "Utilization unavailable",
+                            "the CPU card must not borrow the accelerators' wording: "
+                            "there is no counter to fail for a CPU")
+        self.assertTrue(notice.strip(), "the CPU card must say something, not nothing")
+
+    def test_the_accelerator_cards_keep_their_own_wording(self):
+        # The accelerators keep it: there genuinely is no `psutil` counter for a GPU or an
+        # NPU, and the PDH value reads fault this process.
+        for device in ("GPU", "NPU"):
+            self.assertEqual(self.report["unavailable_notice"][device],
+                             "Utilization unavailable",
+                             f"{device}: the accelerators keep the accelerator wording")
+
+    def test_the_window_note_line_actually_appears(self):
+        # R2. `windowNote` bound to `bridge.window_text(metricName)`, a Slot call, so Qt
+        # evaluated it once at `engine.load` when no sample existed - and the
+        # "measured over N ms" line never appeared, with its `visible:` guard false for the
+        # whole session. Asserting the *bridge* produced a value would have passed then.
+        self.assertTrue(self.report["window_note_visible"],
+                        "the 'measured over N ms' line is never visible: its binding is a "
+                        f"Slot call, evaluated once at engine.load. text="
+                        f"{self.report['window_note_text']!r}")
+        self.assertIn("measured", self.report["window_note_text"])
+
+    def test_the_event_count_reads_a_number_once_a_frame_has_been_analysed(self):
+        # R3. Gating on the route left a real window - placement confirmed, zero frames
+        # analysed - in which the footer printed three hard zeros for an event machine
+        # that had not run.
+        self.assertGreater(self.report["frames_analysed"], 0, self.report)
+        text = self.report["event_count_text"]
+        self.assertNotIn("unavailable", text,
+                         f"frames have been analysed, so the count is a measurement: {text!r}")
+        for kind in ("zone_occupancy", "candidate_transfer", "candidate_return"):
+            self.assertIn(kind, text, f"{kind} is missing from the event row: {text!r}")
+        self.assertIn(f"zone_occupancy {self.report['bridge_event_counts'].get('zone_occupancy', 0)}",
+                      text, f"the rendered count disagrees with the bridge: {text!r}")
+
+    def test_the_overlay_boxes_are_in_the_right_place_not_merely_present(self):
+        # The coverage gap. Dividing `y` by `frame.width` instead of `frame.height` in
+        # `_frame_payload` puts every box in the wrong place - and leaves the suite green,
+        # because a length assertion and a `[0, 1]` bounds check both pass: on a
+        # 1920x1080 frame `y / 1920` is still a legal fraction.
+        #
+        # The only thing that catches it is agreement with an **independent** computation
+        # from the tracker's own pixel boxes. Same class as `FramePacket`'s image check: a
+        # correct box on the wrong picture.
+        boxes = self.report["overlay_boxes"]
+        self.assertTrue(boxes, f"no overlay boxes at all: {self.report}")
+        for box in boxes:
+            for axis in ("x", "y", "w", "h"):
+                self.assertGreaterEqual(box[axis], 0.0,
+                                        f"box {box} has a negative {axis}")
+                self.assertLessEqual(box[axis], 1.0,
+                                     f"box {box} has a {axis} outside [0, 1]")
+            self.assertLessEqual(box["x"] + box["w"], 1.0 + 1e-9, box)
+            self.assertLessEqual(box["y"] + box["h"], 1.0 + 1e-9, box)
+        expected = {b["track_id"]: b for b in self.report["expected_boxes"]}
+        self.assertTrue(expected, f"the tracker had no current tracks: {self.report}")
+        for box in boxes:
+            want = expected.get(box["track_id"])
+            self.assertIsNotNone(
+                want, f"a box was drawn for track {box['track_id']}, which the tracker "
+                      f"does not consider current: {expected}")
+            for axis in ("x", "y", "w", "h"):
+                self.assertAlmostEqual(
+                    box[axis], want[axis], places=6,
+                    msg=f"track {box['track_id']} {axis}: overlay says {box[axis]}, the "
+                        f"tracker's own box says {want[axis]}. A box in the wrong place is "
+                        f"still a plausible rectangle, so only agreement between two "
+                        f"independent computations catches it.")
+
     def test_the_accelerator_cards_still_say_unavailable_not_zero(self):
         # `psutil` cannot read GPU or NPU utilisation in this process, and that has to stay
         # a word. The obligation the whole telemetry layer exists for, checked on the live
@@ -1383,7 +1463,11 @@ class LiveWindowedPath(unittest.TestCase):
                         "ai_fps": "unavailable", "p50": "unavailable",
                         "p95": "unavailable", "gpu": "unavailable",
                         "npu": "unavailable", "cpu_available": False,
-                        "card_text": {}, "staleness_text_rendered": ""}
+                        "card_text": {}, "staleness_text_rendered": "",
+                        "unavailable_notice": {}, "window_note_text": "",
+                        "window_note_visible": False, "event_count_text": "",
+                        "overlay_boxes": [], "expected_boxes": [],
+                        "frame_extents": [0, 0]}
         for line in completed.stdout.splitlines():
             if line.startswith("REPORT "):
                 report.update(json.loads(line[len("REPORT "):]))
@@ -1457,6 +1541,23 @@ _real_machine_init = RetailEventMachine.__init__
 def bridge_init(self, *a, **k):
     _real_bridge_init(self, *a, **k)
     holder["bridge"] = self
+    # Record the frame extents the payload carries, so the parent can recompute the
+    # expected box geometry independently instead of trusting the payload's own numbers.
+    # That is what makes a wrong divisor catchable: both boxes are inside [0, 1] either
+    # way, so only agreement between two implementations can tell them apart.
+    holder["width"] = 0
+    holder["height"] = 0
+    original_apply_frame = self.apply_frame
+
+    def counted_apply_frame(payload):
+        try:
+            holder["width"] = int(payload.get("width", 0))
+            holder["height"] = int(payload.get("height", 0))
+        except AttributeError:
+            pass
+        return original_apply_frame(payload)
+
+    self.apply_frame = counted_apply_frame
 
 
 def supervisor_init(self, *a, **k):
@@ -1472,6 +1573,20 @@ def machine_init(self, *a, **k):
 UiBridge.__init__ = bridge_init
 Supervisor.__init__ = supervisor_init
 RetailEventMachine.__init__ = machine_init
+
+# The tracker too, so the parent can recompute the expected overlay geometry from the
+# tracker's own pixel boxes rather than from the payload that is under test.
+from app.engine.tracker import Tracker
+
+_real_tracker_init = Tracker.__init__
+
+
+def tracker_init(self, *a, **k):
+    _real_tracker_init(self, *a, **k)
+    holder["tracker"] = self
+
+
+Tracker.__init__ = tracker_init
 
 _real_engine_init = QQmlApplicationEngine.__init__
 
@@ -1516,15 +1631,51 @@ def find_text(object_name):
     """The rendered `text` of a named QML item, or `""`.
 
     Reading the scene graph is the only way to tell a bridge that updated from a screen
-    that did not. Two separate defects in this milestone had exactly that shape: a
-    `constant=True` property (the device badge) and a binding that **called a method**
-    (every metric card), both of which left a correct bridge behind a frozen screen.
+    that did not. Three separate defects in this milestone had exactly that shape: a
+    `constant=True` property (the device badge), a binding that **called a method** (every
+    metric card), and a second such binding eleven lines below it (the window note) - all
+    of which left a correct bridge behind a frozen screen.
     """
     for root in engine_roots():
         item = root.findChild(object, object_name)
         if item is not None:
             return str(item.property("text"))
     return ""
+
+
+def find_visible(object_name):
+    """Whether a named QML item is currently `visible`, or `None` if it is absent."""
+    for root in engine_roots():
+        item = root.findChild(object, object_name)
+        if item is not None:
+            return bool(item.property("visible"))
+    return None
+
+
+def _expected_boxes(tracker, width, height):
+    """The tracker's own current tracks, normalised the way a box *should* be.
+
+    An **independent** recomputation from `Track.box` and the frame extents, so it can be
+    compared against what `app.main._frame_payload` published. Dividing `y` by
+    `frame.width` instead of `frame.height` would still produce a box inside `[0, 1]` on a
+    1920x1080 frame, so a bounds check alone cannot catch it - only agreement between two
+    independent implementations can. This is the "correct box, wrong picture" class again.
+    """
+    if tracker is None or width <= 0 or height <= 0:
+        return []
+    out = []
+    for track in tracker.current_tracks():
+        if not getattr(track, "is_current", False):
+            continue
+        x1, y1, x2, y2 = (float(v) for v in track.box)
+        out.append({
+            "track_id": int(track.track_id),
+            "x": x1 / width,
+            "y": y1 / height,
+            "w": (x2 - x1) / width,
+            "h": (y2 - y1) / height,
+        })
+    return out
 
 
 # -- 4. C4: read the badge at load, set a route after load, read it again -------------
@@ -1581,6 +1732,24 @@ def finish_and_quit():
             card_values[key] = find_text("cardText_" + key)
         report["card_text"] = card_values
         report["staleness_text_rendered"] = find_text("stalenessText")
+        # R1: the per-card "no figure" wording, as rendered.
+        report["unavailable_notice"] = {
+            device: find_text("unavailableNotice_" + device)
+            for device in ("CPU", "GPU", "NPU")
+        }
+        # R2: whether the "measured over N ms" line is actually *visible*, which is the
+        # thing the frozen Slot binding broke - the bridge produced a value all along.
+        report["window_note_text"] = find_text(
+            "cardWindowNote_system_cpu_percent")
+        report["window_note_visible"] = find_visible(
+            "cardWindowNote_system_cpu_percent")
+        # R3: the rendered event count, which must read "unavailable" until a frame has
+        # actually been analysed and a real number after.
+        report["event_count_text"] = find_text("eventCountRow")
+        # The overlay geometry, cross-checked against the tracker's own boxes. A length
+        # assertion cannot tell a correct box from a box in the wrong place.
+        report["overlay_boxes"] = [dict(box) for box in bridge.overlay_boxes]
+        report["frame_extents"] = [int(holder["width"]), int(holder["height"])]
         report["system_cpu_percent"] = bridge.display_text("system_cpu_percent")
         report["ai_fps"] = bridge.display_text("ai_fps")
         report["p50"] = bridge.display_text("frame_age_p50_ms")
@@ -1595,6 +1764,12 @@ def finish_and_quit():
             counts[event.kind] = counts.get(event.kind, 0) + 1
         report["machine_events"] = [e.kind for e in events]
         report["machine_event_counts"] = counts
+    # The expected overlay geometry, recomputed from the tracker's own pixel boxes.
+    # **Independent of `_frame_payload`**, which is the point: a wrong divisor there
+    # would still produce a box inside [0, 1], so only two implementations agreeing can
+    # catch it.
+    report["expected_boxes"] = _expected_boxes(
+        holder.get("tracker"), holder["width"], holder["height"])
     if supervisor is not None:
         report["frames_analysed"] = int(supervisor.frames_analysed)
         report["frames_submitted"] = int(supervisor.frames_submitted)

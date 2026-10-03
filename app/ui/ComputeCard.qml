@@ -57,14 +57,35 @@ Rectangle {
     property string explainKey: "cpu"
 
     /// The explanation's text, resolved from the bridge rather than duplicated here.
+    /// Safe as a binding: `EXPLANATIONS` is a module constant.
     readonly property string explanationText: bridge.explanation(explainKey)
 
-    /// The window the primary figure was averaged over, or "unavailable". Resolved once
-    /// here so it is one named binding rather than an expression in a delegate. The
-    /// bridge branches on `validity` before it reads `window_seconds`, so an absent
-    /// reading never divides by a zero window here or anywhere else.
+    /// The window the primary figure was averaged over, or "unavailable".
+    ///
+    /// Read from the bridge's **notified** `window_notes` map, never by calling
+    /// `window_text(...)`. That was a Slot call and therefore evaluated once, at
+    /// `engine.load`, when no sample existed - so the "measured over N ms" line never
+    /// appeared in a live session and the `visible:` guard below it was false throughout.
+    /// The bridge still branches on `validity` before it reads `window_seconds`, so an
+    /// absent reading never divides by a zero window here or anywhere else.
     readonly property string windowNote: metricName.length > 0
-        ? bridge.window_text(metricName) : ""
+        && bridge.window_notes[metricName] !== undefined
+        ? bridge.window_notes[metricName] : bridge.unavailable_text
+
+    /// What this card shows when it has no figure, **per device**.
+    ///
+    /// The accelerators say "Utilization unavailable", which is true for them: there is no
+    /// `psutil` counter for a GPU or an NPU and the PDH value reads fault this process.
+    /// The CPU card must not say it - `psutil.cpu_percent` is called every 250 ms and
+    /// works, so the honest CPU fact is "no sample yet", and the bridge says that. When a
+    /// sample carries an `unavailable_reason`, that is used instead of either, because it
+    /// is the measurement's own words.
+    ///
+    /// `utilisationAvailable` is still always answered by the measurement; only the wording
+    /// is per card.
+    readonly property string unavailableNotice:
+        bridge.unavailable_notice[deviceId] !== undefined
+        ? bridge.unavailable_notice[deviceId] : bridge.unavailable_text
 
     /// Whether the runtime confirmed the work ran on *this* device.
     ///
@@ -129,14 +150,16 @@ Rectangle {
                 font.bold: true
             }
 
-            // The word, not the colour. "Utilization unavailable" beside the value,
-            // always, on every card whose telemetry is unavailable.
+            // The word, not the colour, and **the right word for this card**.
+            // Accelerators: "Utilization unavailable" - there is no counter for them at
+            // all. CPU: the bridge's own "no sample yet", because `psutil` works here.
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.max(0, card.width - identityColumn.width - Theme.SPACING.md
                                         - Theme.SPACING.sm * 2 - Theme.TYPE_LABEL * 2)
                 visible: !card.utilisationAvailable
-                text: bridge.utilisation_unavailable_text
+                objectName: "unavailableNotice_" + card.deviceId
+                text: card.unavailableNotice
                 color: Theme.COLOR_NEUTRAL
                 font.family: Theme.FONT_FAMILY
                 font.pixelSize: Theme.TYPE_DETAIL
@@ -160,6 +183,10 @@ Rectangle {
 
         Text {
             width: parent.width
+            // Named so a test can read whether the line **appeared**, not just whether the
+            // bridge produced a value. `visible:` false forever is the exact shape of the
+            // frozen Slot binding this line used to have.
+            objectName: "cardWindowNote_" + card.metricName
             visible: card.metricName.length > 0
                      && card.windowNote !== bridge.unavailable_text
             text: "measured " + card.windowNote

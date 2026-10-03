@@ -91,4 +91,22 @@ QtObject {
 
     readonly property var explanationKeys:
         ["yolo", "tracking", "zone", "cpu", "gpu", "utilisation", "metrics"]
+
+    // The pinned panel's text. `Main.qml` called `bridgeUi.explain(...)` and **this
+    // function did not exist** - it had been dropped from this file in an earlier edit,
+    // and because the call sits behind `pinnedExplanationKey.length > 0` in a ternary,
+    // the short-circuit meant QML never evaluated it. The window loaded, every card drew,
+    // and the "?" buttons were dead at the booth.
+    //
+    // It is back, and `tests/test_ui_contract.py::SlotBindingAudit` now fails on any
+    // `bridgeUi.*` call that names something this object does not actually have - the
+    // check that would have caught it, since a dangling call is invisible until someone
+    // clicks.
+    //
+    // Constant-safe to call from a binding: it reads `EXPLANATIONS` through the bridge, a
+    // module constant, and its argument is a clicked key, so a change to that key
+    // re-evaluates the binding anyway.
+    function explain(key) {
+        return bridge.explanation(key)
+    }
 }
