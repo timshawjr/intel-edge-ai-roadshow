@@ -408,3 +408,265 @@ as re-runnable claims. This is stated here rather than left for a reader to disc
 
 **Nothing above is reproducible from a clean checkout without provisioning first.** See
 *Assets, and what a fresh clone does not have* below.
+
+---
+
+## M1 — one truthful retail stream
+
+Date: 2026-10-02
+Milestone: M1 (design §11)
+Full report: **`docs/qualification/M1-qualification.md`**. Everything below is a summary of
+that document; the document is where the conditions live.
+
+Verdict: **the application runs, on CPU, GPU and NPU, with placement proved by
+`EXECUTION_DEVICES` and never by the request.** The gate set is green. **M1's own gate is not
+fully closed** — four of its nine exit criteria are demonstrated only in part, and the report
+says which and why.
+
+The two things a reader might assume and must not:
+
+1. **GPU and NPU utilisation are still unavailable.** The M0 finding is unchanged: the in-process
+   value reads terminate the process with `0xC0000005`, and a machine-wide peak is not
+   attributable to this process. **No utilisation figure appears anywhere in the product.** The
+   cards read "Utilization unavailable". M4 owns the fix.
+2. **The retail event is people-in-zone presence, not a product transfer.** Shelf-to-basket is
+   **not delivered**, and the item-transfer reading of "checkout zone" was measured and found
+   unsupported.
+
+### M1.1 The gate set, run in the M1 session
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+Source verification: 6 PASS, 0 FAIL
+
+$ .venv\Scripts\python.exe tools\preflight.py
+Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows
+Status: Limited
+Exit code: 0.
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+  ok   preprocess           letterbox 640x640 pad=114 scaled=640x360
+  ok   infer                25.38 ms on confirmed ['CPU']
+  ok   decode-track-event   1 zone_occupancy event(s) from a synthetic presence
+  ok   render-metadata      unavailable renders as unavailable, and no device is claimed before an inference confirms one
+PASS
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1034 tests in 145.586s
+
+OK
+```
+
+**16 PASS, 2 WARN, 0 FAIL is the same 18 rows as M0.** M1 added no preflight row and removed
+none, because the honest state of the machine did not change. Both `WARN`s are the pre-existing
+M0 telemetry rows — utilisation, and LUID attribution plus hardware identity — and **neither is
+closed**. The suite's stderr carries expected noise: the supervisor's `compile_failure=True` seam
+raises for real inside a child process, `argparse` prints a usage block when handed
+`--device TPU`, and `verify_sources.py` prints `FAIL` rows inside a test that asserts a bad
+artifact is refused. The result is `OK`.
+
+### M1.2 The application runs — live scene graph, offscreen, CPU
+
+`app.main.run_windowed` driven for real, 14 s, one 1920x1080 stream at 15 fps, offscreen, and
+the objects it built read out of the live QML scene graph:
+
+| | |
+|---|---|
+| exit code | 0 |
+| `device_confirmed` / rendered badge | **`CPU`** / **`device: CPU`** |
+| `fell_back` | `false` |
+| frame image | **not null, 1920 x 1080**, real pixels from the pinned IR |
+| zones from the manifest | **1** — `counter_band`, `(0.0, 0.20, 1.00, 0.60)` → 1920 x 432 px |
+| overlay boxes | **3** (person, apple, person) |
+| submitted / analysed / refused | 210 / **209** / **0** |
+| `event_counts` | **`{"zone_occupancy": 1}`**, equal to the event machine's own |
+| rendered event row | `zone_occupancy 1    candidate_transfer 0    candidate_return 0` |
+| system CPU | **53.7%** (a second run of the same driver: 56.4%) |
+| `ai_fps` | **14.50 fps** |
+| frame age p50 / p95 | **58.7 ms** / **712.5 ms** |
+| GPU / NPU cards | **`unavailable`**, with reasons |
+| `cpu_available` | **`true`**, its notice reads `no CPU sample yet` |
+| GPU / NPU notices | **`Utilization unavailable`** |
+| window line / staleness line | `measured over 16 ms` (visible) / `telemetry fresh` |
+| supervisor errors | **none** |
+
+**The CPU card must not borrow the accelerators' wording and does not**: there is no counter to
+fail for a CPU — `psutil.cpu_percent` runs every 250 ms and works here — so its absent state is
+the weaker, different claim "no CPU sample yet".
+
+### M1.3 Routing evidence — requested versus confirmed
+
+Placement is `EXECUTION_DEVICES` read on the **compiled model after the first inference**,
+compared through `is_device`, which handles the three inconsistent plugin shapes.
+
+**Committed headless summaries** (`docs/qualification/m1-headless/`, 8 s feed, 2 s drain,
+offscreen):
+
+| file | requested | **confirmed** | state | fell_back | analysed | refused | drops | errors |
+|---|---|---|---|---|---|---|---|---|
+| `cpu.json` | CPU | **`CPU`** | active | `false` | 121 | 0 | 0 | `[]` |
+| `gpu.json` | GPU | **`GPU.0`** | active | `false` | 121 | 0 | 0 | `[]` |
+| `npu.json` | NPU | **`NPU`** | active | `false` | 121 | 0 | 0 | `[]` |
+
+**Re-measured for the M1 report** — single frame, 640x640, batch 1, warm-up outside the timed
+span, 30 timed inferences x 4 repeats:
+
+| device | compile | confirmed | `is_device` | p50 per repeat (ms) |
+|---|---|---|---|---|
+| CPU | 0.19 s | `['CPU']` | `True` | 22.53, 22.64, 22.54, 22.37 |
+| GPU | 0.73 s | `['GPU.0']` | `True` | 3.75, 3.68, 3.43, 3.54 |
+| NPU | 1.62 s | `NPU` (bare string) | `True` | 5.78, 4.56, 4.48, 4.33 |
+
+**The NPU is slower than the GPU on this machine.** Measured, not a defect, and it inverts the
+shape a booth story usually has — the product's own explanation text says so.
+
+**The conditions travel with the claim everywhere it appears**: single frame, 640x640, batch 1,
+30 inferences, an **integrated** Arc 140V sharing system memory with the NPU. **This is not a
+throughput claim**; paired throughput trials are M4. These figures are close to but not identical
+with the Task 10 figures recorded in `app/engine/worker.py` (CPU 20.99–21.16 ms, GPU 3.30–3.47 ms,
+NPU 5.92–5.99 ms) — both were measured by the same method on this machine, and the machine's
+state differs between runs. The **ordering** held in both.
+
+### M1.4 Frame age is not inference cost
+
+| quantity | what it measures | CPU | GPU | NPU |
+|---|---|---|---|---|
+| **inference cost** p50, single frame, batch 1 | submit → complete inside the worker | 22.37–22.64 ms | 3.43–3.75 ms | 4.33–5.78 ms |
+| **frame age** p50, in the 8 s feed | ingress → result, **including queue wait** behind a 15 fps feed | 58.06 ms | 45.87 ms | 49.58 ms |
+| **frame age** p95, same feed | as above | 640.25 ms | 1001.20 ms | **2015.53 ms** |
+| `ai_fps` | analysed / **feed window** | 15.11 | 15.11 | 15.10 |
+
+The NPU's p95 frame age is **~2.0 s** while its inference cost is **~4–6 ms**. The gap is queue
+wait behind the feed, not compute, and quoting either number alone would misdescribe the system.
+All three devices sit at the 15 fps target because the feed is the limit — which is exactly why
+these are two tables. `ai_fps` divides by `feed_elapsed_s` (**121 / 8.006 = 15.11**), not by
+`elapsed_s` (10.139 = feed 8.006 + drain 2.013); `drain_elapsed_s` is its own field.
+
+### M1.5 The business event actually emitted
+
+**People-in-zone presence. Not a product transfer, not a people count, not a dwell measurement.**
+
+Re-measured 2026-10-02 by running the shipped configuration through the real pipeline over the
+real clip at stride 5 (678 of 3387 frames), CPU — 1960 detections, 0 abandoned:
+
+```
+events 2
+  zone_occupancy person track=1  loop=0 frame=66  t=2.202  dedup=0:1:person:presence:counter_band
+  zone_occupancy person track=41 loop=0 frame=551 t=18.385  dedup=0:41:person:presence:counter_band
+```
+
+**Two sustained presences, one per person-track.** `BusinessEvent` carries no duration field, so
+a dwell figure could not be honest even if the screen wanted one. In the 8 s product-path runs
+the count is 1 — the same event over a shorter window, on all three devices.
+
+**Why it is not more.** No product-class zone transition fires on `retail_checkout` at the
+pinned operating point — the full-clip run under M0's rectangles produced **0 events**. The only
+reliably tracked product, the apple, is **stationary for the whole clip, max corner deviation
+0.0006 over 483 frames**. And the person does not traverse: **17.441** frame-widths of cumulative
+travel against **0.015** of net displacement. A traversal-shaped event would fire once per
+113-second clip and read like a business event without being one. So the pack declares **no**
+`origin_slot`/`destination_slot`, and `tests/test_retail_footage_guard.py` **fails the build if a
+shipped configuration emits zero events**.
+
+The screen shows `app/engine/retail_config.py`'s `scope_note` verbatim — "REDUCED SCOPE… Shelf-to-
+basket is NOT delivered… COUNTER_BAND captures 65% of person detections, not all of them."
+
+### M1.6 Input acknowledgement — a floor, not a bound
+
+Through `app.main.run_windowed` itself, offscreen, 20 ms `QTimer` lateness on the Qt main
+thread, **6 CPU-only saturator processes** (`max(2, cpu_count()-2)` = 6 of 8 logical cores) plus
+real CPU inference, 3 repeats in one process:
+
+| repeat | p50 | p95 | worst tick | ticks |
+|---|---|---|---|---|
+| 0 | 0.031 ms | 16.582 ms | 37.525 ms | 292 |
+| 1 | 0.041 ms | 10.114 ms | 21.622 ms | 294 |
+| 2 | 0.074 ms | 11.463 ms | 28.995 ms | 293 |
+
+Passes a 200 ms p95 gate and a 2 s worst-tick gate, the worst tick 7x under the bound. **The
+figure is weaker with each caveat:** it is measured offscreen on one stream with synthetic
+saturators, so it is a **floor, not a bound**; it is **not comparable across machines** (2 of 2 on
+a two-core box); and **at 8 of 8 saturated cores the same gate measured p95 195.6 ms and max
+1105.5 ms** — a greater-than-one-second freeze that still reports green on a p95. **A booth
+machine must be provisioned so inference never sees 8/8 saturation.**
+
+### M1.7 Metrics: numerator, denominator, window, provider, scope
+
+| metric | numerator | denominator | window | provider | scope |
+|---|---|---|---|---|---|
+| `system_cpu_percent` | CPU time across all 8 logical cores | 8 cores x window | recorded delta (0.062 s in `cpu.json`) | `psutil` | **machine-wide**, not this process |
+| `app_cpu_percent` | sum over the tracked PIDs | 8 cores x window | recorded delta | `psutil` | `("ui","worker")` — the process tree |
+| `ai_fps` | frames with a completed detection | **`feed_elapsed_s`** | the feed window | counted by the product | this run, this stream |
+| `frame_age_p50/p95_ms` | ingress → result age | 121 samples, nearest rank, no interpolation | the run | counted by the product | this stream |
+| `gpu_/npu_utilisation_percent` | — | — | — | **none that works in-process** | **`unavailable`**, with the reason |
+| TOPS / power / temperature / energy | — | — | — | — | **out of scope, never inferred from utilisation** |
+| `rss` figures | resident set | — | recorded delta | `psutil` | **host process only, not accelerator memory** |
+
+`window_seconds` is a **measured delta**, not a designed interval, and is formatted from the
+record — the bridge never divides. `app_cpu_percent` is a **genuine measured `0.0`** in `cpu.json`
+and `gpu.json` and `0.8875` in `npu.json`: a real zero rendered as a number, which is the whole
+distinction from `unavailable`.
+
+### M1.8 The visible failure state — built and tested, never observed
+
+| | |
+|---|---|
+| a confirmation that does not name the requested device renders as a **fallback** | demonstrated |
+| a **failed** route claims no device (`no device is running`) | demonstrated |
+| a dead worker restarts **exactly once**, then `failed` with a stated reason | demonstrated, against a fault the child process really raises |
+| **an accelerator failing mid-run and the app falling back to CPU** | **NOT OBSERVED — M0 gate 9 stands** |
+
+M1 built the visible failure state and the refusal accounting (`frames_refused` with reasons;
+a run that analysed nothing exits non-zero rather than reporting a clean zero). **It did not
+observe a failure**, because no device on this machine has ever failed. M1's CPU-only run is a
+**measured CPU-only run**, which is a weaker claim than "fallback was observed to work".
+
+### M1.9 M1 exit criteria — demonstrated and not demonstrated
+
+| # | criterion | verdict |
+|---|---|---|
+| 1 | one clip end to end, real overlays, nothing precomputed | **demonstrated** (M1.2) |
+| 2 | selected and actual devices match, by `EXECUTION_DEVICES` | **placement demonstrated; an interactive presenter-driven selection was NOT run — that is M2** |
+| 3 | frame IDs prevent overlay drift, proven by a test | **demonstrated** (`fid 8` refused against a displayed `fid 7`; a result from another loop refused too) |
+| 4 | event tests cover transfer / return / occlusion / duplicate / loop reset, and events are reported with `dedup_key`s | **PARTIAL.** The five tests exist and pass, and the `dedup_key`s are reported — but **no `candidate_transfer` is ever emitted on real footage**, because no product transition exists. **The transfer and return paths have never run on footage; they are covered against synthetic tracks only.** |
+| 5 | the same clip works on each target validated in M0 | **demonstrated as placement and throughput** — 8 s offscreen feeds, **not** the 60 s run the plan's example names |
+| 6 | a runtime failure produces a visible error/fallback state and the UI never claims the failed target | **state demonstrated; failure never observed** (M1.8) |
+| 7 | "Recorded footage • live inference" displayed, pinned on the QML source | **demonstrated as text and as rendered glyphs; no committed screenshot exists** |
+| 8 | unavailable renders as `unavailable`, a genuine `0` renders as a number | **demonstrated** |
+| 9 | `verify_sources`, `preflight`, `--selftest` and the full suite green, output pasted | **demonstrated** — and "green" includes two named, still-open `WARN`s |
+
+**M1's gate is not fully closed, and the four qualifications above are why.**
+
+**No committed screenshot of the booth screen exists and this report points at none.** The
+offscreen render harness writes a PNG into a temporary directory it deletes; `tools/capture_ui.py`
+does not exist (M3). **The live booth runs at this machine's 2293x960 desktop, not a 1920x1080
+canvas** — M0 measured usable height at 960 px, so a 1080p window cannot be displayed here at all,
+and a passing offscreen 1920x1080 render is not a claim about this monitor.
+
+### M1.10 Unmet gates and open blockers after M1
+
+| # | item | status |
+|---|---|---|
+| 1 | In-process PDH GPU/NPU utilisation | **open, unchanged** — M4 |
+| 2 | Utilisation **attribution** | **open, unchanged** — the inference PID never appears as a counter instance; unrelated processes hold the busiest engines |
+| 3 | Three 45–90 s clips per pack | **unmet M5 gate** — unchanged |
+| 4 | Shelf-to-basket footage | **not delivered** — and the item-transfer reading of "checkout zone" is now **measured and unsupported**. Delivered: people-in-zone presence |
+| 5 | Clip redistribution clearance | **not established** — unchanged |
+| 6 | Detector licence | **AGPL-3.0, unresolved** — M6 distribution question |
+| 7 | Code signing | **unmet M6 gate** — M6 ships unsigned |
+| 8 | 1920x1080 DPI gate | **not run — M3**; live booth is 2293x960 |
+| 9 | Fallback under observed failure | **still not run.** M1 built and tested the visible state; nothing was ever observed to fail |
+| 10 | AC status | **unavailable, permanently** — unchanged |
+| 11 | Hardware SKU | **unreconciled** — unchanged |
+| 12 | A 60-second per-device unattended run | **not run.** What exists is two 14 s windowed runs and three 8 s headless feeds. M6 soak |
+| 13 | Second annotated frame with a non-square object | **open.** The `w`/`h` transposition blind spot stands — a swap preserves `cx`, `cy` and `w*h` exactly, and on the current annotation the aspect check is **inverted**. Needs a different frame, not a tighter threshold |
+| 14 | Overlay-geometry test is vacuous on a square frame | **recorded, not fixed.** The live check compares the payload's boxes against an independent recomputation from `Track.box` and the frame extents; on a square frame the two divisors are equal. Latent, not active — the live frame is 1920x1080 |
+| 15 | QML Slot-binding guard is line-oriented, not a QML parse | **deliberate, recorded.** Two-entry allow-list (`bridge.explanation`, `bridgeUi.explain`) that **must be maintained** |
+| 16 | `unavailable_notice["CPU"]` can exceed its slot and elide | **recorded, not observed.** Single-line `Text` with `elide: Text.ElideRight`; not hit by today's string, but a later change to it must be checked |
+| 17 | `oven` false positive at 0.250770 | **unquantified** — unchanged |
+| 18 | Transfer / return event paths have never run on real footage | **open.** Test-covered against synthetic tracks; the footage cannot produce a transfer |
+
+**Reproduction.** M1's four gate commands need `tools/provision_venv.py` to have run first —
+`assets/` and `logs/` are gitignored. The headless summaries this section quotes are
+**committed** at `docs/qualification/m1-headless/` and can be read without provisioning; only
+re-measuring them needs it.
