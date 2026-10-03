@@ -119,12 +119,25 @@ def summarise(summary: dict) -> str:
         placement = "/".join(confirmed)
     age = summary.get("frame_age_ms", {})
     fps = summary.get("ai_fps")
-    return (f"{placement}: {summary.get('frames_analysed', 0)} analysed of "
-            f"{summary.get('frames_submitted', 0)} submitted, "
-            f"{summary.get('drops', 0)} dropped, "
+    # **Every absent figure says so.** The first version defaulted
+    # `summary.get("frames_analysed", 0)`, which prints `0 analysed` for a summary that
+    # does not carry the key at all - a fabricated zero in the one line an operator is
+    # most likely to read off a scrollback buffer.
+    analysed = _number(summary, "frames_analysed")
+    submitted = _number(summary, "frames_submitted")
+    refused = _number(summary, "frames_refused")
+    drops = _number(summary, "drops")
+    return (f"{placement}: {analysed} analysed of {submitted} submitted, "
+            f"{refused} refused, {drops} dropped, "
             f"ai_fps={fps if fps is not None else 'unmeasured'}, "
             f"frame_age p50={age.get('p50')} ms p95={age.get('p95')} ms, "
             f"events={json.dumps(summary.get('event_counts', {}), sort_keys=True)}")
+
+
+def _number(summary: dict, key: str) -> str:
+    """The figure, or `unreported` when the summary does not carry it."""
+    value = summary.get(key)
+    return str(value) if isinstance(value, (int, float)) else "unreported"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -33,10 +33,15 @@ display**, prints `PASS`, and exits 0. Two properties are load-bearing:
   scanned for `test_*` citations and a cited name must be one
   `tests/test_retail_measurements.py` can resolve, and that scanner walks a fixed list of
   M1 modules that does not include this one.
-- **It opens no socket and no display.** `--selftest` never imports `PySide6.QtGui`; the
-  "render-metadata" stage is the `UiBridge`'s formatting and overlay construction, not a
-  window. A self-test that needed a display would be untestable in CI and would tell an
-  operator less than a stage list does.
+- **It opens no socket and no display.** No `QGuiApplication` is ever constructed and no
+  QML is ever loaded; the "render-metadata" stage is the `UiBridge`'s formatting and
+  overlay construction, not a window. It *does* import `PySide6.QtGui` - `UiBridge` builds
+  a `QImage` and a `QColor` - which this module previously claimed it did not, and that
+  claim was false. What it never does is import `PySide6.QtQuick`: the image provider was
+  moved to `app.ui.provider` so the QML stack stays out of the self-test entirely, and
+  the tests assert its absence from `sys.modules`. A self-test that needed a
+  display would be untestable in CI and would tell an operator less than a stage list
+  does.
 
 The M1 verification block in AGENTS.md names `.venv\\Scripts\\python.exe -m app.main
 --selftest` as a gate, so this is the command a person runs before a booth.
@@ -83,8 +88,9 @@ import json
 import math
 import os
 import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +105,8 @@ __all__ = [
     "run_selftest",
 ]
 
-#: The providers this build registers. **The single source of truth for the release gate.**
+#: The providers this build registers. **A declared allow-list, not the source of truth.**
+#:
 #: `psutil` is the only one: it produces the CPU and RSS samples the cards show, and its
 #: values are read through `MetricCollector.sample()`.
 #:
@@ -108,6 +115,40 @@ __all__ = [
 #: so registering it would claim a measurement that never happens. The GPU and NPU cards
 #: say "Utilization unavailable" because nothing is registered to produce a value for them.
 REGISTERED_PROVIDERS: tuple[str, ...] = ("psutil",)
+
+#: **Release mode is on unless someone turns it off.** `--release` used to default to
+#: `False`, which meant a packaged build that forgot the flag ran with no gate at all - and
+#: a gate nobody remembers to pass is not a gate. The safe direction is the default and
+#: `--no-release` is the explicit development escape hatch; it exists because a
+#: developer may legitimately want to run a simulated provider on their own machine, and
+#: that is a decision somebody should have to type rather than a decision a build should
+#: have to be told not to make.
+RELEASE_BY_DEFAULT: bool = True
+
+
+def consulted_providers() -> tuple[str, ...]:
+    """The providers the telemetry collector **actually** reaches for, read from it.
+
+    ## Why this is read rather than written here
+
+    `REGISTERED_PROVIDERS` was a literal nothing consulted, while `MetricCollector`
+    imported `psutil` directly. That made two independent statements about the same fact,
+    and the release-gate test that
+    asserted the literal satisfies the gate was therefore a tautology: it could only
+    fail if someone edited the literal to something simulated.
+
+    The gate's real question is "could a simulated provider produce a number on this
+    screen?", and that is answered by what the collector imports. So the provider name
+    comes from `app.telemetry.collector.PROVIDER`, which is the declaration beside the
+    `psutil.cpu_percent` calls it names, and the tests assert
+    `consulted_providers() <= REGISTERED_PROVIDERS` - the allow-list must cover reality,
+    which is a check that can actually fail. The scanner that enforces citations of
+    test names walks a fixed list of M1 modules that does not include the one these
+    tests live in, so they are named here by file rather than by method.
+    """
+    from app.telemetry.collector import PROVIDER
+
+    return (PROVIDER,)
 
 #: Prefixes that mark a provider as simulated. Prefixes, not substrings; see the module
 #: note for why that distinction is the whole point of the gate.
@@ -154,17 +195,23 @@ def _stage(name: str, fn, *, needs: Sequence[str] = ()) -> dict[str, Any]:
     `needs` names provisions the stage cannot run without. A missing provision is
     `skipped` **with its reason**, which is a different record from `ran` - a self-test that
     reported a skip as a pass would be the failure this module exists to prevent.
+
+    `name` is written into the record it returns. It was accepted and ignored in the first
+    version, which meant the one argument a caller passed to describe the stage had no
+    effect on anything; now the record carries its own label, so a stage's name and its
+    verdict cannot be separated by whoever transcribes the summary.
     """
     missing = _missing_provisions(needs)
     if missing:
-        return {"verdict": "skipped", "reason": missing,
+        return {"stage": str(name), "verdict": "skipped", "reason": missing,
                 "detail": "nothing was exercised"}
     try:
         detail = fn()
     except Exception as exc:  # noqa: BLE001 - a stage failure is a result, not a crash
-        return {"verdict": "failed", "reason": f"{type(exc).__name__}: {exc}",
+        return {"stage": str(name), "verdict": "failed",
+                "reason": f"{type(exc).__name__}: {exc}",
                 "detail": "the stage raised"}
-    return {"verdict": "ran", "reason": "", "detail": str(detail)}
+    return {"stage": str(name), "verdict": "ran", "reason": "", "detail": str(detail)}
 
 
 def _missing_provisions(needs: Sequence[str]) -> str:
@@ -206,13 +253,23 @@ def _selftest_preprocess() -> str:
 
 
 def _selftest_infer() -> str:
-    """One real inference on the CPU plugin, with the placement read after it."""
+    """One real inference on the CPU plugin, with the placement read after it.
+
+    **The thresholds come from `retail_sanity_manifest()`,** as `run_headless` does. This
+    used to hardcode `0.25` and `0.45`, which is two sources for one pair of numbers: a
+    pack retune would change what the booth analyses and leave the self-test proving the
+    old configuration still loads, and the two would disagree silently.
+    """
+    from app.engine.retail_config import retail_sanity_manifest
     from app.engine.worker import WorkerConfig, infer_once
     from app.inference.pinned import MODEL_ID, pinned_input_shape
 
     _, _, height, width = pinned_input_shape()
+    manifest = retail_sanity_manifest()
     config = WorkerConfig(device_id="CPU", model_id=MODEL_ID, input_width=width,
-                          input_height=height, conf_threshold=0.25, iou_threshold=0.45)
+                          input_height=height,
+                          conf_threshold=manifest.conf_threshold,
+                          iou_threshold=manifest.iou_threshold)
     import numpy as np
 
     from app.contracts.frame import FramePacket
@@ -272,6 +329,11 @@ def _selftest_render_metadata() -> str:
     `QGuiApplication`: a self-test that needed a display would not be runnable in CI, and
     the stage that can be checked without one is the stage that checks whether numbers
     render as `unavailable` instead of `0`.
+
+    It does construct `QImage`s, because `UiBridge` is the thing being checked and it
+    paints overlay boxes. What is avoided is the *window*: no `QGuiApplication`, no
+    `QQmlApplicationEngine`, and - because `FrameImageProvider` lives in `app.ui.provider`
+    rather than in `app.ui.bridge` - no `QtQuick` import either.
     """
     from app.ui.bridge import UNAVAILABLE_TEXT, UiBridge
 
@@ -363,6 +425,11 @@ def build_run_summary(
     events: Sequence[Any],
     samples: Sequence[Any],
     extra_errors: Sequence[str] = (),
+    frames_refused: int = 0,
+    frames_refused_reasons: Mapping[str, int] | None = None,
+    feed_elapsed_s: float | None = None,
+    drain_elapsed_s: float | None = None,
+    frame_attempts: int | None = None,
 ) -> dict[str, Any]:
     """The headless run's summary, as a pure function of what was measured.
 
@@ -370,6 +437,24 @@ def build_run_summary(
     `device.confirmed` are separate, and `fell_back` is `None` - not `False` - when there
     is no confirmation at all: an unproven route has not fallen back, it has **not been
     shown**, and `False` there would read as "running where you asked".
+
+    ## The three frame counters, and why they are three
+
+    `frames_submitted`, `frames_refused` and `drops` count three different populations and
+    must never be merged. Submitted went into the queue. Refused never reached it because
+    the pipeline was not running, shut down, or failed - **which is not a drop**, and
+    counting it as one made a broken route report a clean zero. Dropped missed the queue
+    because it was full, which *is* lag. `frame_attempts` is the total, so
+    `submitted + refused + drops == attempts` is checkable rather than hoped for.
+
+    ## Two windows, not one
+
+    `ai_fps` divides by `feed_elapsed_s` - the time frames were actually being fed - and
+    **not** by `elapsed_s`, which additionally contains the drain and the teardown.
+    Measured: `--seconds 8` reported `elapsed_s: 10.152` and `ai_fps: 11.9187`, which is
+    121 frames over 10.16 s, not over the 8 s the run claims to have fed. The old report
+    quoted both figures in one table row as though they shared a window. `drain_elapsed_s`
+    is now its own field so the difference is visible rather than absorbed.
     """
     from app.inference.devices import is_device
 
@@ -379,7 +464,8 @@ def build_run_summary(
         fell_back = not is_device(confirmed_tuple, device_requested)
 
     analysed = int(frames_analysed)
-    fps = (analysed / float(elapsed_s)) if analysed > 0 and elapsed_s > 0 else None
+    window = feed_elapsed_s if feed_elapsed_s is not None else elapsed_s
+    fps = (analysed / float(window)) if analysed > 0 and window > 0 else None
 
     return {
         "device": {
@@ -390,8 +476,15 @@ def build_run_summary(
         },
         "frames_submitted": int(frames_submitted),
         "frames_analysed": analysed,
+        "frames_refused": int(frames_refused),
+        "frames_refused_reasons": dict(frames_refused_reasons or {}),
+        "frame_attempts": (int(frame_attempts) if frame_attempts is not None
+                           else int(frames_submitted) + int(frames_refused)),
         "drops": int(drops),
         "elapsed_s": round(float(elapsed_s), 3),
+        "feed_elapsed_s": round(float(window), 3),
+        "drain_elapsed_s": (round(float(drain_elapsed_s), 3)
+                            if drain_elapsed_s is not None else None),
         "ai_fps": round(fps, 4) if fps is not None else None,
         "frame_age_ms": {
             "p50": _percentile(frame_ages_ms, 0.50),
@@ -415,6 +508,42 @@ def build_run_summary(
         "event_counts": _count_events(events),
         "errors": [str(text) for text in extra_errors],
     }
+
+
+def _take_reporting_sample(supervisor: Any, *, attempts: int = 12,
+                           wait_s: float = 0.25) -> tuple:
+    """One sample set that actually carries a measurement, or the last one taken.
+
+    ## Why this is not just `supervisor.samples()`
+
+    `psutil.cpu_percent(interval=None)` measures the delta **since the previous call**, and
+    `MetricCollector`'s own background thread calls it on its interval. So a `sample()`
+    taken from this process lands either just after the thread's own call - in which case
+    there is no measurable window and every sample in the set comes back
+    `UNAVAILABLE` with `window_seconds = 0.0` - or just before, in which case it works.
+    It is a coin toss on timing.
+
+    Measured: a 4 s run whose final `samples()` call landed on the wrong side of the
+    thread reported **every** metric as unavailable, including `system_cpu_percent` with
+    the honest reason "no measurable window elapsed since the previous sample". The
+    summary was not lying, but it was reporting the one instant in the run where nothing
+    had been measured - which is the least useful instant to publish.
+
+    So this retries across a couple of collector intervals and returns the first set that
+    carries at least one valid reading. If none does, it returns the last one taken -
+    **with its reason**, because "we never got a window" is itself the honest answer for a
+    run too short to produce one.
+    """
+    from app.contracts.metric_sample import Validity
+
+    result: tuple = ()
+    for attempt in range(max(1, int(attempts))):
+        result = supervisor.samples()
+        if any(sample.validity is not Validity.UNAVAILABLE for sample in result):
+            return result
+        if attempt + 1 < int(attempts):
+            time.sleep(float(wait_s))
+    return result
 
 
 def _count_events(events: Sequence[Any]) -> dict[str, int]:
@@ -472,7 +601,19 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
     supervisor.start()
     started = time.perf_counter()
     seen_loops: set[int] = {0}
-    submitted = 0
+    # I2: the identity of the last result already folded. `latest_result()` keeps
+    # returning the newest result until a newer one lands, so a fold that does not check
+    # this re-folds the same detection set as many times as the loop iterates. Measured on
+    # a 4 s CPU run: 61 frames analysed produced **147** `tracker.update` calls, one
+    # identity re-read 95 times, and a maximum track `hits` of **147** against 61 real
+    # results - so a detection seen in one real frame reached `min_hits = 2` and was
+    # confirmed. The tracker's own evidence gate was defeated by the consumer, not by the
+    # tracker. The event counts survived only because `dedup_key` suppressed the
+    # duplicate emit, which is a coincidence rather than a safeguard.
+    folded: dict[str, Any] = {"identity": None}
+    # I3: take one sample set up front so a run that ends before the first telemetry tick
+    # still reports a real CPU reading rather than `metrics: {}`.
+    supervisor.samples()
     try:
         while time.perf_counter() - started < float(seconds):
             frame = clip.read()
@@ -487,12 +628,22 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
                 frame = clip.read()
                 if frame is None:
                     break
-            if supervisor.submit(frame):
-                submitted += 1
-            _fold_result(supervisor, tracker, machine)
-        # Drain what is already analysed before the clock is read, so the summary's
-        # frame counts and the events they produced describe the same instant.
-        _drain(supervisor, tracker, machine, seconds=2.0)
+            supervisor.submit(frame)
+            _fold_result(supervisor, tracker, machine, folded)
+        # The feed window closes here, before the drain. Everything after this point is
+        # the worker finishing what it was already given, and dividing by it would report
+        # a rate for a window nobody fed.
+        feed_elapsed = time.perf_counter() - started
+        drain_started = time.perf_counter()
+        # Drain what is already analysed, so the summary's frame counts and the events
+        # they produced describe the same instant.
+        _drain(supervisor, tracker, machine, folded, seconds=2.0)
+        drain_elapsed = time.perf_counter() - drain_started
+        # I3 again, and this is the reading the summary reports: one last whole sample set
+        # while the collector is still alive, retried across a couple of collector
+        # intervals so the summary is not published at the one instant when the window
+        # happened to be zero. `last_samples` is what survives `stop()`.
+        _take_reporting_sample(supervisor)
     finally:
         plan = supervisor.route_plan()
         clip.close()
@@ -511,21 +662,45 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
         events=tuple(machine.events),
         samples=supervisor.last_samples,
         extra_errors=tuple(plan.errors),
+        frames_refused=supervisor.frames_refused,
+        frames_refused_reasons=supervisor.frames_refused_reasons,
+        feed_elapsed_s=feed_elapsed,
+        drain_elapsed_s=drain_elapsed,
+        frame_attempts=supervisor.frame_attempts,
     )
 
 
-def _fold_result(supervisor: Any, tracker: Any, machine: Any) -> None:
-    """Fold the newest result into the tracker and the event machine.
+def _fold_result(supervisor: Any, tracker: Any, machine: Any,
+                 folded: dict[str, Any]) -> None:
+    """Fold the newest **unfolded** result into the tracker and the event machine.
 
     Reads `latest_result()` rather than connecting to a signal, because this loop is the
     consumer and the supervisor is its only producer; a signal would add a thread hop per
     frame for no gain. The Qt-facing path (`run_windowed`) does use signals, because there
     the consumer is a different thread.
+
+    ## Why `folded` is a parameter and not a local
+
+    `latest_result()` returns the newest result **and keeps returning it** until a newer
+    one arrives. Calling this function per submitted frame *and* every 20 ms during the
+    drain therefore folds the same result repeatedly - 147 folds of 61 real results,
+    measured. `Tracker.update` counts a match as a hit, so a repeated fold inflates
+    `hits` until a track is `confirmed`, and the screen's own words ("minimum two hits
+    before a track counts") become false.
+
+    `UiBridge.accept_result` already exists for exactly this decision and was unused here;
+    the same identity check is made here against `folded["identity"]`, which is the
+    smallest thing that fixes the same defect without dragging the UI layer into a
+    headless run.
     """
     result = supervisor.latest_result()
     if result is None or result.error is not None:
         return
     frame = result.frame
+    identity = tuple(frame.identity)
+    if folded["identity"] == identity:
+        return
+    folded["identity"] = identity
     if machine.loop_id is None:
         machine.reset(frame.source_loop_id)
     now = frame.captured_at
@@ -535,7 +710,8 @@ def _fold_result(supervisor: Any, tracker: Any, machine: Any) -> None:
         machine.observe(track, frame)
 
 
-def _drain(supervisor: Any, tracker: Any, machine: Any, *, seconds: float) -> None:
+def _drain(supervisor: Any, tracker: Any, machine: Any, folded: dict[str, Any],
+           *, seconds: float) -> None:
     """Wait for the worker to finish what has already been submitted.
 
     Bounded by `seconds`, because a wedged worker must not hang a validation run. The
@@ -545,7 +721,7 @@ def _drain(supervisor: Any, tracker: Any, machine: Any, *, seconds: float) -> No
     deadline = time.perf_counter() + float(seconds)
     last = supervisor.frames_analysed
     while time.perf_counter() < deadline:
-        _fold_result(supervisor, tracker, machine)
+        _fold_result(supervisor, tracker, machine, folded)
         current = supervisor.frames_analysed
         if current == last:
             time.sleep(0.02)
@@ -566,11 +742,11 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     needs to be told that is what is happening rather than shown a black screen. It is
     never called again.
     """
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QUrl
     from PySide6.QtGui import QFontDatabase
     from PySide6.QtQml import QQmlApplicationEngine
-    from PySide6.QtQuick import QQuickWindow
 
+    from app.engine.events import RetailEventMachine
     from app.engine.retail_config import RETAIL_CHECKOUT_CLIP, retail_sanity_manifest
     from app.engine.source import ClipSource
     from app.engine.tracker import Tracker
@@ -583,8 +759,6 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
           f"this runs once", flush=True)
     _describe_devices()
 
-    import openvino as ov  # noqa: F401 - imported for the Core handle below
-
     application = _gui_application()
     # The booth font. Measured: 411 families under the `windows` plugin and 0 under
     # `offscreen`, so the family is registered explicitly rather than relied on.
@@ -592,8 +766,6 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
 
     manifest = retail_sanity_manifest()
     tracker = Tracker(iou_threshold=manifest.iou_threshold)
-    from app.engine.events import RetailEventMachine
-
     machine = RetailEventMachine(manifest, class_names=class_names())
 
     bridge = UiBridge(application)
@@ -611,13 +783,28 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     context.setContextProperty("Theme", theme)
     context.setContextProperty("bridge", bridge)
 
-    # Telemetry and route reach the UI through signals (AGENTS.md rule 11). Every setter
-    # here is a no-op on a widget from the wrong thread; the bridge is in the UI thread
-    # and these are queued connections because the emitters are not.
+    # -- the live wiring ---------------------------------------------------------------
+    #
+    # Four hops, and every one of them had **no caller** while this block was missing,
+    # which is why the booth screen used to sit forever on "pending - no device
+    # selected", "no frame decoded yet", every metric `unavailable` and every event
+    # count 0 - with no error anywhere. The connection is to the bridge's *own* slots,
+    # not to a lambda that re-implements them, so there is exactly one implementation of
+    # "apply a route" and one of "apply a frame".
+    bridge.routeArrived.connect(bridge.apply_route)
+    bridge.errorArrived.connect(bridge.apply_error)
+    bridge.frameArrivedFromWorker.connect(bridge.apply_frame)
+    bridge.samplesArrived.connect(bridge.apply_samples)
+
+    # The supervisor's own signals are converted into those bridge signals by
+    # `_on_route` / `_append_error` / `_on_result`, which run on the **supervisor's**
+    # reader thread. The bridge lives in the UI thread, so Qt queues the hop
+    # automatically - AGENTS.md rule 11, satisfied by construction rather than by
+    # remembering to pass a connection type.
     supervisor.state_changed.connect(lambda plan: _on_route(bridge, plan))
     supervisor.error_raised.connect(lambda text: _append_error(bridge, text))
     supervisor.result_ready.connect(
-        lambda result: _on_result(bridge, tracker, machine, result))
+        lambda result: _on_result(bridge, tracker, machine, manifest, result))
 
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "ui" / "Main.qml")))
     roots = engine.rootObjects()
@@ -629,18 +816,40 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
         return 2
 
     supervisor.start()
-    _start_feeders(bridge, supervisor, clip, tracker, machine)
+    _start_feeders(bridge, supervisor, clip)
     _start_telemetry(bridge, supervisor, application)
 
-    window = roots[0]
     exit_code = application.exec()
+    # The feeder thread is stopped **before** the supervisor and the clip, and it is
+    # stopped by a flag it checks rather than by its own logic. See `_start_feeders`.
+    stop_feeding()
     supervisor.stop()
     clip.close()
     return int(exit_code)
 
 
+#: Set by `_start_feeders`; the windowed run calls `stop_feeding()` on the way out. A
+#: module global rather than a returned handle because the feeder's only other exit is
+#: `route_plan().state == "failed"`, and a supervisor that was stopped normally never
+#: becomes "failed" - so without this the thread read frames and called `submit()` for the
+#: rest of the process's life, against a supervisor that had already been torn down.
+_FEED_STOP = threading.Event()
+
+
+def stop_feeding() -> None:
+    """Ask the feeder thread to stop. Idempotent, and prompt."""
+    _FEED_STOP.set()
+
+
 def _gui_application():
-    """The `QGuiApplication`, created here so `--selftest` never imports QtGui."""
+    """The `QGuiApplication`, created here so `--selftest` imports no Qt **window** stack.
+
+    Note the wording: `--selftest` *does* import `PySide6.QtGui` - `app.ui.bridge`
+    constructs a `QImage` and a `QColor` for the frame image provider and the overlay
+    painter. What it never does is construct a `QGuiApplication` or load any QML, and that
+    is the property the self-test asserts. An earlier version of this docstring claimed
+    the stronger, false thing.
+    """
     from PySide6.QtGui import QGuiApplication
 
     application = QGuiApplication.instance() or QGuiApplication(sys.argv)
@@ -702,33 +911,101 @@ def _append_error(bridge: Any, text: str) -> None:
     bridge.errorArrived.emit(str(text))
 
 
-def _on_result(bridge: Any, tracker: Any, machine: Any, result: Any) -> None:
-    """Fold one result into tracker, events and overlay. Reader thread.
+def _on_result(bridge: Any, tracker: Any, machine: Any, manifest: Any,
+               result: Any) -> None:
+    """Fold one result into tracker, events, pixels and zones. **Reader thread.**
 
-    `tracker.update(...)` runs here and **only current tracks** are published, so a coasted
-    track never reaches the overlay. The filter is the bridge's `set_overlay` for the
-    in-process path; this path publishes the already-filtered list rather than
-    republishing the raw one, so there is exactly one filter and both paths go through the
-    same rule - `Tracker.current_tracks()`.
+    Everything published here crosses to the UI thread as one payload on
+    `frameArrivedFromWorker`, and `UiBridge.apply_frame` - which runs on the **UI
+    thread**, because Qt queues the connection - does the applying.
+
+    ## Why this carries the frame's **pixels**
+
+    The first version of this function published `identity`, `width`, `height`, boxes and
+    events. It did not publish the image, so `set_frame_image` was never called, the image
+    provider served its 1x1 transparent placeholder for the entire session, and
+    `apply_frame` set `frame_ready = True` with a null image behind it - a hero that claims
+    a frame is ready while showing nothing. A `QImage` cannot cross a `Signal(object)` as
+    bytes without being rebuilt on the other side, so the numpy array travels in the
+    payload and the bridge builds the `QImage` in the UI thread.
+
+    ## Zones
+
+    `set_zones` had no caller, so the zone repeater had an empty model and drew nothing.
+    The retail claim **is** a zone rule, so a screen with no zones supports no claim. The
+    zones come from the manifest - the same source `run_headless` and the pack use - and
+    are published with the frame so they are normalised against the picture they sit on.
+    Published **once**, on the first result: the zones are a property of the scenario, not
+    of the frame, and re-publishing them 15 times a second would rebuild the repeater for
+    nothing.
+
+    ## Events
+
+    Each event is applied through `record_event`, the same call the headless path's counts
+    come from, so the footer's count and the summary's count are two readings of one
+    number rather than two independently maintained ones.
+
+    ## The loop boundary is handled here, and it was not
+
+    **`RetailEventMachine.observe` refuses a frame from a loop it is not following**, and
+    says so: "Call `reset(loop_id=...)` at each source loop (spec section 9); adopting the
+    new loop silently would carry one loop's pending transfers into the next." `run_headless`
+    does that reset; this function did not, and the clip rewinds.
+
+    The failure was invisible while nothing consumed results. The moment this fold was
+    wired, every run that reached the end of the clip raised `ValueError` **inside the
+    supervisor's reader thread**, which killed that thread - so results stopped arriving,
+    the screen froze on the last good frame, and the tracebacks went to a stderr nobody
+    watches at a trade show. The input-acknowledgement probe hung for the same reason and
+    never printed its line. Spec section 9 is not optional bookkeeping: the tracker's ids
+    deliberately do not rewind, so a rewind has to be announced to both machines.
     """
     if result.error is not None:
         return
     frame = result.frame
-    if machine.loop_id is None:
-        machine.reset(frame.source_loop_id)
+    _reset_for_loop_change(frame, tracker, machine)
     now = frame.captured_at
     events = []
     for track in tracker.update(result.detections, now=now):
         events.extend(machine.observe(track, frame))
     bridge.frameArrivedFromWorker.emit(
-        _frame_payload(frame, tracker, events))
+        _frame_payload(frame, tracker, events, manifest))
 
 
-def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any]) -> dict[str, Any]:
+def _reset_for_loop_change(frame: Any, tracker: Any, machine: Any) -> None:
+    """Announce a clip rewind to both the tracker and the event machine.
+
+    Called on the **first** frame of every loop, including loop 0. `tracker.reset()`
+    clears the tracks but deliberately does not rewind the id counter, so a tracker's ids
+    never collide across loops; the event machine's `reset(loop_id)` moves it onto the new
+    loop and is what keeps one loop's pending presence from being completed by the next
+    loop's arrival.
+    """
+    loop_id = frame.source_loop_id
+    if machine.loop_id == loop_id:
+        return
+    tracker.reset()
+    machine.reset(loop_id)
+
+
+def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any],
+                   manifest: Any) -> dict[str, Any]:
+    """One result, as the dict `UiBridge.apply_frame` consumes.
+
+    Carries `image` (the raw numpy array) and, on the first frame only, `zones`. Both are
+    rebuilt on the UI thread by the slot; see `_on_result` for why the pixels travel here
+    rather than as a `QImage`.
+    """
     return {
         "identity": list(frame.identity),
         "width": frame.width,
         "height": frame.height,
+        "image": frame.image,
+        # `zones_for_event_rules()`, **not** `manifest.zones`. The shipped pack carries its
+        # zones inside `event_rules` (measured: `manifest.zones` is `()`), so reading the
+        # attribute would have published an empty list and passed the "did I call
+        # set_zones" check while drawing nothing.
+        "zones": list(manifest.zones_for_event_rules().values()),
         "boxes": [
             {"track_id": t.track_id, "class_id": t.class_id,
              "x": t.box[0] / frame.width, "y": t.box[1] / frame.height,
@@ -745,18 +1022,30 @@ def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any]) -> dict[str,
     }
 
 
-def _start_feeders(bridge: Any, supervisor: Any, clip: Any, tracker: Any,
-                   machine: Any) -> None:
-    """One thread: decode at the clip's rate and submit. Nothing touches a widget."""
-    import threading
+def _start_feeders(bridge: Any, supervisor: Any, clip: Any) -> None:
+    """One thread: decode at the clip's rate and submit. Nothing touches a widget.
+
+    **It has a stop condition that is not a guess.** The first version's only exit was
+    `route_plan().state == "failed"`, which a supervisor that was shut down *normally*
+    never reaches - so after `application.exec()` returned, the thread carried on calling
+    `clip.read()` and `supervisor.submit()` against a torn-down supervisor and a closed
+    clip until the process happened to exit. It now also checks `_FEED_STOP`, which
+    `run_windowed` sets on the way out.
+
+    The tracker and the event machine are **not** arguments here. They are folded in the
+    supervisor's reader thread by `_on_result`, on the same result that produces the
+    payload this thread publishes - passing them in would invite a second fold of the same
+    result, which is the defect I2 records for the headless path.
+    """
+    _FEED_STOP.clear()
 
     def feed() -> None:
-        while True:
+        while not _FEED_STOP.is_set():
             if supervisor.route_plan().state == "failed":
                 return
             frame = clip.read()
             if frame is None:
-                if not clip.restart():
+                if _FEED_STOP.is_set() or not clip.restart():
                     return
                 continue
             supervisor.submit(frame)
@@ -773,8 +1062,24 @@ def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
     `psutil`, so calling `samples()` from here costs about 0.04 ms - measured - and doing
     it on the UI thread means no widget is touched from another one. At 2 Hz this is not
     a measurable load, and it keeps the whole UI-update path on one thread.
+
+    ## It also publishes the three **derived** metrics
+
+    `analysis fps`, `frame age p50` and `p95` are computed here from the supervisor's own
+    counters, over the interval since the previous tick. They are not `MetricSample`s -
+    there is no provider for a rate the application measures about itself - and nothing
+    else published them, so the CPU card's activity line read "analysis fps unavailable ·
+    frame age p50 unavailable p95 unavailable" for a whole session while the numbers sat
+    in the supervisor. `unavailable` is the honest word for "nobody measured this", and
+    now that something does, the card shows it.
+
+    The rate is measured **between two ticks**, never over the process lifetime: a
+    lifetime average on a screen would show the compile and the startup ramp smeared into
+    a number that describes neither the running system nor anything anybody saw.
     """
     from PySide6.QtCore import QTimer
+
+    previous = {"at": time.perf_counter(), "analysed": 0}
 
     def tick() -> None:
         # One whole sample set, through `sample()` and never through an accessor. The
@@ -782,10 +1087,32 @@ def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
         # moves the tick earlier for everybody and can flip the booth's own sample to
         # UNAVAILABLE with no other visible cause.
         bridge.samplesArrived.emit(tuple(supervisor.samples()))
+        _publish_derived_metrics(bridge, supervisor, previous)
 
     timer = QTimer(application)
     timer.timeout.connect(tick)
     timer.start(500)
+
+
+def _publish_derived_metrics(bridge: Any, supervisor: Any,
+                             previous: dict[str, float]) -> None:
+    """Push the analysis rate and frame-age percentiles to the bridge, on the UI thread.
+
+    `None` for anything not yet measured - before the first result there is no rate and no
+    frame age, and `set_metrics` stores `None` as `None` so the card says `unavailable`
+    rather than `0`.
+    """
+    now = time.perf_counter()
+    analysed = supervisor.frames_analysed
+    window = now - previous["at"]
+    fps = ((analysed - previous["analysed"]) / window
+           if window > 0 and analysed >= previous["analysed"] else None)
+    ages = supervisor.frame_ages_ms()
+    p50 = _percentile(ages, 0.50)
+    p95 = _percentile(ages, 0.95)
+    bridge.set_metrics(ai_fps=fps, frame_age_p50_ms=p50, frame_age_p95_ms=p95)
+    previous["at"] = now
+    previous["analysed"] = analysed
 
 
 # --------------------------------------------------------------------------------------
@@ -819,8 +1146,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how long a headless run lasts.")
     parser.add_argument("--json", dest="json", default=None,
                         help="write the run summary to this path as JSON.")
-    parser.add_argument("--release", action="store_true",
-                        help="refuse to start with a simulated provider registered.")
+    parser.add_argument("--release", dest="release", action="store_true",
+                        default=RELEASE_BY_DEFAULT,
+                        help="refuse to start with a simulated provider registered. "
+                             "On by default; see RELEASE_BY_DEFAULT.")
+    parser.add_argument("--no-release", dest="release", action="store_false",
+                        help="run without the simulated-provider gate. For a developer "
+                             "who needs a simulated provider on their own machine, and "
+                             "deliberately awkward to type.")
     return parser
 
 
@@ -836,8 +1169,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     """The process entry point. Returns the exit code."""
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+    # Both sets, not just the allow-list: the gate refuses a build that registers anything
+    # simulated, and it also refuses a build whose collector reaches for a provider the
+    # gate was never told about. The second half is what makes the first half mean
+    # something.
     assert_no_simulation_in_release(release=bool(args.release),
-                                    providers=REGISTERED_PROVIDERS)
+                                    providers=tuple(REGISTERED_PROVIDERS)
+                                    + consulted_providers())
 
     if args.selftest:
         summary = run_selftest()
@@ -860,6 +1198,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         _write_json(args.json, summary)
         print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+        # I1: **a run that analysed nothing is not a run.** Exit `0` here is what let a
+        # pipeline that never started, or died at once, or was stopped early report
+        # `submitted: 0, drops: 0, state: pending` and still look like a clean run. The
+        # summary is still written - it is the evidence for why - but the exit code says
+        # the analysis did not happen.
+        if summary["frames_analysed"] <= 0:
+            print("headless run analysed no frames; this is not a successful run. "
+                  f"state={summary['device']['state']!r} "
+                  f"submitted={summary['frames_submitted']} "
+                  f"refused={summary['frames_refused']} "
+                  f"refused_reasons={summary['frames_refused_reasons']} "
+                  f"errors={summary['errors']}",
+                  file=sys.stderr, flush=True)
+            return 2
         return 0
 
     if args.windowed or not (args.selftest or args.headless):

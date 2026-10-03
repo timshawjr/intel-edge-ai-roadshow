@@ -1,0 +1,120 @@
+{
+  "ai_fps": 15.1143,
+  "device": {
+    "confirmed": [
+      "GPU.0"
+    ],
+    "fell_back": false,
+    "requested": "GPU",
+    "state": "active"
+  },
+  "drain_elapsed_s": 2.016,
+  "drops": 0,
+  "elapsed_s": 10.163,
+  "errors": [],
+  "event_counts": {
+    "zone_occupancy": 1
+  },
+  "events": [
+    {
+      "at_frame_id": 66,
+      "at_time": 750335.8838,
+      "class_name": "person",
+      "dedup_key": "0:1:person:presence:counter_band",
+      "kind": "zone_occupancy",
+      "source_loop_id": 0,
+      "track_id": 1
+    }
+  ],
+  "feed_elapsed_s": 8.006,
+  "frame_age_ms": {
+    "method": "nearest rank, no interpolation",
+    "p50": 45.86620000191033,
+    "p95": 1001.1988000478595,
+    "samples": 121
+  },
+  "frame_attempts": 121,
+  "frames_analysed": 121,
+  "frames_refused": 0,
+  "frames_refused_reasons": {},
+  "frames_submitted": 121,
+  "metrics": {
+    "app_cpu_percent": {
+      "process_scope": [
+        "ui",
+        "worker"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "percent",
+      "validity": "valid",
+      "value": 0.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "app_rss_bytes": {
+      "process_scope": [
+        "ui",
+        "worker"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "bytes",
+      "validity": "valid",
+      "value": 785596416.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "cpu:ui": {
+      "process_scope": [
+        "ui"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "percent",
+      "validity": "valid",
+      "value": 0.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "cpu:worker": {
+      "process_scope": [
+        "worker"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "percent",
+      "validity": "valid",
+      "value": 0.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "rss:ui": {
+      "process_scope": [
+        "ui"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "bytes",
+      "validity": "valid",
+      "value": 361623552.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "rss:worker": {
+      "process_scope": [
+        "worker"
+      ],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "bytes",
+      "validity": "valid",
+      "value": 423972864.0,
+      "window_seconds": 0.17099999997299165
+    },
+    "system_cpu_percent": {
+      "process_scope": [],
+      "provider": "psutil",
+      "reason": null,
+      "unit": "percent",
+      "validity": "valid",
+      "value": 44.8,
+      "window_seconds": 0.17099999997299165
+    }
+  }
+}

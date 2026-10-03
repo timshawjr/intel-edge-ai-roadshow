@@ -557,16 +557,44 @@ class UtilisationHonesty(unittest.TestCase):
 
     def test_no_qml_mentions_a_utilisation_percentage(self):
         # A source-level check: no QML file may name a utilisation metric with a value,
-        # and none may set `utilisationAvailable: true` for an accelerator.
+        # and **every one of the three cards** must take its availability from the
+        # bridge's measurement, never a literal.
+        #
+        # I7: the CPU card used to pass `utilisationAvailable: true`, hardcoded, which
+        # would render an unavailable `psutil` reading in the live colour and undimmed -
+        # the exact defect the two accelerator cards are careful about, applied to the one
+        # card that is supposed to be measurable. The CPU is not special: all three now
+        # answer the same question of the bridge.
         qml = _qml_sources()
         self.assertNotIn("gpu_utilisation_percent: ", qml.replace('"', ""))
-        for name in ("GPU", "NPU"):
+        # `Main.qml` only. `deviceId: "CPU"` also appears in `ComputeCard.qml` as the
+        # card component's own property declaration, and searching every QML file found
+        # that declaration first and then measured the component rather than its use.
+        main = (REPO_ROOT / "app" / "ui" / "Main.qml").read_text(encoding="utf-8")
+        for name in ("CPU", "GPU", "NPU"):
             marker = f'deviceId: "{name}"'
-            self.assertIn(marker, qml)
-            tail = qml.split(marker, 1)[1][:400]
+            self.assertIn(marker, main)
+            tail = main.split(marker, 1)[1][:400]
             self.assertIn("utilisationAvailable: bridgeUi.", tail,
                           f"the {name} card must take its availability from the bridge's "
                           f"measurement, never a literal")
+        self.assertNotIn("utilisationAvailable: true", qml,
+                         "no card may hardcode its own availability")
+
+    def test_the_cpu_card_answers_the_same_question_the_accelerators_do(self):
+        # The bridge side of I7: `cpu_available` is derived from the value, so an
+        # UNAVAILABLE CPU reading cannot claim availability.
+        from app.contracts.metric_sample import Validity
+
+        b = _bridge()
+        self.assertFalse(b.cpu_available,
+                         "a fresh bridge must not claim a CPU reading it does not have")
+        b.set_samples([_sample("system_cpu_percent", 12.0, validity=Validity.VALID)])
+        self.assertTrue(b.cpu_available)
+        b.set_samples([_sample("system_cpu_percent", None,
+                               validity=Validity.UNAVAILABLE)])
+        self.assertFalse(b.cpu_available,
+                         "an UNAVAILABLE CPU reading must not read as available")
 
 
 class ExplanationContent(unittest.TestCase):
@@ -919,22 +947,6 @@ class OffscreenRender(unittest.TestCase):
                            "the frame's cyan block is not on the screen: either the "
                            "image never arrived or the channel order is wrong")
 
-    def test_the_coasted_track_box_is_not_drawn(self):
-        # The end-to-end version of `OverlayContract::test_a_coasted_track_produces_no_box`.
-        #
-        # Track 2 is coasted and sits at source x 1250..1600 of 1920, y 260..900 of 1080.
-        # Projected into the hero (x 24..1296, y about 160..700) that is roughly
-        # x 852..1084, y 280..577. The rectangle sampled here is that region **between the
-        # two zone lines** - the zone rectangle is drawn in the same accent colour and
-        # spans the full width, so a rectangle that crossed it would find the zone line
-        # instead of the box and the test would pass for the wrong reason.
-        accent = self._accent_mask()
-        region = accent[300:450, 820:1120]
-        self.assertEqual(int(region.sum()), 0,
-                         f"{int(region.sum())} accent pixels in the coasted track's "
-                         f"region: its box is being drawn over an object that is no "
-                         f"longer there")
-
     def _accent_mask(self):
         """Accent-coloured pixels, as a boolean array over the render.
 
@@ -979,6 +991,13 @@ class OffscreenRender(unittest.TestCase):
     def test_the_coasted_track_box_is_not_drawn(self):
         # The end-to-end version of `OverlayContract::test_a_coasted_track_produces_no_box`.
         #
+        # **This method used to be defined twice in this class**, with different bodies,
+        # and Python silently kept the last one. The review of M1 found it: a shadowed
+        # test is not a test anybody ran, and the shadowed copy sampled a slightly
+        # different region. There is now one definition, and
+        # `TestSuiteHygiene::test_no_test_method_is_defined_twice_in_one_class` keeps it
+        # that way.
+        #
         # Track 2 is coasted and sits at source x 1250..1600 of 1920, y 260..900 of 1080.
         # Projected into the hero (x 24..1296, y about 160..700) that is roughly
         # x 852..1084, y 280..577. The rectangle sampled here is that region **between the
@@ -1009,9 +1028,16 @@ class OffscreenRender(unittest.TestCase):
         bridge_py = Path(work) / "bridge.py"
         source = (REPO_ROOT / "app" / "ui" / "bridge.py").read_text(encoding="utf-8")
         # The mutation: drop the `is_current` filter from `set_overlay`.
+        #
+        # The counter is named `coasted`, not `skipped`: a missing frame is a *different*
+        # reason a box cannot be placed, and the review of M1 found this method claiming
+        # "holding coasted tracks" when the real cause was that no frame had been
+        # decoded. Two counters, two status words. This assertion is the guard that caught
+        # the rename - it is the reason the string is spelled out here rather than
+        # regex-matched.
         mutated = source.replace(
             "            if not getattr(track, \"is_current\", False):\n"
-            "                skipped += 1\n"
+            "                coasted += 1\n"
             "                continue\n",
             "",
         )
@@ -1069,6 +1095,49 @@ class OffscreenRender(unittest.TestCase):
         self.assertGreater(distinct, 40,
                            f"only {distinct} distinct colours in the render: the screen "
                            f"is effectively blank")
+
+
+class TestSuiteHygiene(unittest.TestCase):
+    """Properties of the test suite itself, which nothing else can assert."""
+
+    def test_no_test_method_is_defined_twice_in_one_class(self):
+        # `tests/test_ui_contract.py` had `test_the_coasted_track_box_is_not_drawn`
+        # defined **twice** in `OffscreenRender`, with different bodies, and Python kept
+        # the last one silently. The review of M1 found it. A shadowed test is not a test
+        # anybody ran, and the copy that was shadowed sampled a different region - so the
+        # suite reported a pass for a test whose text no longer described what it checked.
+        #
+        # Read from the **source**, not from the imported class: `unittest.TestCase`
+        # collects a class's attributes, and the shadowed definition is already gone from
+        # those by the time anything could look.
+        import ast
+
+        offenders = []
+        for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+            # `utf-8-sig`, because several test files in this repository carry a byte-order
+            # mark and `ast.parse` rejects one outright:
+            # `SyntaxError: invalid non-printable character U+FEFF`. A scanner that
+            # cannot open half the suite is a scanner measuring nothing.
+            text = path.read_text(encoding="utf-8-sig")
+            try:
+                tree = ast.parse(text)
+            except SyntaxError as exc:
+                self.fail(f"{path.name} does not parse: {exc}")
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                seen: dict[str, int] = {}
+                for child in node.body:
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if child.name.startswith("test"):
+                            seen[child.name] = seen.get(child.name, 0) + 1
+                for name, count in seen.items():
+                    if count > 1:
+                        offenders.append(
+                            f"{path.name}:{node.name}.{name} defined {count} times")
+        self.assertEqual(offenders, [],
+                         f"a test method defined more than once is silently shadowed: "
+                         f"{offenders}")
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience for a human at a booth

@@ -62,6 +62,13 @@ QtObject {
 
     readonly property bool gpuUtilisationAvailable: bridge.gpu_available
     readonly property bool npuUtilisationAvailable: bridge.npu_available
+    // The CPU card is not special. Main.qml used to hardcode its availability to a literal
+    // true, which would have rendered an unavailable psutil reading coloured and
+    // undimmed as though it were live. All three cards now answer the same question of
+    // the bridge. (The literal is spelled without its value here on purpose: a source
+    // check forbids a card ever hardcoding its own availability, and a comment that
+    // quoted the old line verbatim would trip it.)
+    readonly property bool cpuUtilisationAvailable: bridge.cpu_available
     readonly property string utilisationUnavailableText: bridge.utilisation_unavailable_text
 
     // The measured reason, full text. Reachable from the pinned panel; the card-sized

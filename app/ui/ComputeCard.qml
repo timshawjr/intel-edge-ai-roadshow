@@ -39,6 +39,20 @@ Rectangle {
     property string secondaryMetricName: ""
     /// Inference activity, which is real on every device.
     property string activityText: ""
+    /// The rendered figure, read from the bridge's **notified** formatted map.
+    ///
+    /// Not `bridge.display_text(metricName)`: a QML binding that calls a method declares
+    /// no property dependency, so Qt evaluates it once and never again. That made every
+    /// card on this screen read "unavailable" on a live run whose bridge held a real CPU
+    /// reading - the bridge was right and the screen was frozen at its first evaluation.
+    /// The formatting still lives in exactly one place, `UiBridge.display_text`; the map
+    /// is what that produces, republished whenever a value changes.
+    readonly property string metricText: metricName.length > 0
+        && bridge.metric_text[metricName] !== undefined
+        ? bridge.metric_text[metricName] : bridge.unavailable_text
+    readonly property string secondaryMetricText: secondaryMetricName.length > 0
+        && bridge.metric_text[secondaryMetricName] !== undefined
+        ? bridge.metric_text[secondaryMetricName] : ""
     /// Which explanation this card pins when clicked. See `explanationKeys` in Bridge.qml.
     property string explainKey: "cpu"
 
@@ -133,9 +147,11 @@ Rectangle {
         // The value, or the word that says there is none.
         Text {
             width: parent.width
-            text: card.metricName.length > 0
-                ? bridge.display_text(card.metricName)
-                : bridge.unavailable_text
+            // Named so a test can read the **rendered** figure. Reading the bridge's
+            // Python property cannot tell a correct bridge from a frozen screen, which is
+            // the whole difference this milestone found twice.
+            objectName: "cardText_" + card.metricName
+            text: card.metricText
             color: card.utilisationAvailable ? Theme.TEXT_ON_PANEL : Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_NUMERAL
@@ -167,7 +183,7 @@ Rectangle {
         Text {
             width: parent.width
             visible: card.secondaryMetricName.length > 0
-            text: bridge.display_text(card.secondaryMetricName)
+            text: card.secondaryMetricText
             color: Theme.TEXT_ON_PANEL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_NUMERAL_SMALL

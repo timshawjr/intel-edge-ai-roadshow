@@ -213,6 +213,15 @@ class Supervisor(QObject):
         self._latest: InferenceResult | None = None
         self._frames_submitted = 0
         self._frames_analysed = 0
+        #: Frames `submit` **refused**, with the reason each was refused. Distinct from
+        #: `drops`, and the distinction is the whole point: a drop is the pipeline falling
+        #: behind, a refusal is the pipeline not running. Before this counter existed, a
+        #: supervisor that was never started, or one stopped mid-run, or one whose route
+        #: had failed, all reported `submitted: 0, drops: 0` - which reads as a machine
+        #: doing nothing wrong. See `submit`.
+        self._frames_refused = 0
+        self._refusal_reasons: dict[str, int] = {}
+        self._frame_attempts = 0
         self._frame_ages_ms: list[float] = []
         self._stopping = False
         self._running = False
@@ -544,6 +553,14 @@ class Supervisor(QObject):
         mixing the two would make the drop counter unreadable exactly when somebody is
         diagnosing it. A full queue is a drop and does move it.
 
+        **A refusal increments `frames_refused` and records why.** Measured on the shape
+        this replaces: never started, stopped, and route-failed all produced
+        `frames_submitted == 0` and `drops == 0`, so a caller that forgot to call
+        `start()` produced a summary indistinguishable from a healthy run that had not
+        been given any frames. The three reasons are kept apart - `closed` (shutting down
+        or stopped), `not_running` (never started, or already stopped) and `failed` (the
+        route died) - because they call for three different responses.
+
         Raises `TypeError` for anything that is not a `FramePacket` - a malformed put is
         a bug in the caller, and counting it as lag would put a wrong number on the lag
         counter.
@@ -555,14 +572,52 @@ class Supervisor(QObject):
                 f"matched to the picture it came from."
             )
         with self._lock:
-            closed = self._stopping or not self._running or self._state == "failed"
-        if closed:
+            self._frame_attempts += 1
+            reason = ""
+            if self._state == "failed":
+                reason = "failed"
+            elif self._stopping:
+                reason = "closed"
+            elif not self._running:
+                reason = "not_running"
+        if reason:
+            with self._lock:
+                self._frames_refused += 1
+                self._refusal_reasons[reason] = self._refusal_reasons.get(reason, 0) + 1
             return False
         accepted = self._queue.put(frame)
         if accepted:
             with self._lock:
                 self._frames_submitted += 1
         return accepted
+
+    @property
+    def frames_refused(self) -> int:
+        """Frames `submit` refused, with `frames_refused_reasons` saying why.
+
+        Never conflated with `drops`: a drop means the queue was full (the pipeline fell
+        behind), a refusal means the pipeline was not there at all.
+        """
+        with self._lock:
+            return self._frames_refused
+
+    @property
+    def frames_refused_reasons(self) -> dict[str, int]:
+        """Why each refusal happened: `closed`, `not_running` or `failed`."""
+        with self._lock:
+            return dict(self._refusal_reasons)
+
+    @property
+    def frame_attempts(self) -> int:
+        """Every `submit` call that reached the routing decision, accepted or not.
+
+        So that `frames_submitted + frames_refused + drops == frame_attempts` is a check
+        somebody can make rather than a hope. Measured before these counters existed:
+        with the queue full, 2 accepted and 3 dropped out of 5 attempts; with a failed
+        route, 0 and 0 out of any number - the drops disappeared entirely.
+        """
+        with self._lock:
+            return self._frame_attempts
 
     @property
     def drops(self) -> int:

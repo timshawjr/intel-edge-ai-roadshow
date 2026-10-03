@@ -75,14 +75,34 @@ from __future__ import annotations
 
 import math
 import time
+import traceback
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter
 
+import numpy as np
+
 from app.contracts.metric_sample import MetricSample, Validity
 from app.inference.devices import is_device, normalise_execution_devices
+
+
+class _Extents:
+    """The two numbers `set_zones` reads off a frame, and nothing else.
+
+    `set_zones` takes a frame to prove a zone is being drawn over *a picture* - a zone
+    with no frame behind it is a rectangle on nothing. When the zones arrive in an
+    `apply_frame` payload they arrive alongside the frame's extents rather than the
+    packet, so this carries them. Deliberately minimal: anything a zone could read off a
+    frame beyond its size belongs in the packet, not here.
+    """
+
+    __slots__ = ("width", "height")
+
+    def __init__(self, width: Any, height: Any) -> None:
+        self.width = int(width or 0)
+        self.height = int(height or 0)
 
 __all__ = [
     "EXPLANATIONS",
@@ -193,7 +213,9 @@ EXPLANATIONS: dict[str, str] = {
         "Metrics: each figure names its provider, its scope and the window it was "
         "averaged over. System CPU is the whole machine. Application CPU is this "
         "process plus its worker, normalised to the machine. Frame age is how long a "
-        "frame waited from capture to the moment its result was shown. Anything not "
+        "frame waited from capture to the moment its result arrived back at the "
+        "supervisor - not to the moment it was painted, which this build does not "
+        "measure. Anything not "
         "measurable reads 'unavailable', never 0, because 0 would claim a measurement "
         "that was not taken."
     ),
@@ -396,41 +418,137 @@ class UiBridge(QObject):
 
     @Slot(object)
     def apply_route(self, payload: object) -> None:
-        """Apply a route plan payload from the supervisor's thread."""
-        data = dict(payload)  # type: ignore[arg-type]
-        self.set_route(requested=data.get("requested"),
-                       confirmed=tuple(data.get("confirmed") or ()),
-                       state=str(data.get("state") or "pending"))
-        errors = tuple(str(e) for e in (data.get("errors") or ()))
-        if errors:
-            self.set_error(errors[-1])
-        self.routeChanged.emit({"state": self._route_state,
-                                "confirmed": self._device_confirmed})
+        """Apply a route plan payload, on the UI thread. Guarded; see `apply_frame`.
+
+        **The whole reason these four slots exist is that nothing called them.** Until the
+        live path was wired, `run_windowed` connected supervisor lambdas that emitted these
+        signals and then nothing consumed them, so the badge, the metrics, the frame and
+        the event counts stayed at their cold-start values for the whole session with no
+        error anywhere.
+        """
+        try:
+            data = dict(payload)  # type: ignore[arg-type]
+            self.set_route(requested=data.get("requested"),
+                           confirmed=tuple(data.get("confirmed") or ()),
+                           state=str(data.get("state") or "pending"))
+            errors = tuple(str(e) for e in (data.get("errors") or ()))
+            if errors:
+                self.set_error(errors[-1])
+            self.routeChanged.emit({"state": self._route_state,
+                                    "confirmed": self._device_confirmed})
+        except Exception as exc:  # noqa: BLE001 - a slot failure is not a crash
+            self._report_slot_failure("apply_route", exc)
 
     @Slot(str)
     def apply_error(self, text: str) -> None:
         """Show one stated reason. Additive: a later error does not erase an earlier one."""
-        existing = self._error_message
-        message = f"{existing}\n{text}" if existing else str(text)
-        self.set_error(message)
+        try:
+            existing = self._error_message
+            message = f"{existing}\n{text}" if existing else str(text)
+            self.set_error(message)
+        except Exception as exc:  # noqa: BLE001 - a slot failure is not a crash
+            self._report_slot_failure("apply_error", exc)
 
     @Slot(object)
     def apply_frame(self, payload: object) -> None:
-        """Record a frame and the boxes that belong to it, from the supervisor's thread."""
+        """Record a frame, its **pixels**, its zones and its events, on the UI thread.
+
+        Queued from the supervisor's reader thread by Qt, so everything here runs where
+        the widgets are (AGENTS.md rule 11).
+
+        ## The pixels are rebuilt here, not shipped as a `QImage`
+
+        A `QImage` does not survive being carried in a `Signal(object)` payload, and
+        building one on the worker thread would be a `QImage` touched from off the UI
+        thread. So the payload carries the raw `numpy` array and the swap to RGB happens
+        in `set_frame_image`, on this side, exactly once per frame.
+
+        **This method had no caller** while the live path was unwired, which is why the
+        image provider served its 1x1 transparent placeholder for a whole session while
+        `frame_ready` went `True` - a hero claiming a frame it did not have.
+
+        ## A failure here is reported, not swallowed
+
+        **An exception raised inside a Qt slot does not propagate.** Qt catches it, prints
+        the traceback to stderr - which on a booth machine goes nowhere - and carries on,
+        so the screen keeps rendering a stale state and the operator sees nothing wrong.
+        Measured here while wiring this method: a payload whose `zones` were zone *names*
+        rather than zone objects produced 240 tracebacks in one 14-second run and the
+        overlay, the zones and the event counts simply never updated.
+
+        So the body is wrapped: the traceback is logged, and the **stated reason is put on
+        the error line**, which is the one place an operator will actually see it. The
+        stream is marked failed and the rest of the screen keeps running (rule 12).
+        """
+        try:
+            self._apply_frame_payload(payload)
+        except Exception as exc:  # noqa: BLE001 - a stream failure is not a crash
+            self._report_slot_failure("apply_frame", exc)
+
+    def _apply_frame_payload(self, payload: object) -> None:
         data = dict(payload)  # type: ignore[arg-type]
+        image = data.get("image")
+        if image is not None:
+            self._store_image(image)
+        zones = data.get("zones")
+        if zones and not self._zones:
+            # Once only. Zones are a property of the scenario pack, not of the frame, and
+            # re-publishing them 15 times a second would rebuild the repeater for nothing.
+            self._publish_zones(zones, _Extents(data.get("width"), data.get("height")))
         boxes = list(data.get("boxes") or ())
         self._overlay_boxes = tuple(boxes)
         self.overlayBoxesChanged.emit()
         for event in data.get("events") or ():
-            self.eventEmitted.emit(dict(event))
+            self.record_event(event)
         if not self._frame_ready:
             self._frame_ready = True
             self.frameReadyChanged.emit()
 
+    def _report_slot_failure(self, where: str, exc: BaseException) -> None:
+        """Log a slot failure with its traceback and show the stated reason.
+
+        The error line is **additive** - a later failure does not erase an earlier one -
+        because a running screen that says one thing and fails at another is worse than
+        one that says it failed. The reason is truncated because the line is read at
+        booth distance, and the full traceback is in the log.
+        """
+        traceback.print_exc()
+        reason = f"{where} failed: {type(exc).__name__}: {exc}"
+        self.set_error(f"{self._error_message}\n{reason[:400]}" if self._error_message
+                       else reason[:400])
+
+    def _store_image(self, array: Any) -> None:
+        """Turn a BGR `numpy` array into this bridge's `QImage`, on the UI thread.
+
+        The BGR-to-RGB swap happens here because `cv2` hands BGR and
+        `QImage.Format_RGB888` wants RGB; getting it wrong renders a plausible-looking
+        image with the red and blue channels exchanged, which nobody notices on a dark
+        retail scene and everybody notices on an orange.
+
+        **A copy, always.** A `QImage` over a numpy buffer would alias the clip's next
+        decode and tear the frame being drawn - the same class of defect as a box drawn
+        against the wrong frame, and just as invisible.
+        """
+        rgb = np.ascontiguousarray(array[:, :, ::-1])
+        height, width = int(rgb.shape[0]), int(rgb.shape[1])
+        qimage = QImage(rgb.tobytes(), width, height, width * 3,
+                        QImage.Format_RGB888)
+        self._frame_image = qimage.copy()
+        self._frame_revision += 1
+        self.frameRevisionChanged.emit()
+        self.frameImageChanged.emit()
+
+    def _publish_zones(self, zones: Iterable[Any], frame: Any) -> None:
+        """Publish zone rectangles once, against the frame they are drawn over."""
+        self.set_zones(zones, frame)
+
     @Slot(object)
     def apply_samples(self, samples: object) -> None:
-        """Take one whole telemetry sample set from the collector's reader."""
-        self.set_samples(tuple(samples))  # type: ignore[arg-type]
+        """Take one whole telemetry sample set from the collector's reader. Guarded."""
+        try:
+            self.set_samples(tuple(samples))  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001 - a slot failure is not a crash
+            self._report_slot_failure("apply_samples", exc)
 
     # -- every property raises its own change signal, so QML bindings re-evaluate only
     #    what actually moved. A single "anything changed" signal would re-evaluate every
@@ -457,6 +575,27 @@ class UiBridge(QObject):
     #: The newest frame's pixels changed. QML's image `source` carries this as a query
     #: string so the hero is re-fetched; see `set_frame_image`.
     frameRevisionChanged = Signal()
+    #: **The device badge's text changed.** Added because `device_display` and
+    #: `device_fell_back` were `constant=True` with no notify signal, which is legal Qt and
+    #: a silent lie here: the badge is the one string the specification names as
+    #: load-bearing, and a `constant` property is evaluated **once**, when the QML binding
+    #: that reads it is first created. The bridge's Python value changed and the screen
+    #: never did, so a run that confirmed CPU on request left the badge reading
+    #: "pending - no device selected" for the whole session. The offscreen render test did
+    #: not catch it because it called `set_route` *before* `engine.load`.
+    deviceDisplayChanged = Signal()
+    #: The fallback flag changed. Same defect and same fix; the badge's colour and the
+    #: "(fell back from ...)" suffix both read it.
+    deviceFellBackChanged = Signal()
+    #: The newest frame's `QImage` changed. The image provider reads the attribute
+    #: directly from Python so it never needed this, but `frame_image` being `constant`
+    #: meant a QML binding on it could never re-read either.
+    frameImageChanged = Signal()
+    #: The formatted metric strings changed. Emitted whenever any single metric's notify
+    #: signal is, because the whole map is one property and QML binds to the map.
+    metricsTextChanged = Signal()
+    #: The staleness word changed, for the same reason.
+    stalenessChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -571,6 +710,23 @@ class UiBridge(QObject):
 
     npu_available = Property(bool, _get_npu_available, notify=npuAvailableChanged)
 
+    def _get_cpu_available(self) -> bool:
+        """Whether a system CPU reading is actually in hand.
+
+        **Not a constant.** `Main.qml` used to pass `utilisationAvailable: true` for the
+        CPU card, hardcoded, which meant an unavailable CPU reading would render coloured
+        and undimmed as though it were live - the exact defect the two accelerator cards
+        are careful about, applied to the one card that is supposed to be measurable.
+        `psutil` can fail, and `MetricCollector` reports that as an `UNAVAILABLE` sample
+        rather than a zero, so the card has to be able to say so.
+
+        Availability is derived from the **value**, not tracked separately, so it cannot
+        drift from the number it describes.
+        """
+        return self._metrics["system_cpu_percent"] is not None
+
+    cpu_available = Property(bool, _get_cpu_available, notify=systemCpuPercentChanged)
+
     def _get_event_counts(self) -> dict:
         return dict(self._event_counts)
 
@@ -634,13 +790,17 @@ class UiBridge(QObject):
         """The six required explanations, reachable from hover and from a pinned panel."""
         return dict(EXPLANATIONS)
 
-    @Property(bool, constant=True)
+    @Property(bool, notify=deviceFellBackChanged)
     def device_fell_back(self) -> bool:
         """Whether the confirmed device differs from the requested one.
 
         `False` when either is absent - an unproven route has not fallen back, it has
         **not been shown**, and reporting `False` there would read as "running where you
         asked".
+
+        **`notify=deviceFellBackChanged`, not `constant=True`.** A `constant` property is
+        read exactly once per binding; the fallback is discovered from the worker's first
+        result, which is seconds after the screen was built. See `deviceDisplayChanged`.
         """
         return self._route_fell_back
 
@@ -674,15 +834,49 @@ class UiBridge(QObject):
         if text != self._device_confirmed:
             self._device_confirmed = text
             self.deviceConfirmedChanged.emit()
+            # The badge is built from the confirmed device, so a confirmed-device change
+            # is a badge change. Without this the binding would keep whatever it read at
+            # `engine.load`.
+            self.deviceDisplayChanged.emit()
         if fell_back is None:
             fell_back = bool(
                 requested and devices and not is_device(devices, requested))
         if bool(fell_back) != self._route_fell_back:
             self._route_fell_back = bool(fell_back)
             self.deviceConfirmedChanged.emit()
+            self.deviceFellBackChanged.emit()
+            # The badge's suffix depends on the fallback, so the badge itself changed.
+            self.deviceDisplayChanged.emit()
         if state != self._route_state:
             self._route_state = str(state)
             self.routeStateChanged.emit()
+            # "failed - no device is running" and "pending - X not yet confirmed" are
+            # both branches of `device_display`, so a state change moves the badge too.
+            self.deviceDisplayChanged.emit()
+
+    def _get_metric_text(self) -> dict:
+        """Every optional metric, already formatted, as `name -> rendered string`.
+
+        ## Why this exists, and why it is not a second formatter
+
+        **A QML binding that calls a method does not re-evaluate when the method's inputs
+        change.** Qt tracks property dependencies, and `bridge.display_text("system_cpu_percent")`
+        declares none - the binding is evaluated once, at the first render, and never again.
+        Every card in `ComputeCard.qml` and the whole activity line in `Main.qml` were
+        written that way, which is why they rendered `unavailable` on a live run whose
+        bridge held `system_cpu_percent: 58.0`: the bridge was right and the **screen** was
+        frozen at its first evaluation. This is the same defect as the `constant=True`
+        device badge, one layer out - a value that reaches QML without a notify signal -
+        and the live-path test caught it because it read pixels, not just the bridge.
+
+        So the formatted strings are published as **one notified property** instead. The
+        formatting itself is still `display_text`, called once per change here - there is
+        still exactly one place in this module that knows how a number is rendered, and a
+        test can still check that place directly.
+        """
+        return {name: self.display_text(name) for name in self._metrics}
+
+    metric_text = Property("QVariantMap", _get_metric_text, notify=metricsTextChanged)
 
     @Slot(str, result=str)
     def display_text(self, name: str) -> str:
@@ -746,6 +940,18 @@ class UiBridge(QObject):
         if window >= 1.0:
             return f"over {window:.2f} s"
         return f"over {window * 1000.0:.0f} ms"
+
+    def _get_staleness(self) -> str:
+        """`"fresh"`, `"stale"` or `""`, as a **notified property**.
+
+        QML cannot re-evaluate a binding that calls `staleness_text()` - see
+        `_get_metric_text`. The control bar binds to this instead. It is refreshed on the
+        same events as the metrics, and `staleness_text()` stays as the callable form so
+        there is still one implementation.
+        """
+        return self.staleness_text()
+
+    staleness = Property(str, _get_staleness, notify=stalenessChanged)
 
     @Slot(result=str)
     def staleness_text(self) -> str:
@@ -813,6 +1019,10 @@ class UiBridge(QObject):
          "app_cpu_percent": self.appCpuPercentChanged,
          "gpu_utilisation_percent": self.gpuAvailableChanged,
          "npu_utilisation_percent": self.npuAvailableChanged}[name].emit()
+        # The formatted map is what QML binds to, and the staleness word is a property
+        # rather than a method call for the same reason. See `_get_metric_text`.
+        self.metricsTextChanged.emit()
+        self.stalenessChanged.emit()
 
     # -- frames, overlay and events -------------------------------------------------
 
@@ -853,11 +1063,17 @@ class UiBridge(QObject):
         self._frame_image = image.copy()
         self._frame_revision += 1
         self.frameRevisionChanged.emit()
+        # **Not `constant=True`.** The provider reads the attribute from Python so it
+        # worked regardless, which is why this was harmless - but a QML binding on
+        # `frame_image` would have captured the first frame for the whole session, and
+        # `constant` on a property that changes 15 times a second is the kind of thing
+        # that breaks the day someone binds to it.
+        self.frameImageChanged.emit()
 
     def _get_frame_image(self):
         return self._frame_image
 
-    frame_image = Property(QImage, _get_frame_image, constant=True)
+    frame_image = Property(QImage, _get_frame_image, notify=frameImageChanged)
 
     def _get_frame_revision(self) -> int:
         return self._frame_revision
@@ -903,13 +1119,14 @@ class UiBridge(QObject):
         else:
             width = height = 0.0
         boxes: list[dict[str, Any]] = []
-        skipped = 0
+        coasted = 0
+        unplaceable = 0
         for track in tracks:
             if not getattr(track, "is_current", False):
-                skipped += 1
+                coasted += 1
                 continue
             if width <= 0.0 or height <= 0.0:
-                skipped += 1
+                unplaceable += 1
                 continue
             x1, y1, x2, y2 = (float(v) for v in track.box)
             boxes.append({
@@ -922,7 +1139,14 @@ class UiBridge(QObject):
                 "confirmed": bool(track.confirmed),
                 "score": float(getattr(track, "score", 0.0) or 0.0),
             })
-        if skipped and not boxes:
+        if unplaceable and not boxes:
+            # **No frame is a different fact from a coasted track.** Dividing by the
+            # frame's extents is what makes a box land in the right place, and with no
+            # frame there is no place. Saying "holding coasted tracks" here would blame
+            # the tracker for the caller's missing argument - and this branch was
+            # reachable precisely because `set_overlay` accepted `frame=None`.
+            self._set_status("cannot place overlay boxes: no frame has been decoded yet")
+        elif coasted and not boxes:
             # Coasted-only is a real state, and it is worth a status word: it means the
             # tracker is holding a track whose object has left. Rendering it as "no
             # detections" would be true and useless.
@@ -962,16 +1186,52 @@ class UiBridge(QObject):
         machine emits a key per track per loop, so a replayed loop produces a **new** key
         and a new count, which is what a booth wants, while re-seeing the same movement
         within one loop produces the same key and is not counted twice.
+
+        ## Accepts an object **or** a mapping, and refuses to guess
+
+        The windowed path's `apply_frame` receives events inside a `Signal(object)`
+        payload, which crosses a thread boundary and therefore travels as a plain dict;
+        the headless path and the tests hand it a `BusinessEvent`. Reading only by
+        attribute would have counted every event the booth emitted under the kind
+        `"unknown"` - measured: `{'unknown': 1}` where the machine had emitted
+        `zone_occupancy` - which is the worst possible failure for an event counter,
+        because it is right about the total and wrong about what happened.
+
+        A payload that carries **neither** a `kind` attribute nor a `kind` key raises
+        rather than counting as `unknown`. An unidentifiable event is a defect in the
+        producer, and silently filing it under "unknown" would make the footer agree with
+        a machine that said something else.
         """
-        kind = str(getattr(event, "kind", "unknown"))
+        if isinstance(event, Mapping):
+            fields = dict(event)
+        else:
+            if not hasattr(event, "kind"):
+                raise TypeError(
+                    f"record_event takes a BusinessEvent or a mapping carrying a 'kind'; "
+                    f"got {type(event).__name__} with no kind. Counting it as 'unknown' "
+                    f"would put a count on the screen that disagrees with the event "
+                    f"machine that produced it.")
+            fields = {
+                "kind": getattr(event, "kind", ""),
+                "class_name": getattr(event, "class_name", ""),
+                "track_id": getattr(event, "track_id", 0),
+                "dedup_key": getattr(event, "dedup_key", ""),
+                "at_frame_id": getattr(event, "at_frame_id", 0),
+            }
+        kind = str(fields.get("kind", "") or "")
+        if not kind:
+            raise ValueError(
+                "record_event was given an event with an empty kind. An event with no "
+                "kind cannot be counted by kind, and 'unknown' would be a fabricated "
+                "category.")
         self._event_counts[kind] = self._event_counts.get(kind, 0) + 1
         self.eventCountsChanged.emit()
         self.eventEmitted.emit({
             "kind": kind,
-            "class_name": str(getattr(event, "class_name", "")),
-            "track_id": int(getattr(event, "track_id", 0)),
-            "dedup_key": str(getattr(event, "dedup_key", "")),
-            "at_frame_id": int(getattr(event, "at_frame_id", 0)),
+            "class_name": str(fields.get("class_name", "")),
+            "track_id": int(fields.get("track_id", 0) or 0),
+            "dedup_key": str(fields.get("dedup_key", "")),
+            "at_frame_id": int(fields.get("at_frame_id", 0) or 0),
         })
 
     def reset_events(self) -> None:
@@ -1002,12 +1262,31 @@ class UiBridge(QObject):
 
     # ------------------------------------------------------------------ derived
 
-    @Property(str, constant=True)
+    @Property(str, notify=deviceDisplayChanged)
     def device_display(self) -> str:
         """The one line the device badge shows.
 
         `"pending - no placement confirmed"` rather than the requested device. This is
         the string that must never read like a working device when nothing has run.
+
+        ## Why this is `notify=deviceDisplayChanged` and was not `constant=True`
+
+        **This property was `constant=True`, and that is a silent lie rather than a Qt
+        detail.** Qt reads a `constant` property exactly once, when the binding that
+        refers to it is first created - which is during `engine.load`. The device badge is
+        built then, before any inference has happened, so the binding captured
+        `"pending - no device selected"` and never re-read the property. When the worker
+        then confirmed CPU, this method's Python value changed to `"CPU"` and the **screen
+        did not**, leaving the booth displaying a pending state for a route that was
+        running on the very device it said was unconfirmed.
+
+        The offscreen render test in `tests/test_ui_contract.py` passed throughout,
+        because it called `set_route(...)` *before* `engine.load(...)` - which is exactly
+        when a `constant` property still updates. That test proved the badge can render a
+        confirmed device; it could not prove the badge *updates*, because nothing ever set
+        the route after the screen existed. the live-path test class sets a route
+        after the engine has loaded and reads the **rendered** `Text` item, which is the
+        only read that can tell a bridge that updated from a screen that did not.
         """
         if self._device_confirmed:
             if self._route_fell_back and self._device_requested:
@@ -1022,6 +1301,3 @@ class UiBridge(QObject):
 
     def _state_failed(self) -> bool:
         return self._route_state == "failed"
-
-
-UiBridge._samples = {}

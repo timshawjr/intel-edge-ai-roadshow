@@ -134,6 +134,13 @@ Window {
 
                         Text {
                             id: routeText
+                            // The one nameable handle on the device badge. It exists so a
+                            // test can read the **QML-bound** string after `set_route`
+                            // rather than reading the bridge's Python property - the
+                            // badge was `constant=True` with no notify signal, so the
+                            // Python side updated and the screen never did, and only a
+                            // read of the bound text can tell the two apart.
+                            objectName: "deviceBadgeText"
                             anchors.centerIn: parent
                             text: "device: " + bridgeUi.deviceBadge
                             color: bridgeUi.deviceConfirmed
@@ -242,13 +249,22 @@ Window {
                         width: parent.width
                         height: (parent.height - Theme.GAP * 2) / 3
                         deviceId: "CPU"
-                        utilisationAvailable: true
+                        // Measured per sample, not hardcoded. `psutil` can fail and the
+                        // collector reports that as UNAVAILABLE rather than 0; a card
+                        // that claimed availability unconditionally would render that
+                        // absence in the live colour.
+                        utilisationAvailable: bridgeUi.cpuUtilisationAvailable
                         metricName: "system_cpu_percent"
                         secondaryMetricName: "app_cpu_percent"
-                        activityText: "analysis fps " + bridge.display_text("ai_fps")
+                        // Read from the bridge's notified `metric_text` map, never by calling
+                        // `display_text(...)`: a binding that calls a method declares no
+                        // property dependency, so Qt evaluates it once and the activity
+                        // line stayed "unavailable" for a whole live session while the
+                        // bridge held real figures.
+                        activityText: "analysis fps " + bridge.metric_text["ai_fps"]
                                        + "  \u00b7  frame age p50 "
-                                       + bridge.display_text("frame_age_p50_ms")
-                                       + "  p95 " + bridge.display_text("frame_age_p95_ms")
+                                       + bridge.metric_text["frame_age_p50_ms"]
+                                       + "  p95 " + bridge.metric_text["frame_age_p95_ms"]
                         explainKey: "cpu"
                         onExplainRequested: key => window.pinnedExplanationKey = key
                     }
@@ -323,14 +339,29 @@ Window {
 
                                 delegate: Text {
                                     required property string modelData
-                                    // Absent event kinds read 0, and that is a real count:
-                                    // the machine decided there were none. It is not an
-                                    // unavailable metric, so it does not go through
-                                    // `display_text` - a count of zero events is a
-                                    // measurement.
+                                    // A kind the bridge has never heard of reads
+                                    // "unavailable", **not 0**.
+                                    //
+                                    // The previous wording here claimed a bare 0 was "a real
+                                    // count: the machine decided there were none". That is
+                                    // only true once something has run; before the first
+                                    // event the bridge has counted nothing, which is an
+                                    // absence and not a measurement of zero. And it was
+                                    // reachable in exactly the state that matters: while the
+                                    // live path was unwired, `record_event` had no caller, so
+                                    // this row rendered a fabricated `0` beside every kind for
+                                    // a whole session.
+                                    //
+                                    // The distinction is drawn where it can be observed: the
+                                    // counts are only meaningful once the route is confirmed,
+                                    // because before a placement is proved no inference has
+                                    // happened and no event could have been counted.
+                                    readonly property bool routeConfirmed:
+                                        bridge.device_confirmed.length > 0
                                     text: modelData + " "
-                                          + (bridge.event_counts[modelData] !== undefined
-                                             ? bridge.event_counts[modelData] : 0)
+                                          + (!routeConfirmed ? "unavailable"
+                                             : (bridge.event_counts[modelData] !== undefined
+                                                ? bridge.event_counts[modelData] : 0))
                                     color: Theme.TEXT_ON_PANEL
                                     font.family: Theme.FONT_FAMILY
                                     font.pixelSize: Theme.TYPE_DETAIL
@@ -390,8 +421,11 @@ Window {
                             }
 
                             Text {
-                                text: bridge.staleness_text().length > 0
-                                    ? "telemetry " + bridge.staleness_text()
+                                // Named so a test can read the rendered string; a bridge
+                                // property being correct does not mean the screen is.
+                                objectName: "stalenessText"
+                                text: bridge.staleness.length > 0
+                                    ? "telemetry " + bridge.staleness
                                     : "telemetry unavailable"
                                 color: Theme.COLOR_NEUTRAL
                                 font.family: Theme.FONT_FAMILY
