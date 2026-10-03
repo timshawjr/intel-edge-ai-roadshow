@@ -896,11 +896,33 @@ def _on_route(bridge: Any, plan: Any) -> None:
     `QMetaObject.invokeMethod` needs the exact registered type name and a wrong one fails
     **silently**: the call is dropped and the UI never updates, which is a stall with no
     diagnostic anywhere.
+
+    ## WARNING — `state` is the **aggregate**, not this stream's state
+
+    `requested` and `confirmed` are read per stream (`plan.requested_device(stream)`,
+    `plan.confirmed_devices(stream)`), but `"state"` is `plan.state`, which since M2 is the
+    aggregate over every stream: `failed` only when *all* failed, `active` when *any* one
+    proved a placement. **With three streams a plan where Camera A is running and Camera C
+    has failed publishes `"state": "active"`,** and a card bound to Camera A would render
+    a healthy route while Camera C is a dead one.
+
+    This is harmless **today** because both callers here build a single-stream supervisor
+    (`run_headless` and `run_windowed`, lines 591 and 773, each `device_id=device,
+    stream_id="A"`), and with one stream the aggregate *is* that stream's state. It becomes
+    wrong the moment this path serves three streams.
+
+    **Not fixed here on purpose.** Task 4 owns the migration to the three-stream UI, and
+    the per-stream payload shape is that task's decision to make; this function must not
+    be changed ahead of it. When it is migrated, `"state"` must become
+    `plan.stream_state(stream)`, and the per-stream payload must carry that stream's own
+    `errors` rather than `plan.errors` for the same reason.
     """
     stream = next(iter(plan.requested), None)
     bridge.routeArrived.emit({
         "requested": plan.requested_device(stream) if stream else None,
         "confirmed": list(plan.confirmed_devices(stream)) if stream else [],
+        # Aggregate. See the warning above: `plan.stream_state(stream)` is the per-stream
+        # answer and this is not it. Task 4 owns the migration.
         "state": plan.state,
         "errors": list(plan.errors),
     })

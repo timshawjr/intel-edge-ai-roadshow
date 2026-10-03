@@ -82,6 +82,15 @@ the other two" is easier to hold when a thread belongs to exactly one stream. Th
 measured, not assumed - see the M2 report for input acknowledgement with three streams
 live under 6 saturators.
 
+**Every counter `submit` moves is moved inside one hold of `self._lock`.** It was not:
+`attempts` was incremented under the lock, then the bounded-queue `put` and
+`accepted += 1` ran outside it. A `per_stream()` snapshot landing in that window saw
+`attempts = 1, accepted = 0` and the per-stream identity `accepted + refused + drops ==
+attempts` was **transiently false under live traffic** - a checkable invariant that fails
+intermittently is worse than one that is never checkable, because it fails on the booth
+and not in the test. `BoundedFrameQueue.put` returns immediately when full and never
+waits, so holding the lock across it costs nothing.
+
 The watchdog polls `Process.is_alive()` because `multiprocessing` offers no exit callback
 on Windows that survives a queue that nobody is reading; `EXIT_POLL_SECONDS` is 0.05 s
 because the deadline that matters is a human watching a booth, not a benchmark.
@@ -127,7 +136,7 @@ submitted, so no inference could run on the new worker, so the new route could n
 confirm, so every transition could only ever end in a timeout. Refusing frames does not
 make a transition clean, and the feed is a 15 fps stream the presenter is not pausing.
 
-`await_transition(generation, timeout_s=2.0) -> TransitionOutcome` then waits for the
+`await_transition(transition_id, timeout_s=2.0) -> TransitionOutcome` then waits for the
 **new** route to confirm. The deadline is measured from when the transition *began*, not
 from when `await_transition` was called, because the 2 s spec gate is a time from toggle
 to confirmed placement. It ends in one of two ways:
@@ -146,6 +155,42 @@ stream that did not confirm is put back on the device it was running on before t
 toggle, with a stated reason on `error_raised` and in `RoutePlan.errors`. The recovery
 itself does not re-enter recovery, so a chain of failed toggles terminates rather than
 recursing.
+
+**A recovery that cannot move anything says so instead of claiming it did.** A stream
+that failed *before* the toggle is already on the device the recovery wants to restore it
+to, so there is no route change to make and no worker to bring up. Publishing
+*"Recovering C - the last healthy route"* there would be a claim about an action that did
+not happen, on the one stream an operator is watching; it was observed doing exactly
+that. The published text in that case states that nothing moved, that the route is failed
+and idle, and that **re-selecting the same device will not fix it** - the remedy is a
+different device, or a direct `select_device`, because that is what spawns a worker.
+
+### The two ids, and why they are not one
+
+`begin_transition` returns a **monotonic transition id**, not the route generation. They
+are equal when the call moved something and differ when it did not. Keying transitions by
+the route generation let two restatements inside one generation collide, and the second
+overwrote the first's `started`, so a late `await_transition` was handed a deadline
+measured from the wrong moment. `TransitionOutcome.generation` still reports the route
+generation, so the reporting surface is unchanged.
+
+### Queued frames a route change throws away are counted
+
+`select_devices` drains each affected stream's bounded queue, discarding up to
+`queue_size` (2) frames that had been accepted and whose analysis is now moot. They are
+neither drops (the queue was not full) nor refusals (the caller was told `True`), so they
+are counted as their own population, `StreamStats.frames_invalidated` — a fourth kind
+alongside `drops`, `frames_refused` and `frames_analysed`, and deliberately outside the
+per-stream identity because the frame was already counted once, as accepted, at `submit`
+time. Before this counter existed, `frames_accepted` permanently exceeded
+`frames_analysed` with nothing on the record to explain the gap.
+
+**Spec deviation, recorded deliberately:** spec section 5 says outstanding requests
+"finish or time out". Here they are discarded at the moment the route changes, without
+being waited for. The alternative was to let the old worker finish them, which would mean
+keeping its process alive across the transition and would reopen exactly the "old worker
+still running" window review focus #5 is about. At most 2 frames per stream per toggle —
+about 133 ms of picture at 15 fps — and the discard is now counted rather than silent.
 
 **Coalescing.** Toggling mid-flight bumps the generation again, so the earlier one is
 superseded. `await_transition` on a superseded generation returns at once with
@@ -193,6 +238,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -236,6 +282,21 @@ STOP_GRACE_SECONDS: Final[float] = 5.0
 #: report a coarser deadline. Polling on `time.sleep` is honest here: the loop reads
 #: immutable state under the supervisor's own lock and sleeps between reads.
 TRANSITION_POLL_SECONDS: Final[float] = 0.01
+
+#: How many recent frame ages each stream keeps, for the p50/p95 a card renders.
+#:
+#: **Bounded, and this is the reason.** The age list was a plain `list` appended once per
+#: analysed frame, which is ~90 000 floats an hour per stream and grows for ever.
+#: `app/main.py`'s summary path copies it under the lock and double-`sorted()` it twice a
+#: second on the Qt UI thread, so the cost of that copy and sort grew without bound during
+#: a shift. A `deque(maxlen=...)` bounds both the memory and the sort.
+#:
+#: 256 samples is **deliberately the transport's window, not since-construction**: at 15
+#: fps a stream contributes ~15 ages/s, so 256 is roughly **the last 17 seconds** of
+#: analysis. That is the right scale for a number a person reads as "is the video
+#: keeping up", and it is the figure the M2 report quotes, so it is stated here rather
+#: than left for a reader to infer from `deque.maxlen`.
+FRAME_AGE_WINDOW: Final[int] = 256
 
 #: The stream ids used when a caller asks for several devices and names no ids.
 DEFAULT_STREAM_IDS: Final[tuple[str, ...]] = ("A", "B", "C")
@@ -416,8 +477,17 @@ class TransitionOutcome:
 
 @dataclass
 class _Transition:
-    """One open or finished `begin_transition`, as the supervisor remembers it."""
+    """One open or finished `begin_transition`, as the supervisor remembers it.
 
+    **`id` is the transition's own identity and is monotonic per call**, independent of
+    `generation`. The route generation only moves when a device actually changes, so it
+    cannot key this record: two restatements inside one generation would collide, and the
+    second would overwrite the first's `started` - handing a late `await_transition` a
+    deadline measured from the *wrong* moment. `generation` is still carried, because it
+    is what `TransitionOutcome.generation` reports and what a reader of a log wants.
+    """
+
+    id: int
     generation: int
     streams: tuple[str, ...]
     requested: dict[str, str]
@@ -438,7 +508,7 @@ class _Stream:
         "stream_id", "requested_device", "config", "queue", "compile_failure",
         "generation", "generations_seen", "superseded_by", "confirmed", "state",
         "errors", "restarts", "attempts", "accepted", "refused", "refusal_reasons",
-        "analysed", "frame_ages_ms", "latest", "failure_published",
+        "analysed", "frame_ages_ms", "latest", "failure_published", "invalidated",
         "process", "in_queue", "out_queue", "pid", "feeder", "reader", "watchdog",
     )
 
@@ -464,9 +534,14 @@ class _Stream:
         self.refused = 0
         self.refusal_reasons: dict[str, int] = {}
         self.analysed = 0
-        self.frame_ages_ms: list[float] = []
+        self.frame_ages_ms: deque[float] = deque(maxlen=FRAME_AGE_WINDOW)
         self.latest: InferenceResult | None = None
         self.failure_published = False
+        #: Frames accepted into the bounded queue and then thrown away by a route change
+        #: before the worker saw them (`_drain_queue`). A fourth population, distinct from
+        #: a drop (the queue was full), a refusal (the pipeline was not there) and a
+        #: discarded *result* (work that ran and was superseded). See `StreamStats`.
+        self.invalidated = 0
         self.process: mp.process.BaseProcess | None = None
         self.in_queue: Any = None
         self.out_queue: Any = None
@@ -490,6 +565,7 @@ class _Stream:
             frame_attempts=self.attempts,
             frames_analysed=self.analysed,
             generation=self.generation,
+            frames_invalidated=self.invalidated,
         )
 
     def clear_proof(self) -> None:
@@ -498,11 +574,18 @@ class _Stream:
         A placement proved under the old routing is not a proof under the new one, and a
         plan that kept `GPU.0` in `confirmed` while the new generation is still `pending`
         would be claiming a placement for a route that has not run.
+
+        **The frame-age history is deliberately NOT cleared here.** It was, and it was
+        wrong: the lag percentile is a measurement of the *transport* - ingress to result,
+        through a pickling queue - not of the device. Wiping it on every device change
+        meant the displayed p50/p95 changed the instant a presenter pressed a toggle,
+        with nothing about latency having changed, so the number on the card moved for a
+        reason the card could not show. The bounded window (`FRAME_AGE_WINDOW`) does the
+        bounding; the route change does not.
         """
         self.confirmed = ()
         self.errors = []
         self.latest = None
-        self.frame_ages_ms = []
         self.failure_published = False
         self.restarts = 0
 
@@ -597,6 +680,9 @@ class Supervisor(QObject):
         self._order: tuple[str, ...] = ids
         self._generation = 1
         self._transitions: dict[int, _Transition] = {}
+        #: The last id handed out by `begin_transition`. Monotonic per call; see
+        #: `_Transition.id`. Not the generation, which only moves on a real change.
+        self._transition_seq = self._generation
         self._discarded_results = 0
         self._discarded_mismatched = 0
         self._frame_attempts_globally = 0
@@ -911,6 +997,22 @@ class Supervisor(QObject):
         with self._lock:
             return self._require_stream(stream_id).stats()
 
+    def pid_for(self, stream_id: str) -> int | None:
+        """The worker process id for `stream_id`, or `None` if it has no worker.
+
+        Exposed because "is there a process behind this camera?" is a question a
+        diagnostics screen and a test both need, and both were reaching into `_streams` to
+        answer it. A pid is **not** a booth metric - nothing renders it - but it is the
+        only way to say whether a route change actually replaced the worker, which is the
+        load-bearing claim of the transition protocol.
+
+        `None` is the honest answer for a stream that is `failed`: a failed route has
+        spent its restart budget and has no process.
+        """
+        with self._lock:
+            stream = self._streams.get(str(stream_id))
+            return None if stream is None else stream.pid
+
     def stream_state(self, stream_id: str) -> str | None:
         """This stream's own state: `pending`, `active`, `failed`, or `None` for unknown.
 
@@ -959,6 +1061,17 @@ class Supervisor(QObject):
         mixing the two would make the drop counter unreadable exactly when somebody is
         diagnosing it. A full queue is a drop and does move it.
 
+        **Every counter this method moves is moved inside one hold of `self._lock`,
+        including the queue `put`.** It did not, and that made the per-stream identity
+        `accepted + refused + drops == attempts` transiently *false* under live traffic:
+        `attempts` was incremented under the lock, the `put` and the `accepted += 1` ran
+        outside it, and a `per_stream()` snapshot landing in that window saw
+        `attempts = 1, accepted = 0` and did not reconcile. A checkable invariant that
+        fails intermittently is worse than one that is never checkable, because it fails
+        on the booth and not in the test.
+        `BoundedFrameQueue.put` cannot block - it returns `False` when full and never
+        waits - so holding the lock across it costs nothing.
+
         **A refusal increments that stream's `frames_refused` and records why.** Measured
         on the shape this replaces: never started, stopped, and route-failed all produced
         `frames_submitted == 0` and `drops == 0`, so a caller that forgot to call
@@ -1006,11 +1119,12 @@ class Supervisor(QObject):
                 stream.refused += 1
                 stream.refusal_reasons[reason] = stream.refusal_reasons.get(reason, 0) + 1
                 return False
-        accepted = stream.queue.put(frame)
-        if accepted:
-            with self._lock:
+            # Inside the same hold as `attempts`, deliberately - see the docstring. The
+            # put cannot block, so this narrows no window that mattered.
+            accepted = stream.queue.put(frame)
+            if accepted:
                 stream.accepted += 1
-        return accepted
+            return accepted
 
     @property
     def frames_refused(self) -> int:
@@ -1087,7 +1201,13 @@ class Supervisor(QObject):
             return sum(s.analysed for s in self._streams.values())
 
     def frame_ages_ms(self) -> tuple[float, ...]:
-        """Measured ingress-to-result age per analysed frame, in milliseconds."""
+        """Measured ingress-to-result age per analysed frame, in milliseconds.
+
+        **A bounded recent window, not since-construction.** Each stream keeps the last
+        `FRAME_AGE_WINDOW` ages - 256, roughly the last 17 seconds of a 15 fps stream - so
+        the copy under the lock and the sort a caller does on it are both bounded. The
+        sort is the caller's, but the cost of it is set here.
+        """
         with self._lock:
             out: list[float] = []
             for sid in self._order:
@@ -1121,10 +1241,7 @@ class Supervisor(QObject):
                 return False
             if int(generation) != stream.generation:
                 self._discarded_results += 1
-                owner = stream.superseded_by
-                transition = self._transitions.get(owner) if owner is not None else None
-                if transition is not None:
-                    transition.discarded += 1
+                self._attribute_discard(stream)
                 return False
             if result.frame.stream_id != stream.stream_id:
                 # The worker's own frame disagrees with the stream it was reading for.
@@ -1133,6 +1250,28 @@ class Supervisor(QObject):
                 self._discarded_mismatched += 1
                 return False
             return self._apply_result(stream, int(generation), result)
+
+    def _attribute_discard(self, stream: _Stream) -> None:
+        """Charge one discarded result to the transition that superseded `stream`.
+
+        `_Stream.superseded_by` records the *route* generation, so the lookup is by
+        generation rather than by transition id. A restatement creates a new transition
+        at the **same** route generation, and the later one then receives discards that
+        the earlier one caused - so the per-transition `discarded_results` is an
+        approximation in exactly the coalescing case, while the process-wide
+        `discarded_results` is exact.
+
+        Making it exact would mean stamping the transition id on the stream at supersede
+        time, and `superseded_by` is already recorded before the id exists (`_apply_devices`
+        runs before `begin_transition` allocates it). The right fix is to allocate the id
+        in `_apply_devices` and pass it down, and it is recorded here as a known
+        approximation rather than papered over: **the total is the honest number and the
+        per-transition split is not.** Task 3's stress reporting must use the total.
+        """
+        owner = stream.superseded_by
+        transition = self._transitions.get(owner) if owner is not None else None
+        if transition is not None:
+            transition.discarded += 1
 
     @property
     def discarded_results(self) -> int:
@@ -1295,12 +1434,39 @@ class Supervisor(QObject):
         with self._lock:
             stream = self._streams[stream_id]
             threads = (stream.feeder, stream.reader, stream.watchdog)
+            generation = stream.generation
             stream.feeder = stream.reader = stream.watchdog = None
         current = threading.current_thread()
-        for thread in threads:
+        surviving: list[str] = []
+        for name, thread in zip(("feeder", "reader", "watchdog"), threads):
             if thread is None or thread is current or not thread.is_alive():
                 continue
             thread.join(timeout=STOP_GRACE_SECONDS)
+            if thread.is_alive():
+                surviving.append(name)
+        if surviving:
+            # **Say so, because a surviving thread overlaps its replacement.** The old
+            # feeder drains the *same* `BoundedFrameQueue` the new one will drain, so a
+            # feeder that does not exit can take a frame across the handover and write it
+            # into the retired worker: a frame lost uncounted, which is exactly what the
+            # per-stream accounting exists to make impossible. The join is bounded so
+            # `stop()` cannot hang, and it is bounded so a `select_devices` cannot hang
+            # either - so this is the price, and it has to be a stated reason rather than
+            # a silent one.
+            reason = (
+                f"stream {stream_id!r} generation {generation}: the {', '.join(surviving)} "
+                f"thread(s) did not exit within {STOP_GRACE_SECONDS} s of being asked to "
+                f"stop and may still overlap this stream's replacement worker. A retiring "
+                f"feeder sharing the bounded queue with its replacement can move a frame "
+                f"into the retired transport, which would be lost uncounted. The frames "
+                f"themselves are not at risk of corruption - `BoundedFrameQueue` is "
+                f"thread-safe - but this stream's per-stream counts may no longer "
+                f"account for every frame that entered its queue. Treat this stream's "
+                f"counters as suspect until the next `select_devices`."
+            )
+            with self._lock:
+                stream.errors.append(reason)
+            self.error_raised.emit(reason)
 
     def _drain_queue(self, stream_id: str) -> None:
         """Throw away frames queued for a generation that is over.
@@ -1311,10 +1477,27 @@ class Supervisor(QObject):
         drops: a drop is a frame nobody analysed because the analysis was falling behind,
         and conflating the two would make the lag counter lie. They are also not counted
         as refusals: they were accepted, and the caller was told `True`.
+
+        **They are counted, as `frames_invalidated`** - see the return value and
+        `StreamStats.frames_invalidated`. At most `queue_size` (2) per affected stream per
+        toggle, which is ~133 ms of picture per stream at 15 fps.
         """
         queue_obj = self._streams[stream_id].queue
+        invalidated = 0
         while queue_obj.get(timeout=0.0) is not None:
-            continue
+            invalidated += 1
+        if invalidated:
+            # **Recorded, because before this counter existed they were not.** These
+            # frames were accepted at `submit` time and were told so, and the route
+            # change is what threw them away. Counting them as drops would put a lie in
+            # the lag counter; counting them as refusals would put a lie in the "the
+            # pipeline was not there" counter; counting them as nothing left
+            # `frames_accepted` permanently exceeding `frames_analysed` with no field
+            # explaining the gap. Spec section 5's "outstanding requests finish or time
+            # out" has an unrecorded half, and this is the other half.
+            with self._lock:
+                self._streams[stream_id].invalidated += invalidated
+        return invalidated
 
     def _spawn(self, stream_id: str) -> None:
         """(Re)create one stream's queues, its process and its three threads.
@@ -1393,10 +1576,26 @@ class Supervisor(QObject):
                 return
 
     def _read(self, stream_id: str, generation: int, out_queue: Any) -> None:
-        """Take one stream's results off the child's queue and publish the current ones."""
+        """Take one stream's results off the child's queue and publish the current ones.
+
+        **A reader whose queue has been detached returns.** It used to loop until
+        `self._stopping`, which only a real `stop()` sets - so a reader being replaced by a
+        respawn sat on the *retired* queue for ever, and `_halt_threads` waited the full
+        `STOP_GRACE_SECONDS` for a thread that was never going to exit. That was not
+        visible before the thread-handover check reported it: the join timed out, the
+        timeout was swallowed, and the old reader and its replacement then both polled, one
+        on a retired queue. The check is `out_queue is stream.out_queue`, which is false the
+        moment `_apply_devices` detaches it - so the reader retires with its transport
+        instead of outliving it.
+        """
         while True:
             with self._lock:
                 if self._stopping:
+                    return
+                stream = self._streams.get(stream_id)
+                if stream is None or stream.out_queue is not out_queue:
+                    # Superseded: this reader belongs to a transport the stream no longer
+                    # owns. Leaving would keep a thread alive on a retired queue.
                     return
             try:
                 item = out_queue.get(timeout=READ_POLL_SECONDS)
@@ -1484,21 +1683,49 @@ class Supervisor(QObject):
         unchanged. That is M1's `select_device`, whose whole meaning is "prove this route
         again" - an operator re-selecting the device that is already running is asking
         for a fresh compile and a fresh `EXECUTION_DEVICES` reading, not for a no-op.
-        The multi-stream `select_devices` does not do that, because the routing table is
+        The multi-stream `select_devices` does not force, because the routing table is
         re-asserted on every toggle and a toggle that changes nothing must not cost three
         compiles.
+
+        ## A **failed** stream is always moved, even onto the device it already names
+
+        This is the third condition and it was missing, and the omission was reachable
+        from the booth. Spec section 5 toggles restate the **whole** A/B/C mapping, so
+        flipping the NPU switch while Camera C has failed and is already sitting on the
+        CPU asks for `{"A": "CPU", "B": "CPU", "C": "CPU"}` - and Camera C's requested
+        device does not change. Before this condition existed, that stream was not
+        affected, no worker was spawned, the generation did not move, and the caller's
+        only outcome was a transition over a stream with **no worker at all**. Observed:
+        `begin_transition` returned generation 1, `bounded_by` was `'timeout'` with
+        `elapsed_s` 5e-05 s, and Camera C stayed `failed` on the same pid for ever.
+
+        Worse, the recovery path then published *"Recovering C - the last healthy route"*
+        for a `select_devices` that was a no-op, and the failure guidance told the
+        operator to *"re-select one to try again"* - which is precisely the action that
+        did nothing. A failed stream has no worker and has spent its budget; naming it
+        `affected` is what makes the operator's retry actually retry.
         """
         with self._lock:
             for stream_id in validated:
                 self._require_stream(stream_id)
-            affected = tuple(sid for sid, device in validated.items()
-                             if force or self._streams[sid].requested_device != device)
+            affected = tuple(
+                sid for sid, device in validated.items()
+                if force
+                or self._streams[sid].requested_device != device
+                or self._streams[sid].state == "failed")
             if not affected:
                 return self.route_plan(), ()
             # The generation moves first, and every affected stream is stamped with the
             # new one **inside the same lock hold**, so no reader thread can observe a
             # half-applied routing decision and compare a result against a generation
             # that is about to change under it.
+            #
+            # `superseded_by` is the *route* generation, and a discarded result is
+            # attributed to `_transitions.get(superseded_by)`. With the id/generation
+            # split above that lookup is now exact rather than approximate: a restatement
+            # gets a fresh id, so a discard is attributed to the transition that
+            # actually superseded the worker rather than to whatever now occupies that
+            # generation slot.
             self._generation += 1
             claims: list[tuple[str, Any, Any, Any]] = []
             for stream_id in affected:
@@ -1592,19 +1819,31 @@ class Supervisor(QObject):
             # confirmed placement - which is a question about the streams it named, not
             # about how many of them had to be restarted.
             named = moved or tuple(sorted(validated))
+            # **The returned id is monotonic and strictly greater than any generation
+            # seen so far**, so it is unique per `begin_transition` call whether or not
+            # the call moved anything. Keying `_transitions` by the *generation* did not
+            # give that: two restatements inside one generation collided, the second
+            # overwrote the first's `started`, and a late `await_transition` was handed a
+            # fresh deadline for a transition that had been running for seconds. That is
+            # the defect two tests now cover: the late-caller deadline, and two
+            # restatements sharing one id. That second case only became reachable once a
+            # restatement could exist at all.
+            self._transition_seq = max(self._transition_seq, plan.generation) + 1
             transition = _Transition(
+                id=self._transition_seq,
                 generation=plan.generation,
                 streams=named,
                 requested={sid: validated[sid] for sid in named},
                 previous={sid: previous[sid] for sid in named},
                 started=float(self._clock()),
             )
-            self._transitions[plan.generation] = transition
+            self._transitions[transition.id] = transition
         self.state_changed.emit(plan)
-        return plan.generation
+        return transition.id
 
-    def await_transition(self, generation: int, timeout_s: float = 2.0) -> TransitionOutcome:
-        """Wait for `generation` to be acknowledged, or for the deadline, then recover.
+    def await_transition(self, transition_id: int,
+                         timeout_s: float = 2.0) -> TransitionOutcome:
+        """Wait for the transition `transition_id` to be acknowledged, or for the deadline.
 
         The deadline is measured from when the transition **began**, so `elapsed_s` is the
         spec section 5 warm-transition figure and is unaffected by how late the caller got
@@ -1614,26 +1853,33 @@ class Supervisor(QObject):
         the device it was running on before the toggle**, with the reason stated on
         `error_raised` and in `RoutePlan.errors`.
 
-        A superseded `generation` returns at once with `bounded_by="timeout"`, because a
-        generation that has been replaced can never be acknowledged and blocking on it
-        would be waiting for a state the supervisor has left. That is what coalescing
-        looks like from here: the last requested state is the one that runs.
+        A superseded transition returns at once with `bounded_by="timeout"`, because one
+        that has been replaced can never be acknowledged and blocking on it would be
+        waiting for a state the supervisor has left. That is what coalescing looks like
+        from here: the last requested state is the one that runs.
+
+        `transition_id` is what `begin_transition` returned - the monotonic id, **not** the
+        route generation. They are the same number when the call moved something and they
+        differ when it did not; `TransitionOutcome.generation` reports the route
+        generation, so nothing is lost by the caller.
         """
         timeout = float(timeout_s)
         if timeout != timeout or timeout in (float("inf"), float("-inf")):
             raise ValueError(f"timeout_s must be finite; got {timeout_s!r}")
         if timeout < 0.0:
             raise ValueError(f"timeout_s must be >= 0.0; got {timeout_s!r}")
-        if isinstance(generation, bool) or not isinstance(generation, int):
-            raise TypeError(f"generation must be an int; got {generation!r}")
+        if isinstance(transition_id, bool) or not isinstance(transition_id, int):
+            raise TypeError(f"transition_id must be an int; got {transition_id!r}")
         with self._lock:
-            transition = self._transitions.get(generation)
+            transition = self._transitions.get(transition_id)
             if transition is None:
                 raise ValueError(
-                    f"no transition was opened for generation {generation}. The highest "
-                    f"generation is {max(s.generation for s in self._streams.values())}. "
-                    f"`begin_transition` is what opens one; awaiting a generation that "
-                    f"was never opened would wait for nothing."
+                    f"no transition was opened with id {transition_id}. The highest id "
+                    f"handed out is {self._transition_seq} and the highest route "
+                    f"generation is "
+                    f"{max(s.generation for s in self._streams.values())}. "
+                    f"`begin_transition` is what opens one; awaiting an id that was never "
+                    f"handed out would wait for nothing."
                 )
             deadline = transition.started + timeout
         while True:
@@ -1694,51 +1940,93 @@ class Supervisor(QObject):
         device that will not compile at all cannot produce an unbounded chain of
         recoveries; the caller may `await_transition` the new generation and see the
         result.
+
+        ## **A recovery that cannot recover says so, and does not claim to have.**
+
+        Every unconfirmed stream is already on the device the recovery wants to put it
+        back on - which is the normal case for a stream that failed *before* the toggle,
+        because `select_devices` already moved it there. `select_devices` would then be a
+        no-op, and the text *"Recovering C - the last healthy route"* would be a claim
+        about an action that did not happen, on the exact stream an operator is looking
+        at. That was observed, and it is worse than a no-op: the message is the recovery
+        report.
+
+        So the targets are filtered to the streams that would actually move. If none
+        would, the published text says **nothing moved, the stream is still on the device
+        it failed on, and it has no worker** - and names the remedy that works, which is
+        a device *change* (that is what spawns a worker) rather than a re-selection.
         """
         with self._lock:
             if transition.recovered:
                 return
             transition.recovered = True
-            targets = {sid: transition.previous[sid]
-                       for sid in transition.streams
-                       if not self._streams[sid].confirmed}
             unconfirmed = outcome.unconfirmed_streams()
             requested = {sid: transition.requested[sid] for sid in unconfirmed}
             # Read the failing streams' own reasons **before** `select_devices` clears
             # them. Without this the recovery would erase the account of *why* the
             # recovery happened, and the operator would be left with "it went back to the
             # CPU" and no word about the device that refused.
-            reasons = {sid: tuple(self._streams[sid].errors) for sid in targets}
-        if not targets:
+            reasons = {sid: tuple(self._streams[sid].errors)
+                       for sid in unconfirmed}
+            moved = {sid: transition.previous[sid]
+                     for sid in unconfirmed
+                     if self._streams[sid].requested_device != transition.previous[sid]}
+            stuck = {sid: self._streams[sid].requested_device
+                     for sid in unconfirmed
+                     if sid not in moved}
+        if not unconfirmed:
             return
-        reason = (
+        quoted = (" | ".join(f"stream {sid}: {texts}"
+                             for sid, texts in sorted(reasons.items()) if texts)
+                  or "nothing; it never reported an error.")
+        head = (
             f"route transition to generation {transition.generation} was not "
             f"acknowledged: stream(s) {list(unconfirmed)} did not confirm a placement on "
             f"{ {sid: requested[sid] for sid in sorted(requested)} } within "
             f"{outcome.elapsed_s:.3f} s (bounded_by={outcome.bounded_by!r}). "
             f"{outcome.discarded_results} result(s) from the superseded generation were "
-            f"discarded. Recovering { {sid: targets[sid] for sid in sorted(targets)} } - "
-            f"the last healthy route - and stating the failure rather than claiming the "
-            f"requested device. What the failing route said: "
-            + (" | ".join(f"stream {sid}: {texts}" for sid, texts in sorted(reasons.items())
-                          if texts)
-               or "nothing; it never reported an error.")
+            f"discarded. "
         )
-        self.select_devices(targets)
+        if moved:
+            reason = (
+                head
+                + f"Recovering { {sid: moved[sid] for sid in sorted(moved)} } - "
+                f"the last healthy route - and stating the failure rather than claiming "
+                f"the requested device. "
+                + (f"Stream(s) {sorted(stuck)} are already on the device the recovery "
+                   f"wanted, so nothing moved for them: they keep the device they failed "
+                   f"on and have no worker. "
+                   if stuck else "")
+                + f"What the failing route said: {quoted}"
+            )
+            self.select_devices(moved)
+        else:
+            # **Not a recovery.** Say what is true: nothing moved, and the stream is
+            # stranded with no worker until something actually changes its device.
+            reason = (
+                head
+                + f"Nothing moved: stream(s) {sorted(stuck)} are already on "
+                f"{ {sid: stuck[sid] for sid in sorted(stuck)} }, the device the "
+                f"recovery wanted, so there was no route change to make and no worker to "
+                f"bring up. These routes are failed and idle. **Re-selecting the same "
+                f"device will not fix this** - the fix is to select a *different* device "
+                f"for the stream, which spawns a worker, or to call `select_device` on it "
+                f"directly. What the failing route said: {quoted}"
+            )
         with self._lock:
-            for sid in targets:
+            for sid in unconfirmed:
                 self._streams[sid].errors.append(reason)
         self.error_raised.emit(reason)
         self.state_changed.emit(self.route_plan())
 
-    def transition(self, generation: int) -> MappingABC[str, str] | None:
-        """What generation `generation` asked for, or `None` if it opened no transition."""
+    def transition(self, transition_id: int) -> MappingABC[str, str] | None:
+        """What transition `transition_id` asked for, or `None` if there is no such id."""
         with self._lock:
-            found = self._transitions.get(generation)
+            found = self._transitions.get(transition_id)
             return None if found is None else MappingProxyType(dict(found.requested))
 
     def latest_transition(self) -> TransitionOutcome | None:
-        """The highest generation's transition as a fresh outcome, or `None`.
+        """The newest transition as a fresh outcome, or `None`.
 
         Convenience for a caller that only ever has the latest toggle to hand. It never
         blocks and never recovers - `await_transition` is the call that does.
@@ -1763,28 +2051,35 @@ class Supervisor(QObject):
 
     def _apply_result(self, stream: _Stream, generation: int,
                       result: InferenceResult) -> bool:
-        """A result that passed the generation check. Updates the stream and publishes.
+        """Apply a result that already passed the generation check, and publish it.
 
         **This is the only path that can mark a route `active`, and therefore the only
         path that can acknowledge a transition.** A stream proves its placement when an
         inference on its *current* generation comes back saying where it ran; nothing that
         merely *asked* for a device can do it.
 
-        The generation is re-checked inside this lock rather than trusted from
-        `accept_result`. Between the two there is a window - the result was validated, the
-        lock was dropped, a toggle arrived - and a result admitted just before a
-        transition and applied just after it would confirm the placement of a route that
-        has already been torn down. That is the exact defect this module exists to
-        prevent, arriving through a lock boundary instead of through a stale reader.
+        **The check and the application are in one critical section, and this method must
+        not be called without `self._lock` held.** `accept_result` is its only caller, it
+        calls it from inside its own `with self._lock:` on an `RLock`, and the lock is
+        never dropped between the two. That is why there is no second generation check
+        here: this method used to have one, on the belief that the lock was dropped
+        between the check and the apply and a toggle could land there. It never is - the
+        lock is an `RLock` and the call is within its hold - so the second check was one
+        layer expressed twice.
+
+        That is worse than duplication. A duplicated check invites a refactor that moves
+        the call outside the lock, and then the refactor looks correct (both checks still
+        present) while the window it reopens is the real defect this module exists to
+        prevent: a result admitted just before a transition and applied just after it
+        would confirm the placement of a route already torn down. The protection is the
+        **critical section**, not a second comparison inside it.
+
+        Reads `stream.generation` **here**, after the caller's lock hold ends, rather than from
+        the argument, because that is the value `_on_failure` must be handed: it is the
+        generation this result is being applied to, and a failure must fail *that*
+        generation or not at all.
         """
-        with self._lock:
-            if stream.generation != int(generation):
-                self._discarded_results += 1
-                owner = stream.superseded_by
-                transition = self._transitions.get(owner) if owner is not None else None
-                if transition is not None:
-                    transition.discarded += 1
-                return False
+        if True:  # the caller's lock hold; see the docstring above
             stream.latest = result
             if result.error is None:
                 stream.analysed += 1
@@ -1834,12 +2129,22 @@ class Supervisor(QObject):
             stream.confirmed = ()
             self._running = self._running and any(
                 s.state != "failed" for s in self._streams.values())
-        self.error_raised.emit(
+        guidance = (
             f"{reason}. The restart budget for stream {stream_id!r} at generation "
             f"{generation} is spent, so this route is failed and no device is being "
             f"claimed for it. The requested device {device_id!r} is recorded; "
             f"re-select one to try again. The other streams are unaffected."
         )
+        # **Recorded on the stream, not only emitted.** It used to be only emitted, and it
+        # is guidance an operator acts on: `errors()` is what survives into
+        # `RoutePlan.errors` and what a card reads, and a signal that nobody is connected
+        # to takes the instruction with it. A stated reason that only exists on a signal
+        # is a reason nobody will see.
+        with self._lock:
+            stream = self._streams.get(str(stream_id))
+            if stream is not None and guidance not in stream.errors:
+                stream.errors.append(guidance)
+        self.error_raised.emit(guidance)
         self.state_changed.emit(self.route_plan())
 
     def _restart(self, stream_id: str, generation: int, reason: str) -> None:

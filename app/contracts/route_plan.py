@@ -298,13 +298,32 @@ class StreamStats:
 
     - `frames_accepted` - frames the stream's bounded queue took.
     - `frames_refused` - frames `submit` refused *with a reason*, in
-      `frames_refused_reasons`: `not_running`, `closed`, `failed`, `transitioning`,
-      `unknown_stream`. A refusal is the pipeline not being there; it is not lag.
+      `frames_refused_reasons`: `not_running`, `closed`, `failed`, `unknown_stream`. A
+      refusal is the pipeline not being there; it is not lag. **There is deliberately no
+      `"transitioning"`**: `app.supervisor.runner.REFUSAL_REASONS` is the authority on that
+      vocabulary and a frame offered mid-transition is *accepted*, because the new worker
+      is already spawned and refusing it would deadlock the transition. This docstring
+      listed `"transitioning"` while the code deliberately did not have it; the code is
+      right and the prose was wrong.
     - `drops` - frames refused for want of room. The pipeline falling behind.
 
     So `frames_accepted + frames_refused + drops == frame_attempts`, **for this stream
     alone**. `frames_analysed` is a separate population entirely - frames that came back
     with a placement - and is deliberately outside that identity.
+
+    ## `frames_invalidated` - the fourth population, and the one that was missing
+
+    `frames_accepted` counts frames that were queued, and some of them are thrown away by a
+    route change before the worker sees them (`Supervisor._drain_queue`, at most
+    `queue_size` = 2 per affected stream per toggle). Those frames are neither drops (the
+    queue was not full) nor refusals (the caller was told `True`), so before this field
+    existed `frames_accepted` permanently exceeded `frames_analysed` with nothing on the
+    record to explain the gap - and spec section 5's "outstanding requests finish or time
+    out" had an unrecorded half.
+
+    It is **outside** the identity above for the same reason `frames_analysed` is: it is a
+    different population, not a fourth way of accounting for the same `submit` call. The
+    frame was counted once, as accepted, at `submit` time.
 
     `state` is this stream's own state, never the aggregate: with three streams a single
     `failed` on Camera C is a fact about Camera C, and collapsing it into one verdict is
@@ -323,6 +342,7 @@ class StreamStats:
     frame_attempts: int = 0
     frames_analysed: int = 0
     generation: int = 0
+    frames_invalidated: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stream_id", _require_text("stream_id", self.stream_id))
@@ -336,7 +356,7 @@ class StreamStats:
                 f"StreamStats.state must be one of {list(ROUTE_STATES)}; got {self.state!r}"
             )
         for name in ("frames_accepted", "frames_refused", "drops", "frame_attempts",
-                     "frames_analysed", "generation"):
+                     "frames_analysed", "generation", "frames_invalidated"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(
@@ -401,6 +421,7 @@ class StreamStats:
             "frame_attempts": self.frame_attempts,
             "frames_analysed": self.frames_analysed,
             "generation": self.generation,
+            "frames_invalidated": self.frames_invalidated,
             "reconciles": self.reconciles(),
             "fell_back": self.fell_back(),
         }
