@@ -998,7 +998,7 @@ class Supervisor(QObject):
             return self._require_stream(stream_id).stats()
 
     def pid_for(self, stream_id: str) -> int | None:
-        """The worker process id for `stream_id`, or `None` if it has no worker.
+        """The **live** worker process id for `stream_id`, or `None` if it has no worker.
 
         Exposed because "is there a process behind this camera?" is a question a
         diagnostics screen and a test both need, and both were reaching into `_streams` to
@@ -1006,12 +1006,25 @@ class Supervisor(QObject):
         only way to say whether a route change actually replaced the worker, which is the
         load-bearing claim of the transition protocol.
 
-        `None` is the honest answer for a stream that is `failed`: a failed route has
-        spent its restart budget and has no process.
+        **A dead process reports `None`, not its stale pid.** `_Stream.pid` is *retained*
+        after a failure on purpose - `stop()` and `_restart` need the `Process` object to
+        join and terminate it - so the raw field says 9264 for a worker that exited with
+        code 1. Reporting that would say "there is a process behind Camera C" when there is
+        none, which is the failure this whole report is about. Measured: with
+        `compile_failure=["C"]` the raw field reads `9264` with `is_alive() == False`, and
+        this returns `None`.
+
+        So `None` is the honest answer for a `failed` stream: it has spent its restart
+        budget and has no running worker.
         """
         with self._lock:
             stream = self._streams.get(str(stream_id))
-            return None if stream is None else stream.pid
+            if stream is None:
+                return None
+            process = stream.process
+            if process is None or not process.is_alive():
+                return None
+            return stream.pid
 
     def stream_state(self, stream_id: str) -> str | None:
         """This stream's own state: `pending`, `active`, `failed`, or `None` for unknown.
@@ -1199,6 +1212,19 @@ class Supervisor(QObject):
         """Frames that came back with a placement. Failures are not counted here."""
         with self._lock:
             return sum(s.analysed for s in self._streams.values())
+
+    @property
+    def frames_invalidated(self) -> int:
+        """Frames a route change threw away, summed over the streams.
+
+        For symmetry with `drops`, `frames_submitted` and `frames_analysed`, so a
+        three-stream caller does not have to sum a per-stream field by hand. It is the
+        **fourth** population, not a fifth way of accounting for the same `submit`: a frame
+        it counts was already counted once, as accepted, at `submit` time, and the route
+        change is what discarded it. See `StreamStats.frames_invalidated`.
+        """
+        with self._lock:
+            return sum(s.invalidated for s in self._streams.values())
 
     def frame_ages_ms(self) -> tuple[float, ...]:
         """Measured ingress-to-result age per analysed frame, in milliseconds.
@@ -1943,7 +1969,7 @@ class Supervisor(QObject):
 
         ## **A recovery that cannot recover says so, and does not claim to have.**
 
-        Every unconfirmed stream is already on the device the recovery wants to put it
+        Some unconfirmed stream is already on the device the recovery wants to put it
         back on - which is the normal case for a stream that failed *before* the toggle,
         because `select_devices` already moved it there. `select_devices` would then be a
         no-op, and the text *"Recovering C - the last healthy route"* would be a claim
@@ -1952,9 +1978,20 @@ class Supervisor(QObject):
         report.
 
         So the targets are filtered to the streams that would actually move. If none
-        would, the published text says **nothing moved, the stream is still on the device
-        it failed on, and it has no worker** - and names the remedy that works, which is
-        a device *change* (that is what spawns a worker) rather than a re-selection.
+        would, what happens next depends on **why** the stream has no worker, and that is
+        read from its state rather than assumed:
+
+        - **`failed`** - it has spent its restart budget, and `_apply_devices` always
+          treats a failed stream as affected. So naming it re-selects it onto the same
+          device, which **does** spawn a worker and **does** give it a fresh budget. The
+          recovery does that here rather than telling the operator to.
+        - **`pending`, no worker** - its device has not changed and it is not failed, so
+          naming it again is a no-op. The only remedy is a device *change*.
+
+        The earlier text claimed re-selection was useless for both. That was false for
+        `failed` (the cheap correct remedy, denied) and named `select_device` as the
+        alternative, which uses `force=True` and so always moved anyway - a sentence that
+        contradicted itself inside one clause.
         """
         with self._lock:
             if transition.recovered:
@@ -1987,31 +2024,73 @@ class Supervisor(QObject):
             f"{outcome.discarded_results} result(s) from the superseded generation were "
             f"discarded. "
         )
+        # Streams that are `failed` are **always** `affected` by `_apply_devices`, even onto
+        # the device they already name, so naming one re-selects it and gives it a worker
+        # back. Naming a `pending` route with no worker does not - its device has not
+        # changed - and that is the only case where a different device is the remedy.
+        # So one `select_devices` call handles both, and the published text can say which
+        # is which because the states are read here, not guessed.
+        retry_failed = {sid: stuck[sid] for sid in stuck
+                        if self._streams[sid].state == "failed"}
+        needs_device_change = sorted(sid for sid in stuck
+                                     if sid not in retry_failed)
         if moved:
             reason = (
                 head
                 + f"Recovering { {sid: moved[sid] for sid in sorted(moved)} } - "
                 f"the last healthy route - and stating the failure rather than claiming "
                 f"the requested device. "
-                + (f"Stream(s) {sorted(stuck)} are already on the device the recovery "
-                   f"wanted, so nothing moved for them: they keep the device they failed "
-                   f"on and have no worker. "
+                + (f"Stream(s) {sorted(stuck)} were already on the device the recovery "
+                   f"wanted, so nothing moved for them: "
+                   + (f"{sorted(retry_failed)} are failed with no worker, so they were "
+                      f"re-selected on the same device to give them a fresh worker and a "
+                      f"fresh restart budget. "
+                      if retry_failed else "")
+                   + (f"{needs_device_change} are pending with no worker, and a pending "
+                      f"route is not re-selected onto the device it already names - those "
+                      f"need a device change to spawn a worker. "
+                      if needs_device_change else "")
                    if stuck else "")
                 + f"What the failing route said: {quoted}"
             )
             self.select_devices(moved)
-        else:
-            # **Not a recovery.** Say what is true: nothing moved, and the stream is
-            # stranded with no worker until something actually changes its device.
+            if retry_failed:
+                self.select_devices(retry_failed)
+        elif retry_failed:
+            # **Not a route recovery, but not nothing either.** The streams are already on
+            # the device the recovery wanted, so there is no *route change* to make - and
+            # saying "re-selecting the same device will not fix this" was **false**,
+            # because a `failed` stream is always `affected`: naming it does spawn a worker.
+            # So it is named here, the worker comes back, and the text says exactly that.
             reason = (
                 head
-                + f"Nothing moved: stream(s) {sorted(stuck)} are already on "
-                f"{ {sid: stuck[sid] for sid in sorted(stuck)} }, the device the "
-                f"recovery wanted, so there was no route change to make and no worker to "
-                f"bring up. These routes are failed and idle. **Re-selecting the same "
-                f"device will not fix this** - the fix is to select a *different* device "
-                f"for the stream, which spawns a worker, or to call `select_device` on it "
-                f"directly. What the failing route said: {quoted}"
+                + f"Nothing to recover for stream(s) {sorted(retry_failed)}: they are "
+                f"already on "
+                f"{ {sid: stuck[sid] for sid in sorted(retry_failed)} }, the device the "
+                f"recovery wanted, so there was no route change to make. They were "
+                f"**failed** with no worker, so they have been re-selected on the same "
+                f"device, which does spawn a worker and gives them a fresh restart budget. "
+                + (f"Stream(s) {needs_device_change} are pending with no worker, and a "
+                   f"pending route is not re-selected onto the device it already names - "
+                   f"those need a device change to spawn a worker. "
+                   if needs_device_change else "")
+                + f"What the failing route said: {quoted}"
+            )
+            self.select_devices(retry_failed)
+        else:
+            # The one case where a different device really is the only remedy: a `pending`
+            # route with no worker. Re-selecting it would be a no-op, because its device
+            # has not changed and it is not failed.
+            reason = (
+                head
+                + f"Nothing moved, and a device change is the only remedy: "
+                f"stream(s) {needs_device_change} are already on "
+                f"{ {sid: stuck[sid] for sid in needs_device_change} }, the device the "
+                f"recovery wanted, and they are **pending** rather than failed, so naming "
+                f"them again would be a no-op - a pending route is only re-selected when "
+                f"its device changes. They have no worker, and the remedy is to select a "
+                f"*different* device for the stream. What the failing route said: "
+                f"{quoted}"
             )
         with self._lock:
             for sid in unconfirmed:

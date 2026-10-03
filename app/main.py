@@ -1098,6 +1098,36 @@ def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
     The rate is measured **between two ticks**, never over the process lifetime: a
     lifetime average on a screen would show the compile and the startup ramp smeared into
     a number that describes neither the running system nor anything anybody saw.
+
+    ## The frame-age percentiles are over a **count-bounded window**, and it is not a
+    ## fixed span of time
+
+    `frame_age_p50_ms` and `frame_age_p95_ms` are percentiles of the supervisor's retained
+    frame ages, which is a `deque(maxlen=FRAME_AGE_WINDOW)` - **256 samples**, chosen in
+    `app/supervisor/runner.py` so the copy and the two sorts are bounded on this thread.
+
+    **256 samples is ~17 s at 15 fps, and longer the further behind a stream falls** -
+    256 / fps-of-frames-that-carry-an-age, not 256 / fps-offered. The two measured runs
+    on 2026-10-03:
+
+    - **Three streams on the CPU, no saturators** (spec section 5 row 4, the app's own
+      load): each analysed 9.60-9.80 fps while being offered 15, so the window spans
+      **~26 s** and the reported p50/p95 are 8239 ms / 12469 ms.
+    - **Six CPU saturators alongside the app** (the §5 hardware proof, a synthetic
+      stand-in for "a busy machine", not the app's own load): the same three cameras
+      analysed ~3.5 fps - 28 frames per 8 s - so the window spans **~73 s**.
+
+    Unsaturated with a single CPU stream the app analysed 14.96 fps, so ~17 s, p50
+    2039 ms. So a percentile here answers *"how late has this stream been lately"*, and
+    how long "lately" is **depends on the backlog**: ~17 s when the stream keeps up with what
+    it is offered, ~26 s when it analyses two thirds of it, ~73 s when it analyses a
+    quarter. The field name does
+    not carry that, and the bridge renders it without the window.
+    **Task 4 owns the card**; what is fixed here is the docstring, because a reader of
+    `app/main.py` must not take the figure for a rolling 5 s window or a lifetime
+    percentile. Note also that `analysis fps` and the age percentiles are **different
+    claims** and must not be read as one: a stream can hold 15 fps and still be seconds
+    behind, which is exactly what the CPU rows show.
     """
     from PySide6.QtCore import QTimer
 

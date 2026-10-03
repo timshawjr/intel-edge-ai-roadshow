@@ -1046,8 +1046,12 @@ class SupersededResults(unittest.TestCase):
                          "generation was superseded, and the total is what Task 3 must "
                          "report")
         self.assertEqual(s.discarded_mismatched, 0)
-        # The per-transition share is reported for diagnosis and is not claimed exact.
-        self.assertGreaterEqual(outcome.discarded_results, 0)
+        # **The per-transition share is deliberately NOT asserted.** It is an
+        # approximation in the coalescing case - `_attribute_discard` looks the owning
+        # transition up by route generation, and two transitions can share one - so an
+        # assertion on it would either pin an implementation detail or fail for a reason
+        # that has nothing to do with the discard. The exact figure is the total above, and
+        # the caveat is in `_attribute_discard`'s docstring and in the report.
 
     def test_a_restatement_does_not_lose_a_discard_from_the_process_total(self):
         # The coalescing case the approximation caveat is about: two transitions inside one
@@ -1175,10 +1179,11 @@ class FailedStreamRecovery(unittest.TestCase):
         self.assertNotEqual(supervisor.stream_stats(failed).state, "failed")
 
     def test_a_recovery_that_cannot_move_anything_does_not_claim_it_did(self):
-        # A supervisor that was never started, restating the devices already in force:
+        # A supervisor that was **never started**, restating the devices already in force:
         # nothing moves, nothing can confirm, and the recovery has nothing to restore.
-        # (`_apply_devices` now always moves a *failed* stream, so a failed route is no
-        # longer how this branch is reached - an unconfirmable one is.)
+        # Every stream is `pending` with no worker, which is the only shape for which a
+        # re-selection really is a no-op - the next test covers the `failed` shape, which
+        # reaches this same branch and is the booth-reachable one.
         supervisor = Supervisor(device_ids=("CPU", "CPU", "CPU"))
         self._made.append(supervisor)
         published: list[str] = []
@@ -1193,12 +1198,14 @@ class FailedStreamRecovery(unittest.TestCase):
         self.assertNotIn("the last healthy route", joined, joined)
 
     def test_the_published_text_says_what_to_do_when_nothing_moved(self):
-        # The reachable no-op recovery: a supervisor that was **never started**, so nothing
-        # can confirm, and a mapping that restates the devices already in force. No stream
-        # moves, no worker is spawned, and the transition times out having achieved
-        # nothing - which is exactly the case where a "Recovering X" claim is a lie.
-        # (`_apply_devices` now always moves a *failed* stream, so a failed route is no
-        # longer how this branch is reached; an unconfirmable route is.)
+        # A supervisor that was **never started**, restating the devices already in force:
+        # no stream moves, no worker is spawned, and the transition times out having
+        # achieved nothing - which is exactly the case where a "Recovering X" claim is a
+        # lie. Every stream here is `pending` with no worker, so a re-selection really is a
+        # no-op and a device change really is the only remedy.
+        # **The `failed` shape reaches this same branch and is the one an operator hits**;
+        # `test_a_failed_route_reaching_the_no_move_branch_is_re_selected_not_dismissed`
+        # covers that, and its remedy is different.
         supervisor = Supervisor(device_ids=("CPU", "CPU", "CPU"))
         self._made.append(supervisor)
         published: list[str] = []
@@ -1216,15 +1223,112 @@ class FailedStreamRecovery(unittest.TestCase):
                          f"{joined}")
         self.assertIn("Nothing moved", joined, joined)
         self.assertIn("no worker", joined, joined)
-        # Case-insensitively: the sentence starts with "Re-selecting" mid-message and the
-# assertion is about the guidance, not its capitalisation.
-        self.assertIn("re-selecting the same device will not fix",
-                      joined.lower(), joined)
-        # And the remedy it names is the one that works: a different device moves the
-        # stream, which is what spawns a worker.
+        # The remedy named for a *pending* route is a device change, and it is true: naming
+        # the stream again would be a no-op, and a different device does spawn a worker.
+        self.assertIn("a pending route is only re-selected when its device changes",
+                      joined, joined)
+        self.assertNotIn("re-selecting the same device will not fix",
+                         joined.lower(), joined)
+        # `select_device` must not be named as an alternative remedy. It uses
+        # `force=True`, so it always moved - naming it as a *different* action from a
+        # re-selection contradicts the sentence it sits in, which is what the old text
+        # did ("re-selecting the same device will not fix this ... or call `select_device`
+        # on it directly").
+        self.assertNotIn("select_device", joined,
+                         f"the message names `select_device` as an alternative remedy "
+                         f"while calling re-selection useless, and it uses `force=True` so "
+                         f"it always moved anyway: {joined}")
         supervisor.begin_transition({"B": "GPU"})
         self.assertEqual(supervisor.stream_stats("B").requested_device, "GPU")
         self.assertEqual(supervisor.route_plan().generation, 2)
+
+    def test_a_failed_route_reaching_the_no_move_branch_is_re_selected_not_dismissed(self):
+        """**N1, and it is Option A: the remedy is performed, not refused.**
+
+        A `failed` stream reaches the same no-move branch as a `pending` one - it is already
+        on the device the recovery wanted - and the earlier text told the operator that
+        re-selecting would not help. That was **false**: `_apply_devices` treats a failed
+        stream as always affected, so naming it spawns a worker and gives it a fresh
+        budget. Denying the cheap correct remedy on the one path an operator walks is worse
+        than the false recovery claim it replaced, so the recovery now performs it.
+
+        This is **end-to-end**: a genuinely failed stream (the child really raises and
+        really dies), a real transition, the real recovery, and the message built from that
+        route's own errors. Measured on 2026-10-03, two runs: the transition timed out at
+        1.276 s and 1.502 s having spawned a replacement that faulted again, and the
+        recovery re-selected it - generation 2 to 3.
+
+        The claim under test is **Option A's**: the remedy is *performed*, and the text
+        says what was performed. So the assertions are the effect (the generation moved)
+        and the text agreeing with it, not either alone.
+        """
+        supervisor = Supervisor(device_ids=("CPU", "CPU", "CPU"),
+                                compile_failure=[STREAM])
+        self._made.append(supervisor)
+        published: list[str] = []
+        supervisor.error_raised.connect(published.append)
+        supervisor.start()
+        deadline = time.perf_counter() + 120.0
+        while supervisor.stream_stats(STREAM).state != "failed" \
+                and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(supervisor.stream_stats(STREAM).state, "failed",
+                         supervisor.stream_stats(STREAM).to_json())
+        self.assertIsNone(supervisor.pid_for(STREAM),
+                          "a failed route has no worker; that is the premise")
+
+        transition = supervisor.begin_transition({"A": "CPU", "B": "CPU", "C": "CPU"})
+        # The generation the transition itself reached. Everything after this is the
+        # recovery's doing, which is what makes it a clean way to see the effect.
+        transitioned_to = supervisor.route_plan().generation
+        outcome = supervisor.await_transition(transition, timeout_s=60.0)
+        self.assertFalse(outcome.acknowledged, outcome.to_json())
+        joined = " ".join(published)
+
+        # **The effect, and it is the generation rather than the pid.** Re-selecting a
+        # failed stream onto the device it already names is a route change - that is what
+        # makes a failed stream `affected` - so it bumps the generation whether or not the
+        # replacement child is alive when this line runs. Asserting on the pid instead
+        # would be racy: this stream is `compile_failure`-injected, so its replacement
+        # worker really does fault, and whether a live pid is visible here depends on
+        # timing. The generation is the deterministic witness.
+        after = supervisor.route_plan().generation
+        self.assertGreater(after, transitioned_to,
+                           f"the recovery re-selects the failed stream onto the same "
+                           f"device, which is a route change and bumps the generation; it "
+                           f"did not move from {transitioned_to} to {after}, so the "
+                           f"published text is describing something that did not happen: "
+                           f"{joined}")
+        self.assertEqual(after, transitioned_to + 1,
+                         "and exactly one re-selection: the one stream that was stuck")
+
+        # **The text must match that effect.** It is not enough to re-select silently -
+        # the operator has to be told, because the whole defect was a sentence about what
+        # to do next being false. And it must not describe a failed stream as pending:
+        # the `elif False` mutant (no re-selection at all) falls through to the
+        # `pending` wording and would otherwise satisfy a message/effect agreement check
+        # by being wrong in both halves.
+        self.assertIn("re-selected on the same device", joined,
+                      f"the recovery re-selected {STREAM}, so the text must say so: "
+                      f"{joined}")
+        self.assertIn("**failed**", joined,
+                      f"the stream was failed, so the text must not describe it any other "
+                      f"way: {joined}")
+        self.assertNotIn("pending", joined,
+                         f"the stream was failed, not pending, so the pending route's "
+                         f"wording - and its device-change remedy - is false here: {joined}")
+        # And it must not deny the re-selection remedy, which was the defect, nor name
+        # `select_device` as the alternative: that uses `force=True` and always moved, so
+        # the old sentence contradicted itself inside one clause.
+        self.assertNotIn("re-selecting the same device will not fix",
+                         joined.lower(), joined)
+        self.assertNotIn("select_device", joined,
+                         "the message named `select_device` as a remedy while also "
+                         "calling re-selection useless - it uses `force=True` and always "
+                         "moved, so it contradicted itself")
+        self.assertNotIn("Recovering", joined,
+                         f"no route change happened, so no recovery may be claimed: "
+                         f"{joined}")
 
     def test_a_real_recovery_still_names_the_device_it_restored(self):
         # The negative control for the test above: a transition that genuinely moved a
@@ -1243,6 +1347,53 @@ class FailedStreamRecovery(unittest.TestCase):
                       f"the recovery must name the device it put back: {joined}")
         self.assertNotIn("Nothing moved", joined, joined)
         self.assertEqual(supervisor.stream_stats("B").requested_device, "CPU")
+
+    def test_a_mixed_recovery_names_the_stuck_stream_it_did_not_move(self):
+        """The mixed branch of `_recover`: some streams move, some are already in place.
+
+        The published text carries a **per-stream sentence** about the streams nothing
+        moved for, and nothing asserted on it - so a supervisor could name them as moved
+        and this would have passed. Stream A is already on the CPU when B is moved off it,
+        so A is the stuck one, and its id has to appear in the sentence about being stuck.
+        """
+        # A **real failed stream** named alongside a stream that genuinely moves. The failed one
+        # is affected (so it is in the transition) yet already on the device the recovery
+        # wants - which is exactly the shape that puts one stream in the moved set and one
+        # in the stuck set. A never-started supervisor cannot produce it: naming a
+        # `pending` stream with an unchanged device does not make it affected, so it is
+        # not in the transition at all.
+        supervisor, published, failed = self._failed_stream()
+        transition = supervisor.begin_transition({failed: "CPU", "B": "GPU"})
+        outcome = supervisor.await_transition(transition, timeout_s=0.05)
+        self.assertFalse(outcome.acknowledged)
+        # Camera B moved, so it is the one being recovered.
+        self.assertEqual(supervisor.stream_stats("B").requested_device, "CPU")
+        joined = " ".join(published)
+        self.assertIn("Recovering", joined, joined)
+        stuck_clause = joined.split("Stream(s)", 1)
+        self.assertEqual(len(stuck_clause), 2,
+                         f"the mixed branch must publish a per-stream sentence about the "
+                         f"streams it did not move: {joined}")
+        sentence = stuck_clause[1]
+        self.assertIn(repr(failed), sentence,
+                      f"the stuck stream {failed} is not named in the sentence about the "
+                      f"streams nothing moved: {sentence}")
+        # The remedy stated must match the state the stream is actually in when the
+        # recovery runs. It was `failed` going in - which is why `begin_transition` moved it
+        # and gave it a worker - so by now it is `pending` with a worker, and the honest
+        # sentence for a `pending` route is the device change. Asserting the *match* rather
+        # than a fixed phrase is what makes this a test of honesty instead of of wording.
+        state = supervisor.stream_state(failed)
+        pid = supervisor.pid_for(failed)
+        if state == "failed":
+            self.assertIn("re-selected on the same device", sentence, sentence)
+        else:
+            self.assertIn("pending", sentence, sentence)
+            self.assertIn("device change", sentence, sentence)
+            # This supervisor is never started, so a `pending` stream correctly has no
+            # worker and the device change really is the only remedy - which is what the
+            # sentence must say.
+            self.assertIsNone(pid, "an unstarted supervisor spawns nothing")
 
     def test_the_failure_guidance_is_recorded_on_the_stream_not_only_emitted(self):
         supervisor, published, failed = self._failed_stream()
@@ -1329,6 +1480,36 @@ class FrameInvalidationAndAges(unittest.TestCase):
         supervisor = Supervisor(**kwargs)
         self._made.append(supervisor)
         return supervisor
+
+    def test_the_supervisor_sums_invalidation_across_the_streams(self):
+        # The symmetry check: `drops`, `frames_submitted` and `frames_analysed` all have a
+        # supervisor-level sum, and `frames_invalidated` did not, so a three-stream caller
+        # had to sum a per-stream field by hand. Asserted as an identity against the
+        # per-stream records rather than a literal, because a literal would go stale the
+        # moment the counts are produced differently.
+        #
+        # **Two streams, two different counts, on purpose.** A single invalidated stream
+        # cannot tell "the sum" from "the one stream's count" - a mutant reading only the
+        # first stream would pass. So A contributes 2 and B contributes 1, and the
+        # aggregate must be 3. Each count is at `queue_size` (2) or under, because that is
+        # the most one toggle can invalidate per stream: a third frame is refused at
+        # `submit` as a drop, which is a different counter with a different reason.
+        s = self._supervisor(device_ids=("CPU", "CPU", "CPU"))
+        for stream, count in (("A", 2), ("B", 1), ("C", 0)):
+            queue = _private_stream(s, stream).queue
+            for index in range(count):
+                queue.put(_frame(index, stream=stream))
+        s.select_devices({"A": "GPU"})
+        s.select_devices({"B": "GPU"})
+        by_id = {stats.stream_id: stats for stats in s.per_stream()}
+        self.assertEqual(by_id["A"].frames_invalidated, 2, by_id["A"].to_json())
+        self.assertEqual(by_id["B"].frames_invalidated, 1, by_id["B"].to_json())
+        self.assertEqual(by_id["C"].frames_invalidated, 0, by_id["C"].to_json())
+        self.assertEqual(s.frames_invalidated, 3,
+                         "2 + 1 + 0 across the streams, not any one stream's count")
+        self.assertEqual(s.frames_invalidated,
+                         sum(stats.frames_invalidated for stats in by_id.values()),
+                         "the aggregate must be the sum of the per-stream records")
 
     def test_frames_a_route_change_throws_away_are_counted_and_named(self):
         # **The frames here are pushed straight into the bounded queue**, not through
@@ -1532,41 +1713,73 @@ class RetiringThreadHandover(unittest.TestCase):
         self.assertIn("did not exit", " ".join(s.errors()))
 
     def test_a_superseded_reader_retires_with_its_transport(self):
-        # F15's victim, and **the most expensive test in this class by an order of
-        # magnitude**: measured 182 s standalone on 2026-10-03, against 9-23 s for the
-        # other live tests in this file. The cost is `_wait_for` polling a CPU route to
-        # `active` before the measurement, and the `_wait_for` deadline is 180 s because
-        # the compile is unbounded in principle.
-        #
-        # If this number moves, check the machine before suspecting the code - and note
-        # that the assertion it exists for is a **join duration**, which does not need the
-        # route to have confirmed at all. The `active` wait is there so the "before" pid is
-        # a live worker rather than a compiling one.
-        reason = _require_cpu()
-        if reason:
-            self.skipTest(f"cannot run the live respawn test: {reason}")
+        """F15's victim, and the property is **a join duration, measured directly**.
+
+        A reader used to loop until `self._stopping`, which only a real `stop()` sets - so a
+        reader being replaced by a respawn sat on the **retired** queue for ever and
+        `_halt_threads` waited out its full join grace for a thread that was never going to
+        exit.
+
+        **No `_wait_for` on `active`, and the elapsed time measures `_halt_threads` alone.**
+        Both changes matter, and the first was a mistake I made:
+
+        - The 180 s wait for the route to become `active` was **unnecessary**. `_spawn`
+          assigns `stream.pid` (under the lock, `runner.py:1552-1557`) and starts the
+          reader thread (`runner.py:1568-1569`) **before it returns**, so `start()` alone
+          yields a valid **live** pid. The old docstring justified the wait by wanting
+          "a live worker rather than a compiling one" - but the child is alive either way,
+          and compiling is exactly what it is doing. It cost **182 s** of the suite's
+          442 s (measured 2026-10-03: 181.979 s for this one test) for an assertion that
+          needs no confirmation at all.
+        - Timing `select_device()` measured far more than the join: process terminate and
+          join, `_retire`, `_drain_queue`, then `_spawn` - a **process spawn** plus
+          `_rebuild_collector` - against a 2.5 s bound. On a loaded booth machine that can
+          exceed 2.5 s with no defect present, so it was a flaky assertion as well as a
+          slow one. Timing `_halt_threads` is the property under test and is immune to
+          spawn and collector latency.
+        """
         s = Supervisor(device_ids=("CPU",))
         self._made.append(s)
         s.start()
-        _wait_for(lambda: s.stream_state("A") == "active", seconds=180.0)
         before = s.pid_for("A")
-        self.assertIsNotNone(before)
+        self.assertIsNotNone(before,
+                             "`start()` assigns the pid before it returns, so no wait for "
+                             "`active` is needed for a live worker")
+
+        # **The detach has to happen first, or the test measures the wrong thing.** A
+        # feeder with nothing to be superseded by polls a live stream for ever, so it
+        # correctly never exits on its own and every join would wait out its full grace.
+        # `_apply_devices` detaches the process and queues under the lock *before* calling
+        # `_halt_threads`, and that detach is exactly what lets the old threads notice
+        # they are retired. So the test reproduces the handover in the same order and
+        # times the join half of it - the part the assertion is about - rather than the
+        # whole respawn (terminate, retire, drain, spawn a new process, rebuild the
+        # telemetry collector), which is bounded by spawn latency on a loaded machine
+        # rather than by anything this test is checking.
+        stream = _private_stream(s, "A")
+        with s._lock:
+            stream.process = None
+            stream.in_queue = None
+            stream.out_queue = None
 
         started = time.perf_counter()
-        s.select_device("CPU")
+        s._halt_threads("A")
         elapsed = time.perf_counter() - started
-        after = s.pid_for("A")
-        self.assertIsNotNone(after)
-        self.assertNotEqual(after, before, "the worker must have been replaced")
-        # STOP_GRACE_SECONDS is 5.0. Three threads are joined per respawn, so an
-        # unbounded reader would cost at least 5 s here; a reader that retires with its
-        # transport costs milliseconds.
+        # STOP_GRACE_SECONDS is 5.0 and three threads are joined, so an unbounded reader
+        # would cost at least one full 5 s grace here. A reader that retires with its
+        # transport costs milliseconds. The bound is generous because the property is
+        # "did not wait out the grace", not "was instant".
         self.assertLess(elapsed, runner.STOP_GRACE_SECONDS / 2.0,
-                        f"a respawn took {elapsed:.2f} s, which is at least one thread's "
-                        f"full {runner.STOP_GRACE_SECONDS} s join grace - a superseded "
-                        f"reader is not retiring with its transport")
+                        f"halting one stream's threads took {elapsed:.2f} s, which is at "
+                        f"least one thread's full {runner.STOP_GRACE_SECONDS} s join "
+                        f"grace - a superseded reader is not retiring with its transport")
         self.assertEqual(s.errors(), (),
                          "and nothing should have been reported: every thread exited")
+
+        # And the respawn still works, so the assertion is not passing because there was
+        # nothing there to join. `select_device` on an already-detached stream re-spawns it.
+        s.select_device("CPU")
+        self.assertIsNotNone(s.pid_for("A"), "a replacement worker must be running")
 
     def test_a_thread_that_stops_cleanly_publishes_nothing(self):
         s = Supervisor(device_ids=("CPU",))
