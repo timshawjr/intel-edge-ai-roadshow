@@ -670,3 +670,298 @@ and a passing offscreen 1920x1080 render is not a claim about this monitor.
 `assets/` and `logs/` are gitignored. The headless summaries this section quotes are
 **committed** at `docs/qualification/m1-headless/` and can be read without provisioning; only
 re-measuring them needs it.
+
+---
+
+## M2 - three streams and device toggles
+
+Full report, with every gate pasted: **[docs/qualification/M2-qualification.md](docs/qualification/M2-qualification.md)**.
+Committed records: **`docs/qualification/m2-headless/`**, each with its command in that directory's
+`README.md`. This section extends M0 and M1 and contradicts neither.
+
+### M2.1 The gate set, run in the M2 session
+
+| gate | result |
+|---|---|
+| `tools\verify_sources.py` | **6 PASS, 0 FAIL**, exit 0 - verified by content signature and sha256, never by HTTP status |
+| `tools\preflight.py` | **16 PASS, 2 WARN, 0 FAIL** (18 rows), `Status: Limited`, exit 0 - **both WARNs are M0's two pre-existing telemetry rows** |
+| `python -m app.main --selftest` | **PASS**, exit 0 |
+| `python -m unittest discover -s tests` | **1210 tests** - run 1 `FAILED (failures=1)`, runs 2 and 3 `OK`; wall **359.1-359.9 s** |
+| `tests.test_ui_contract.SlotBindingAudit` | **7 tests, OK** - and **M2 added no name to its two-entry allow-list** |
+| `tests.test_route_stress.RouteStressInTheSuite` (in isolation) | **7 tests, OK**, 20.1 s |
+
+`preflight` was **not run for the Tasks 1-2 review and no number was claimed for it then**; the table
+above is this session's run, the first since. Suite wall time is **~360 s**, against **145.6 s** for
+M1's committed 1034-test run and **323.8 s** measured by Task 5 in its own session (milestone working
+log, not committed). The increase is the three-camera live-path test class, ~32 s of it.
+
+### M2.2 Placement, re-measured on all three devices
+
+Four full runs of `tools\qualify_m0.py --requests 30`, each in its own process, committed at
+`single-frame-latency-run1..4.json`. `OVERALL: PASS - 4 of 4 rows succeeded on the device they
+requested` on every one.
+
+| device | `EXECUTION_DEVICES` | p50 ms, four runs | compile |
+|---|---|---|---|
+| CPU | `CPU` | 22.61 / 22.81 / 22.40 / 22.72 | 0.19 s |
+| GPU | `GPU.0` | 3.45 / 3.54 / 3.42 / 3.40 | 0.62-0.63 s |
+| NPU | `NPU` | 5.25 / 5.21 / 5.25 / 5.74 | 1.54-1.57 s |
+
+**The NPU is slower than the GPU on this machine**, under the conditions named above. Not a throughput
+claim; paired trials are M4. **A correction to the record:** the milestone working log quotes CPU
+20.99-21.16 ms and NPU 5.92-5.99 ms. Those are *better* than anything measured in the M2 session, they
+live only in a gitignored file, and they were taken earlier the same day on a measurably faster machine
+state. **A per-device latency figure is a property of a session, not of a machine; quoting the best one
+observed is not a measurement.**
+
+Across 50 live transitions: `placements_confirmed` **50/50** and `placement_pids_matched` **50/50**.
+
+### M2.3 The 2 s warm-transition target: **UNMET**
+
+`total` is the whole toggle, `setup_s + transition_elapsed_s`. 50 toggles, 50/50 acknowledged, nothing
+censored (`--timeout-s 30`, widened **on purpose** so the tail is measured rather than truncated).
+
+| | min | p50 | p95 | max | over 2 s |
+|---|---|---|---|---|---|
+| before the teardown fix | 2.080 | 3.151 | 5.521 | 5.544 | **50/50** |
+| **after** | **1.286** | **2.261** | **4.971** | **5.185** | **25/50** |
+
+| | setup p50 | wait p50 | wait p95 | wait max |
+|---|---|---|---|---|
+| before | 1.642 s | 1.506 s | 3.369 s | 3.387 s |
+| after | **0.730 s** | 1.510 s | 3.458 s | 3.501 s |
+
+At the **real 2.0 s default** (`await_transition`'s own deadline, unchanged): acknowledged **23/50 →
+26/50**; over 2 s **48/50 → 37/50**.
+
+> **THE TARGET IS MISSED. The distribution is documented.** Both halves are the answer. The
+> improvement is real, measured and committed, and it does not meet the 2 s target. **No timeout was
+> touched to obtain any of these numbers.**
+>
+> The earlier published **1.04 / 1.67 / 1.31 s** figures were **half a toggle** - they excluded
+> `begin_transition` - and they are wrong as a claim about this gate. They are in no committed file
+> and are recorded here only so nobody reaches for them again.
+>
+> `stop()` teardown fell from 15.18 s to 0.87 s in the same fix: milestone working log, **not
+> re-measured for this report**, quoted as a task record rather than as committed evidence.
+
+### M2.4 Three streams on the CPU is an 11-15 second old picture that reads healthy
+
+Unsaturated, **spec 5 row 4**, three 120 s holds, committed at `allcpu-steady-120s{,-hold2,-hold3}.json`.
+15 fps offered per stream, `errors: []`, **drops 0**, all three streams `active`.
+
+| hold | overall p50 | overall p95 | backlog per stream |
+|---|---|---|---|
+| 1 | 11 319 ms | 12 286 ms | 173 / 180 / 187 |
+| 2 | 14 309 ms | 15 562 ms | 228 / 232 / 235 |
+| 3 | 14 697 ms | 16 019 ms | 226 / 242 / 238 |
+
+**The headline is the range: p50 10.7-14.7 s, p95 12.3-16.1 s, backlog 173-242 frames per stream**, at
+~13.0-13.6 of 15 fps analysed. Two earlier holds in the gitignored log (10 767 and 11 085 ms) are lower
+than all three committed holds; the picture gets older across repeated holds and **the cause is not
+established**.
+
+The screen says so, in words, per stream - read off the live QML scene graph from the committed
+numbers:
+
+| | Camera A | Camera B | Camera C |
+|---|---|---|---|
+| confirmed badge | `CPU` | `CPU` | `CPU` |
+| age headline | `11.7 s` | `10.7 s` | `11.1 s` |
+| staleness sentence | `STALE - this picture is 11.7 s old; the limit is 2 s` | `STALE - this picture is 10.7 s old; the limit is 2 s` | `STALE - this picture is 11.1 s old; the limit is 2 s` |
+| window | `window: 256 analysed frames` | same | same |
+| backlog / rate | `backlog 187 frames` / `analysis 13.44 fps` | `backlog 173 frames` / `analysis 13.56 fps` | `backlog 180 frames` / `analysis 13.50 fps` |
+
+The 2 s threshold is spec section 7's and is printed on the card next to the age. **The card is never
+dimmed for being stale** - dimming the card that warns would dim the warning. **Frame age and inference
+cost are never merged**, and **unavailable is never `0`**: with no telemetry sample the CPU line reads
+`no CPU sample yet`.
+
+### M2.5 The input-ack gate cannot see any of that
+
+Re-measured this session (`InputAcknowledgement`, 3 repeats, 6 CPU saturators + real CPU inference):
+p50 0.015 / 0.024 / 0.000 ms, **p95 11.554 / 12.863 / 11.749 ms**, **worst tick 20.361 / 18.470 /
+17.096 ms**, 299 ticks per repeat, `confirmed ['CPU']` every time. Against a 200 ms p95 gate and a 2 s
+worst-tick gate, comfortably green - **and it is measuring the wrong quantity.**
+
+> The gate times how long the **UI thread** waits between its own ticks. A frame sitting 173-242
+> frames deep in a worker queue is invisible to it, because the UI thread is not waiting on the queue.
+> **Ruling: the unsaturated `allcpu` frame-age row is the real latency figure for this application and
+> leads this milestone. The input-ack gate is insensitive to inference backlog by construction, and a
+> green gate on the wrong quantity is not a pass.** The two are never added, averaged or substituted.
+> A combined experiment - the probe running against the three-camera `allcpu` load - was **not run**.
+
+### M2.6 50 alternating warm route changes: no crash, no stale overlay, no mislabelled device
+
+From `route-stress-50-after-teardown-fix.json`. The walk covers **all four rows** of spec 5's table in
+its own order, one camera per toggle: `{A:CPU,B:GPU,C:NPU}` x12, `{A:CPU,B:CPU,C:NPU}` x13,
+`{A:CPU,B:GPU,C:CPU}` x13, `{A:CPU,B:CPU,C:CPU}` x12.
+
+`crashes 0` · `mislabelled_devices 0` · stale overlays **0** over `results_delivered 4179` ·
+`discarded_results 942` · `error_results 0` · `errors_at_end []`.
+
+**Leak, reported as total / design / remainder separately** - adding them is the mistake:
+
+| | before the fix | after (30 s deadline) | after (real 2.0 s gate) |
+|---|---|---|---|
+| RSS start → end | 94.8 → 107.9 MiB | 95.7 → 111.1 MiB | 95.0 → **277.4 MiB** |
+| **total growth** | 13.1 MiB (+268.6 KiB/toggle) | 15.5 MiB (+316.8 KiB/toggle) | **182.4 MiB** (+3.65 MiB/toggle) |
+| retained transitions / queues | 1→51 / 6→156 | 1→51 / 6→156 | 1→51 / 6→204 |
+| live objects, emptied + `gc` | 54 689 → **50 107** | 54 870 → **50 560** | 57 438 → **52 724** |
+| **remainder after release + `gc`** | **3.53 MiB** | **5.76 MiB** | 175.3 MiB |
+
+**Live objects go *down* across 50 transitions** in every run - 4 582 / 4 310 / 4 714. Nothing
+accumulates per transition. The retained transition and queue records are counted as **design** growth
+because they are deliberately retained.
+
+**One arithmetic correction:** the working log calls the 3.5 MiB remainder "0.26% of RSS". It is
+**3.3% of the 107.9 MiB end RSS**.
+
+**The third column is a finding, and it is not characterised.** At the real 2.0 s gate - the run a
+presenter experiences - RSS ends at 277.4 MiB with 175.3 MiB unexplained by retention, in the run with
+24 unacknowledged transitions and a stated recovery per timeout. One hypothesis is that each recovery
+path retains something a clean run never builds. **It is a hypothesis, it is not established, and it is
+not measured.** A long-session leak trend is M6's soak.
+
+**Stale painting: real but weak.** `discarded_results` is ~19 per toggle; before the teardown fix the
+same field read **29 over 5 037 delivered results**, under 0.6 per toggle, because the queue was drained
+*before* superseding so the discarded work was work always being thrown away. **The count went up
+because the accounting improved, not because fifty more proofs appeared.** The identity-based refusal
+tests are the real evidence.
+
+### M2.7 Per-camera video surfaces - the gap M2 disclosed, closed
+
+Task 5 disclosed *"per-camera video surfaces are not built"*. Closed, and measured on the **live path**,
+not seeded: `app.main --windowed --streams 3`, three real workers on three devices, three decode
+threads, 25 s.
+
+```
+returncode: 0
+layout:      [startup] 3 camera(s): A -> CPU, B -> GPU, C -> NPU
+  tile A: image://frames/A?v=269  1920x1080  no_frame_visible=False
+  tile B: image://frames/B?v=339  1920x1080  no_frame_visible=False
+  tile C: image://frames/C?v=340  1920x1080  no_frame_visible=False
+hero tile stream: A
+frames analysed/submitted: 1194 / 1281      ai_fps: 42.72
+qml badge: device: CPU
+```
+
+Three tiles, three sources, three **independent** revisions. The provider has **no cross-stream
+fallback**: a camera with no frame gets a 1x1 transparent image and its tile says `no frame from Camera
+N yet`, naming itself - never another camera's pixels. The hero serves the bound stream and follows a
+change of selection. **Each camera has its own `ClipSource`, decode thread, `Tracker` and
+`RetailEventMachine`** - sharing a tracker interleaves track ids across cameras and lets one camera's
+zone rule fire on another's picture. Mutation-checked: **20 mutants, 18 killed**, the two survivors
+being deliberate no-op controls.
+
+**Two defects this work produced, both found by rendering rather than by reading.** A `QVariantList`
+concatenated with a string rendered the literal **`-1`** as a thumbnail caption - on a render whose
+Python side held `confirmed: ('GPU.0',)` and whose picture above the caption was real; **nothing about a
+screenshot of that caption says it is wrong.** And the provider's id parsing was wrong twice before it
+was right (`args[-1]` is a `QSize`, not the id; the id is the whole `QUrl`, not its last segment), each
+fault producing a correct-looking `source` and a **silently empty hero**.
+
+### M2.8 The visible failure state - and the half that cannot close
+
+M0 gate 9 has a **silent** half (`confirmed` differing from `requested`) and a **visible** one.
+
+**Visible: delivered.** `--fail-stream A` on the live scene graph - 127 badge samples going from
+`device: pending - CPU not yet confirmed` to **`device: failed - no device is running`**,
+`device_confirmed` the **empty string**, `fell_back false` because nothing ran elsewhere, and the tile
+saying `no frame from Camera A yet`, beside the worker's own stated reason. In the committed stress
+record (`--fault-stream C` against the NPU): `confirmed_devices []`, `frames_analysed 0`, 253 accepted
+and 896 refused all carrying the reason `not_running`, state never confirmed, **`restart_count` exactly
+1**, `fell_back false`. **A failed route claiming no device is the correct rendering**, and the product
+refuses to *construct* a failed route with no stated reason.
+
+**Silent: OPEN, and it cannot be closed on this machine.** All three devices execute where asked, so
+the substitution never occurs naturally, and `compile_failure` kills the worker *before it runs
+anything* - a loud failure. **No fault was invented to produce a silent one**, because inventing one
+and reporting that fallback was observed is the exact failure this project exists to prevent.
+
+### M2.9 Presenter-driven selection - observed
+
+`--select A=GPU` through `run_windowed`, this session:
+
+```
+[select] requested {'A': 'GPU'} -> acknowledged=True bounded_by='confirmed' generation=2 in 1.293 s;
+          confirmed={'A': ['GPU.0']}; unconfirmed=[]
+219 badge samples, three values in order:
+  device: pending - CPU not yet confirmed
+  device: pending - GPU not yet confirmed
+  device: GPU.0
+```
+
+Sampled every 100 ms **on the UI thread**, beside what the supervisor had actually proved at that
+instant. The badge may **lag** the supervisor by a queued hop, and did; it may never **lead** it. At the
+end: `confirmed 'GPU.0'`, a real 1920x1080 frame, 4 overlay boxes, `event_counts {'zone_occupancy': 2}`.
+**This closes M1's criterion 2**, which M1 recorded as demonstrated for placement but not as an
+interactive act.
+
+### M2.10 M2 exit criteria
+
+| # | criterion | verdict |
+|---|---|---|
+| 1 | all four spec 5 toggle combinations execute | **demonstrated** (M2.6) - all four rows walked, 50/50 placements confirmed |
+| 2 | completed jobs attributed to their **actual** devices, per stream | **demonstrated** (M2.2); the *presenter-driven* form measured separately (M2.9) |
+| 3 | pending results cannot paint after a generation change | **demonstrated, WEAKLY** (M2.6) - ~19 discards per toggle, up from 0.6 because the accounting improved, not because there were more proofs |
+| 4 | 50 alternating warm route changes: no crash / leak trend / stale overlay / mislabelled device | **demonstrated**, with the leak **qualified**: clean at a 30 s deadline (15.5 MiB total, 5.76 MiB remainder) and **not** clean at the real 2.0 s gate (182.4 MiB, 175.3 MiB unexplained) |
+| 5 | warm transitions meet 2 s **or the miss is documented with its distribution** | **THE TARGET IS MISSED; THE DISTRIBUTION IS DOCUMENTED** (M2.3) - both halves |
+| 6 | M1 criterion 2 (presenter-driven selection) and criterion 6 (observed fallback) | **both closed** - selection observed (M2.9); the **visible** half of the failure closed (M2.8) and the **silent** half scoped precisely as open |
+
+### M2.11 Unmet gates and open blockers after M2
+
+| # | item | status |
+|---|---|---|
+| 1 | In-process PDH GPU/NPU utilisation | **open, unchanged - M4.** Both `preflight` WARNs are these two telemetry rows |
+| 2 | Utilisation **attribution** | **open, unchanged** - the inference PID never appears as a counter instance |
+| 3 | Shelf-to-basket footage | **not delivered, and unmet by design.** The delivered event is people-in-zone presence, 2 per clip - **not a people count and not a dwell measurement** |
+| 4 | Clip redistribution clearance | **not established** - unchanged |
+| 5 | Detector licence | **AGPL-3.0, unresolved** - M6 |
+| 6 | Code signing | **unmet M6 gate** - M6 ships unsigned |
+| 7 | 1920x1080 DPI gate and `tools/capture_ui.py` | **not run - M3.** This report commits **no screenshot**; the live booth is 2293x960 and M0 measured usable height at 960 px |
+| 8 | AC status | **unavailable, permanently** - unchanged |
+| 9 | Hardware SKU | **unreconciled** - unchanged |
+| 10 | Second annotated frame with a non-square object | **open** - the `w`/`h` transposition blind spot stands and the current annotation's aspect check is **inverted** |
+| 11 | Slot-binding guard's two-entry allow-list | **still line-oriented by design.** M2 added bindings and **added no name** |
+| 12 | Count-bounded `frame_ages_ms` window | **now disclosed on the card**: `window: 256 analysed frames`, ~17 s at 15 fps and ~73 s at 28 frames/8 s |
+| 13 | `tools/preflight.py` for the Tasks 1-2 review | **was not run then and no number was claimed**; first run since is this session's |
+| 14 | **M0 gate 9's SILENT half** | **OPEN and cannot be closed on this machine** (M2.8) - M6 |
+| 15 | **The 2 s warm-transition target** | **MISSED** (M2.3) - distribution documented |
+| 16 | **Leak at the real 2.0 s gate** | **182.4 MiB total, 175.3 MiB unexplained, not characterised** (M2.6) - M6 |
+| 17 | **Task 3's RSS-ratio flake** | `test_nothing_grows_that_the_retained_records_do_not_account_for` - failed once in this session's two full runs and once before it in nine full-suite runs; passes in isolation. It puts a ratio bound on a measurement it shares with five other tests. **Deliberately not fixed here** |
+| 18 | A 60 s+ unattended soak | **not run.** What exists is a 25 s three-camera windowed run and the route-stress holds. M6 |
+| 19 | `--fail-stream` | **a documented fault-injection flag on the shipped CLI** - a **qualification aid**, named as such in the presenter guide, so nobody ships it thinking it is a feature |
+| 20 | Transfer / return event paths on real footage | **open** - test-covered against synthetic tracks; the footage cannot produce a transfer |
+| 21 | `oven` false positive at 0.250770 | **unquantified** - unchanged |
+
+### M2.12 Known costs and limits of M2
+
+- **Suite ~360 s**, with a **pre-existing flake** (item 17 above) that failed once in this session's three
+  full-suite runs and once before it in nine full-suite runs, and passes in isolation. **No test was
+  lost**: against Task 5's tree the two touched test files gained 7 and 6 test methods and **zero were
+  removed**.
+- **A `Repeater` delegate is invisible to `QObject.findChild` and `QObject.children()`** (it is a
+  *visual* child), and **a `Window`'s `childItems()` is empty** because the content item is *assigned*.
+  Two readers built on those APIs reported `MISSING` for every item on a render whose PNG plainly
+  showed all three cards. **That is a reader that would have been a vacuous pass** - the **fourth**
+  instance of this shape in the project.
+- **`Math.max` passes `NaN` through**: the metrics column came back completely empty with **no QML
+  warning**, because at delegate creation the `Repeater` has not counted its own items.
+- **Five live-path assertions were asserting a timing accident** (a starved collector thread yields no
+  valid CPU sample in 14 s) and now assert the obligation either way.
+- **A `Text` keeps its `text` while `visible: false`**, so reading a hidden "no frame" sentence
+  unconditionally reports it on every tile.
+- **`str(QSize(1920, 1080))` is `"PySide6.QtCore.QSize(1920, 1080)"`** on this PySide6, so an
+  assertion written against a bare `1920x1080` compares a representation instead of a measurement.
+- **A mutation sweep can report a survivor that was never aimed at the covering assertion.** It did
+  once here. The remedy was a new assertion, not a softer claim.
+- **This session's machine is measurably slower than earlier the same day** - CPU single-frame p50
+  22.4-22.8 ms against 21.0-21.2 ms, and three-stream frame age 14.3-14.7 s against 10.7-11.3 s.
+  **Not established why.** It is why this report quotes ranges and prefers the committed figure over
+  the best one observed.
+
+**Reproduction.** M2's gate commands need `tools/provision_venv.py` to have run first - `assets/` and
+`logs/` are gitignored. Every record under `docs/qualification/m2-headless/` is **committed** and has
+its command in that directory's `README.md`; nothing in this section rests on a file under `logs\`, or
+on the gitignored milestone working directory, except where it is labelled as such.

@@ -1,0 +1,125 @@
+{
+  "generated_by": "tools/qualify_m0.py",
+  "openvino_runtime": "2026.4.0-22959-99c81491cc3-releases/2026/4",
+  "opencv_version": "5.0.0",
+  "model_id": "yolo11n-fp16",
+  "model_ir_path": "assets/models/yolo11n-fp16/yolo11n.xml",
+  "model_ir_sha256": "4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95",
+  "model_ir_sha256_matches_config_models_json": true,
+  "input_shape": [
+    1,
+    3,
+    640,
+    640
+  ],
+  "num_requests_per_row": 30,
+  "available_devices": [
+    "CPU",
+    "GPU",
+    "NPU"
+  ],
+  "fixture_image": "retail_000.jpg",
+  "fixture_frame_index": 0,
+  "startup": {
+    "definition": "seconds from this module's import to the first inference of the first row completing, and the process uptime at the same moment. The first excludes the interpreter; the second includes it, which is what a cold booth start looks like.",
+    "module_import_to_first_inference_s": 1.0524657000787556,
+    "process_uptime_at_first_inference_s": 4.784093856811523,
+    "note": "compile and warmup happen inside this window on the first row; they are not added to it, and they are also reported per row."
+  },
+  "notes": [
+    "rss_bytes is the HOST process resident set (psutil), not accelerator memory. The NPU's own buffer is not visible through any property this milestone reads.",
+    "latency_ms_* are nearest-rank percentiles of the timed loop only; the single warmup inference is outside the timed span and is reported as warmup_seconds.",
+    "requests_per_second is num_requests divided by the timed span only.",
+    "EXECUTION_DEVICES is read from the request's own compiled model after the warmup inference, and normalised: the plugins return ['CPU'], ['GPU.0'] and the bare string 'NPU' respectively."
+  ],
+  "rows": [
+    {
+      "row": "CPU",
+      "caption": "explicit per-device compile, one warmup, then the timed loop",
+      "to_first_inference_s": 0.9340035999193788,
+      "device_id": "CPU",
+      "full_name": "Intel(R) Core(TM) Ultra 9 288V",
+      "compile_seconds": 0.18876220006495714,
+      "warmup_seconds": 0.025349700008518994,
+      "requests": 30,
+      "latency_ms_p50": 22.805599961429834,
+      "latency_ms_p95": 24.803200038149953,
+      "latency_ms_min": 21.336000063456595,
+      "latency_ms_max": 25.523400050587952,
+      "requests_per_second": 43.44871574132585,
+      "execution_devices": [
+        "CPU"
+      ],
+      "rss_bytes": 349728768,
+      "error": null,
+      "placed_on_requested_device": true,
+      "failed": false
+    },
+    {
+      "row": "GPU",
+      "caption": "explicit per-device compile, one warmup, then the timed loop",
+      "to_first_inference_s": 0.7708880000282079,
+      "device_id": "GPU",
+      "full_name": "Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)",
+      "compile_seconds": 0.6243834000779316,
+      "warmup_seconds": 0.009324499987997115,
+      "requests": 30,
+      "latency_ms_p50": 3.5429999697953463,
+      "latency_ms_p95": 4.614599980413914,
+      "latency_ms_min": 3.2383999787271023,
+      "latency_ms_max": 4.672400071285665,
+      "requests_per_second": 267.36299867808066,
+      "execution_devices": [
+        "GPU.0"
+      ],
+      "rss_bytes": 428167168,
+      "error": null,
+      "placed_on_requested_device": true,
+      "failed": false
+    },
+    {
+      "row": "NPU",
+      "caption": "explicit per-device compile, one warmup, then the timed loop",
+      "to_first_inference_s": 1.7662143000634387,
+      "device_id": "NPU",
+      "full_name": "Intel(R) AI Boost",
+      "compile_seconds": 1.5445161999668926,
+      "warmup_seconds": 0.009059100062586367,
+      "requests": 30,
+      "latency_ms_p50": 5.207399954088032,
+      "latency_ms_p95": 13.696799986064434,
+      "latency_ms_min": 4.720599972642958,
+      "latency_ms_max": 13.859899947419763,
+      "requests_per_second": 162.06807502280012,
+      "execution_devices": [
+        "NPU"
+      ],
+      "rss_bytes": 514039808,
+      "error": null,
+      "placed_on_requested_device": true,
+      "failed": false
+    },
+    {
+      "row": "CPU-fallback-baseline",
+      "caption": "CPU-only fallback baseline (same model, same shape, explicitly CPU)",
+      "to_first_inference_s": 0.8900408999761567,
+      "device_id": "CPU",
+      "full_name": "Intel(R) Core(TM) Ultra 9 288V",
+      "compile_seconds": 0.1452054000692442,
+      "warmup_seconds": 0.027697899960912764,
+      "requests": 30,
+      "latency_ms_p50": 22.749700001440942,
+      "latency_ms_p95": 25.36680002231151,
+      "latency_ms_min": 21.06239995919168,
+      "latency_ms_max": 25.708100060001016,
+      "requests_per_second": 43.32153736157943,
+      "execution_devices": [
+        "CPU"
+      ],
+      "rss_bytes": 529485824,
+      "error": null,
+      "placed_on_requested_device": true,
+      "failed": false
+    }
+  ]
+}
