@@ -21,15 +21,19 @@ logical canvas is still 1920x1080 and the file is 3840x2160; asserting the logic
 at every scale and prove nothing. **`QImage.devicePixelRatio()` is `1.00` at every scale**, including
 the 3840x2160 grab, so it is reported in each JSON and is *not* the size signal.
 
-**The strings are identical across all four scales** — verified. The scale is a rendering scale, not
-a layout change: Qt renders the same logical layout at more pixels. What *does* change with scale is
-pixel density, and Task 2's gate is what measures whether that density is legible.
+**The strings and the logical extents are identical across all four scales** — verified by
+comparing the four maps. The scale is a rendering scale, not a layout change: Qt renders the same
+logical layout at more pixels. So the honest reading of these four files is **narrow**: the logical
+layout is unchanged, the pixel count grew 1x / 1.25x / 1.5x / 2x, and nothing overflows at any of
+them. **It is not evidence that the layout is legible at 200%** — pixel density is the only thing
+these files vary, and legibility at 2-3 m is measured by **M3 Task 6's readability review**, not
+inferred from four PNGs.
 
 ## What each JSON carries
 
 `strings` — every named item's `text`, read from the running scene graph. `truncated`, `overflow`,
 `absent`, `unreachable`, `geometry_unavailable`, `extents`, `clip_sources`, `visible`,
-`opened_during_read`, `read_window_closed`, `qobject_hits` / `qobject_missed`,
+**`font_pixels`**, `opened_during_read`, `read_window_closed`, `qobject_hits` / `qobject_missed`,
 `qobject_child_count`, `glyph_pixels`, `seed_provenance`.
 
 **`strings` came out of the scene, not out of the source.** The reader runs inside an audit window:
@@ -37,20 +41,49 @@ pixel density, and Task 2's gate is what measures whether that density is legibl
 every scale. `read_window_closed` says the window was closed, because an audit that is never closed
 proves nothing.
 
-## What these four captures already say
+## What these four captures say
 
-- **`overflow` is empty at all four scales**, and `clip_sources` is `window` for every item —
-  **no QML file in `app/ui/` sets `clip: true`** (verified: `grep -c 'clip\s*:'` is 0), so the only
-  clip available on this screen is the window's own rect. A card's text spilling past its own card
-  is invisible to this measure, and the harness says so rather than pretending otherwise.
-- **`truncated` names `streamReasonText_C` at all four scales.** The failed camera's stated reason is
-  2 331 characters and does not fit the three lines `ComputeCard.qml` gives it
-  (`maximumLineCount: 3`). The JSON reports **all 2 331 characters** *and* the fact that the visible
-  rendering is the elided prefix — never the prefix alone.
+Re-rendered by **M3 Task 2**, after the 1920x1080 layout work. Every statement below was read out
+of the committed JSONs, not asserted.
+
+- **`overflow`, `truncated`, `absent`, `unreachable` and `geometry_unavailable` are all empty at all
+  four scales.** `overflow` is no longer a statement about the window alone: **`app/ui/` now sets
+  `clip: true`** on `ComputeCard.qml`'s root and its two `Column`s and on `VideoTile.qml`'s root, so
+  `clip_sources` names the actual box each item was measured against —
+  `ancestor:card_A`/`card_B`/`card_C`, `ancestor:cardLeftColumn_*`, `ancestor:cardRightColumn_*`,
+  `ancestor:heroTile`, `ancestor:thumb_B`/`thumb_C`, and `window` for the nine header and footer
+  items. The columns are named for exactly this reason: an unnamed clipping ancestor reports as the
+  bare string `ancestor:` and a reader cannot tell which box overflowed.
+- **`truncated` is empty, which is a change and not an absence.** At M3 Task 1 this list named
+  `streamReasonText_C` at all four scales: the failed camera's stated reason is **2 331 characters**
+  and did not fit the three lines Qt was eliding it into, with **nothing on screen saying so**. The
+  cut is now made **in Python**, at `Theme.CARD_REASON_CHARS`, and the screen reads
+  `route transition to generation 1 was not... +2291 more` — 54 characters naming **2 291 of the
+  2 331 that are not shown**. `record.reason` still publishes the complete message; the JSON's
+  `strings` carries what the card showed, and the empty `truncated` list is the proof that **no
+  second, silent cut was left behind**.
+- **`font_pixels` was added by Task 2**, and it is what makes "no font size changed" checkable. At
+  100%: **18 px on 29 items**, **26 px on 1** (`deviceBadgeText`, `TYPE_LABEL`), **34 px on 3** (the
+  three `streamAgeText_*` headlines, `TYPE_NUMERAL_SMALL`). No other size appears on the screen.
 - **`glyph_pixels` vs `qobject_missed` is the delegate-read proof, in numbers.** `QObject.findChild`
   reaches **4** of the 19 expected names and misses **15** — every one of the misses a `Repeater`
   delegate — while the walk reaches all 19 and the PNG's own pixels show non-background pixels
   inside each one's reported extent.
+
+## The busiest state, and what it cost
+
+**These four captures are the three-streams-stale state plus one failed camera.** That is the state
+the brief rules is the real one, and it is what `allcpu-steady-120s.json` plus
+`route-stress-fault-visible-fallback.json` describe together.
+
+**It is not the hardest case, and the harness is told so rather than left to imply it.** The failed
+camera claims no device, so its right column shows **four** rows with **67.3 px** of slack
+(measured: the reason ends at 744.67, the column's inner bottom is 812.0). A camera that **fell
+back successfully** has a confirmed device — so `cardText_` and `cardWindowNote_` appear — *and* a
+reason from the transition: **six** rows in that column, the reason last, **43.3 px** of slack
+(measured). `tests/test_capture_ui_canvas.py::test_a_camera_with_a_device_and_a_long_reason_still_fits_its_card`
+seeds that six-row case explicitly and asserts the six rows are present **before** asserting the
+layout fits, because a test that passes over four rows has not reached the hard case.
 
 ## Where the seeded numbers come from
 

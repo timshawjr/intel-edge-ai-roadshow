@@ -587,7 +587,23 @@ class ThreeStreamBoothLayout(unittest.TestCase):
         self.assertTrue(self.visible("streamReasonText_C"))
         self.assertIn("restart budget for stream 'C'", reason,
                       f"camera C's own reason must be on camera C's card: {reason!r}")
-        self.assertIn("no device is being claimed for it", reason, reason)
+        # **M3 Task 2 moved this sentence off the card, deliberately, and the badge carries it.**
+        #
+        # The reason is cut in Python at `Theme.CARD_REASON_CHARS` with a marker naming what
+        # is not shown, so "no device is being claimed for it" - **33 characters, first at
+        # index 88 of this 190-character message** - is no longer on screen. What replaced it
+        # is the **badge** three lines above, reading `no device is running`: four words
+        # instead of six, and the assertion at the top of this test is the one that pins it.
+        #
+        # So the claim "a failed camera claims no device" is **still on the screen and still
+        # asserted**, and what the card no longer shows is a *redundant restatement* of it. This
+        # is recorded in the M3 Task 2 report as a change to what a visitor can read, because
+        # trimming a line to make a layout fit without saying so is the failure this project
+        # keeps finding.
+        self.assertNotIn("no device is being claimed for it", reason,
+                         "the reason is cut at a declared budget now; if the whole sentence "
+                         "fits again, CARD_REASON_CHARS is larger than this test assumes and "
+                         "the card is wasting the space")
         # **And the other two cards must not carry it.** This is the whole reason the
         # per-stream error channel exists.
         for sid in ("A", "B"):

@@ -140,6 +140,21 @@ Rectangle {
 
     color: Theme.BG_PANEL
     radius: Theme.RADIUS
+    // **The card clips. M3 Task 2's `clip: true` decision.**
+    //
+    // A `Column` does not clip, and both this card's columns are `Column`s anchored to the
+    // card's top and bottom. So before this, a text longer than the card was **drawn anyway,
+    // over the card below it** - which is the defect this milestone has already recorded twice
+    // (a `Column` that does not clip; the activity line's third line drawn over the pipeline
+    // strip). It is invisible in a screenshot unless you know what the neighbour should say.
+    //
+    // **The consequence, stated rather than discovered:** `capture_ui`'s `overflow` measure
+    // was against the window alone, because `grep -c 'clip: true'` over `app/ui/*.qml` was
+    // **0**. With this line the nearest clipping ancestor is the card, so `overflow` becomes
+    // a **per-card** measure: a card whose content exceeds its own box is now named. That is
+    // the point of the decision - but it also means this card is now *held* to its box, and
+    // any content that does not fit is reported rather than painted over a neighbour.
+    clip: true
     border.color: isFailed ? Theme.COLOR_BAD
         : (record.stale ? Theme.COLOR_WARN : Theme.BORDER)
     // **A stale camera's card is outlined in the warning colour**, so the thing that
@@ -159,13 +174,29 @@ Rectangle {
     // and the left column takes 58% so the figure and the window sit on one line each.
     Column {
         id: identityColumn
+        // **Named, so an `overflow` report says *which* column.** `clip: true` makes this
+        // Column the nearest clipping ancestor of everything in it, and `capture_ui` records
+        // the ancestor's label - so without a name the report says `ancestor:` and a reader
+        // has to guess between the two columns, the card and the window.
+        objectName: "cardLeftColumn_" + card.streamId
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.margins: Theme.SPACING.md
+        // **`sm` (8 px), not `md` (16 px). M3 Task 2.** Measured: with `md` the left column's
+        // content is 180 px tall (26 identity row + 38 age + 40 staleness + 20 window + 40
+        // activity, plus four 4 px gaps), so `md` margins need **212 px** and the card is
+        // **209.3 px** after the overflow fix in `Main.qml`. `sm` needs 196 and leaves 13 px of
+        // slack. **No font size changed** - this is a margin, not a type size, and Task 6
+        // measures the readability margin, so shrinking text to make a layout fit would have
+        // been a false pass.
+        anchors.margins: Theme.SPACING.sm
         anchors.right: rightColumn.left
-        anchors.rightMargin: Theme.SPACING.md
+        anchors.rightMargin: Theme.SPACING.sm
         spacing: Theme.SPACING.xs
+        // **Clipped as well as the card.** The card is the outer bound; this is the inner one,
+        // so a `Column` that outgrows its own margins is reported against the column and not
+        // against the card.
+        clip: true
 
         Row {
             spacing: Theme.SPACING.sm
@@ -222,7 +253,11 @@ Rectangle {
             font.pixelSize: Theme.TYPE_DETAIL
             font.bold: true
             wrapMode: Text.WordWrap
-            maximumLineCount: 2
+            // **From a token, and it is the requirement, not a style.** The staleness line is
+            // the number a passer-by has to be able to read, so its budget is named where a
+            // test can read it. `TYPE_DETAIL` is **unchanged at 18 px**: this task changed no
+            // font size anywhere, and Task 6 measures the 2-3 m margin.
+            maximumLineCount: Theme.CARD_STALENESS_LINES
             elide: Text.ElideRight
         }
         // The window, because a percentile of a bounded deque is not comparable with a
@@ -252,8 +287,8 @@ Rectangle {
             // and the third line of it was drawn *below* the card's own bottom edge - a
             // Repeater delegate has no implicit clipping, so the overflow was drawn over
             // the pipeline strip. The window has its own labelled line now, and this line
-            // is the rate and the two ages.
-            maximumLineCount: 2
+            // is the rate and the two ages. The budget is a token, like the other two.
+            maximumLineCount: Theme.CARD_ACTIVITY_LINES
             elide: Text.ElideRight
         }
     }
@@ -261,12 +296,22 @@ Rectangle {
     // -- right column: placement, backlog, and this camera's reason -------------------
     Column {
         id: rightColumn
+        // Named for the same reason as the left column, and it is the one that matters most:
+        // the reason, the badge, the backlog and the rate all live here, and they are what a
+        // 2 331-character message competes with.
+        objectName: "cardRightColumn_" + card.streamId
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.margins: Theme.SPACING.md
-        width: Math.max(Theme.TYPE_NUMERAL_SMALL * 4, parent.width * 0.42)
+        // **`sm`, for the same arithmetic and the same reason as the left column.**
+        anchors.margins: Theme.SPACING.sm
+        // **The split is a token.** It was `0.42` inline with its complement `0.58` implicit
+        // in `anchors.right: rightColumn.left`, so the two halves of one ratio lived in two
+        // places and could not be checked against each other.
+        width: Math.max(Theme.TYPE_NUMERAL_SMALL * Theme.CARD_COLUMN_MIN_EM,
+                        parent.width * Theme.CARD_COLUMN_SPLIT)
         spacing: Theme.SPACING.xs
+        clip: true
 
         // The placement, from the **confirmed** reading. The requested device rides along
         // inside `badge` only when it differs, so a fallback is visible as a fallback.
@@ -356,18 +401,33 @@ Rectangle {
             font.pixelSize: Theme.TYPE_DETAIL
             elide: Text.ElideRight
         }
-        // supervisor's `errors` is all three concatenated, and a card showing that tells a
-        // presenter which sentences are about the camera they are looking at.
+        // This camera's own stated reason, **already cut and already saying so.**
+        //
+        // `reason_display` is the bridge's string, cut at `Theme.CARD_REASON_CHARS` and
+        // carrying `... +N more`. It is **not** `record.reason`: the complete 2 331-character
+        // message is still published as `reason`, and this is the part that fits.
+        //
+        // **Why the cut is not Qt's to make.** This item used to ask Qt for it -
+        // `wrapMode`, `maximumLineCount: 3`, `elide: Text.ElideRight` - and Qt obliged, so the
+        // screen showed `... stream(s) ['C'] did not confir…` with **nothing on it saying that
+        // 2 291 characters were not shown**. A presenter reading that has no way to know they
+        // are looking at 1.7% of the message, and a silently shortened error is a hidden
+        // error. Cutting in Python at a declared budget makes the loss **visible on the
+        // screen**, assertable in a test, and identical at every DPI scale.
+        //
+        // `elide: Text.ElideRight` **stays** as the backstop, and the harness's `truncated`
+        // list is what says whether the backstop was needed. It should be empty; a test
+        // asserts it is.
         Text {
             width: parent.width
             objectName: "streamReasonText_" + card.streamId
             visible: card.record.reason !== ""
-            text: card.record.reason
+            text: card.record.reason_display
             color: card.isFailed ? Theme.COLOR_BAD : Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_DETAIL
             wrapMode: Text.WordWrap
-            maximumLineCount: 3
+            maximumLineCount: Theme.CARD_REASON_LINES
             elide: Text.ElideRight
         }
     }

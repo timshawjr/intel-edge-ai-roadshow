@@ -1126,15 +1126,37 @@ class UiBridge(QObject):
         reasons = tuple(route.get("errors") or ())
         if reasons:
             reason = "  ".join(str(entry) for entry in reasons)
+            # **M3 Task 2: the cut is decided here, at a stated budget, and it says so.**
+            #
+            # The supervisor's stated reason for a dead worker is 2331 characters (measured,
+            # `docs/qualification/m3-capture/100pct.json`) and the card has room for about
+            # two lines of it. Before this, the card asked Qt to do the cutting
+            # (`wrapMode: WordWrap`, `maximumLineCount: 3`, `elide: Text.ElideRight`), so the
+            # screen showed `route transition to generation 1 was not acknowledged: stream(s)
+            # ['C'] did not confir...` and **nothing on screen said that 2 291 of the 2 331
+            # characters were missing.** A silently shortened error is a hidden error: a
+            # presenter reads a sentence that ends in an ellipsis and has no way to know it is
+            # 40 of 2 331 characters - **1.7%** of the message.
+            #
+            # So `reason_display` is the string the card shows, cut at `CARD_REASON_CHARS`
+            # with the marker naming how much is not shown. `reason` stays complete, because
+            # the full text is still the honest record and the harness can read it.
+            budget = int(_token("CARD_REASON_CHARS"))
+            if len(reason) > budget:
+                hidden = len(reason) - budget
+                reason_display = (reason[:budget].rstrip()
+                                  + _token("CARD_REASON_MARKER").format(hidden=hidden))
+            else:
+                reason_display = reason
         elif state == "failed":
             # Reachable only if a caller built a failed route by hand. Printed rather than
             # left blank, because a blank reason line reads as a rendering failure and
             # "failed" with nothing after it asks the presenter to guess.
             reason = "failed, and no reason was stated for this stream"
-        elif state == "pending":
-            reason = ""
+            reason_display = reason
         else:
             reason = ""
+            reason_display = ""
 
         badge = ", ".join(confirmed) if confirmed else "no device is running"
         if route.get("fell_back") and requested:
@@ -1156,7 +1178,11 @@ class UiBridge(QObject):
                             if window_samples > 0 else UNAVAILABLE_TEXT),
             "stale": bool(stale),
             "staleness": staleness,
+            # **The complete reason, and the string the card shows.** Both are published, so
+            # "what the screen said" and "what was actually reported" are separately readable
+            # and a test can assert that the second admits the cut in the first.
             "reason": reason,
+            "reason_display": reason_display,
             "summary_text": _summary_line(fps=fps, age_p50=age_p50, age_p95=age_p95),
         }
 

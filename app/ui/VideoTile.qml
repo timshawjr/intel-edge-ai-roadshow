@@ -36,6 +36,12 @@ import QtQuick
 Item {
     id: tile
 
+    // **The tile clips. M3 Task 2**, for the same reason the card does: two tiles share a row
+    // and an `Item` does not clip, so a tile whose contents outgrew it would paint over its
+    // neighbour. `capture_ui`'s `overflow` measure walks to the nearest clipping ancestor, so
+    // this line also gives that measure a per-tile bound instead of the window's.
+    clip: true
+
     /// Which camera this tile shows. **Required**, and it is what the image is addressed by.
     property string streamId: ""
     /// True for the hero. Thumbnails get the border and the caption only.

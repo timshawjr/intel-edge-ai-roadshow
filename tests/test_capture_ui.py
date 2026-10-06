@@ -684,39 +684,84 @@ class BoothCapture(unittest.TestCase):
                          f"{result.strings.get('streamBadgeText_C')!r}")
         from tools.capture_ui import load_measured_seed
         reason = load_measured_seed()["failed_reason"]
-        self.assertEqual(result.strings["streamReasonText_C"], reason,
-                         "the stated reason must reach the screen in full")
+        # **M3 Task 2: the card shows `reason_display`, not the complete reason.** The
+        # complete 2331-character message is still what the supervisor stated; the screen
+        # shows the part that fits plus a marker naming what it is not showing. Asserting
+        # equality with the whole message here is exactly what this task removed.
+        shown = result.strings["streamReasonText_C"]
+        self.assertLess(len(shown), len(reason),
+                        f"the screen must not be claiming to show all {len(reason)} "
+                        f"characters; it shows {len(shown)}")
+        self.assertTrue(shown.startswith(reason[:40].rstrip()),
+                        f"the visible reason must begin with the reason itself, unedited: "
+                        f"{shown[:60]!r}")
         self.assertIn("COMPILE FAILURE", reason,
                       f"the seeded reason is the committed supervisor message: {reason[:120]}")
 
-    def test_an_elided_string_is_reported_as_truncated_and_never_shortened(self):
+    def test_the_failure_reason_is_cut_deliberately_and_says_how_much_is_missing(self):
+        """**M3 Task 2 changed this, and the change is the point.**
+
+        Task 1 found the failed camera's reason `truncated` with only an ellipsis glyph on
+        screen. The cut is now made **in Python at a declared budget**
+        (`Theme.CARD_REASON_CHARS`) and the marker names the loss, so `truncated` is empty -
+        Qt has nothing left to elide, and the screen says what it is not showing.
+        """
+        from app.theme import CARD_REASON_CHARS, CARD_REASON_MARKER
         from tools.capture_ui import load_measured_seed
+
         reason = load_measured_seed()["failed_reason"]
+        hidden = len(reason) - CARD_REASON_CHARS
+        marker = CARD_REASON_MARKER.format(hidden=hidden)
         for scale in capture_ui.SCALES:
             result = self.result(scale)
-            self.assertIn("streamReasonText_C", result.truncated,
-                          f"at {scale}% the failed reason does not fit the three lines "
-                          f"ComputeCard.qml gives it (maximumLineCount: 3) and must be named: "
-                          f"{result.truncated}")
-            self.assertEqual(result.strings["streamReasonText_C"], reason,
-                             f"and the harness must still report all "
-                             f"{len(reason)} characters, not the visible prefix")
+            shown = result.strings["streamReasonText_C"]
+            self.assertTrue(shown.endswith(marker),
+                            f"at {scale}% the reason must end by admitting what it is not "
+                            f"showing. Expected the marker {marker!r}; the string ends "
+                            f"{shown[-40:]!r}")
+            self.assertEqual(shown[:CARD_REASON_CHARS].rstrip(), reason[:CARD_REASON_CHARS].rstrip(),
+                             f"at {scale}% the first {CARD_REASON_CHARS} characters must be "
+                             f"the reason itself, verbatim and unedited")
+            self.assertLess(len(shown), len(reason),
+                            f"at {scale}% the screen must be showing less than the whole "
+                            f"reason: {len(shown)} of {len(reason)}")
+            # **And Qt elided nothing**, so there is no second, silent cut behind the first.
+            self.assertNotIn("streamReasonText_C", result.truncated,
+                             f"at {scale}% Qt elided the reason as well, so there are two "
+                             f"cuts and only one of them is visible: {result.truncated}")
 
-    def test_overflow_is_empty_at_every_scale_and_the_clip_used_is_recorded(self):
+    def test_overflow_is_empty_at_every_scale_and_every_clip_is_named(self):
+        """**M3 Task 2 made this a per-card measure.**
+
+        Task 1 could only measure against the window, because `grep -c 'clip: true'` over
+        `app/ui/*.qml` was **0**. The card, its two columns and the three tiles now clip, so
+        the nearest clipping ancestor is the card for most items and the overflow measure has
+        teeth it did not have.
+        """
+        from app.theme import GRID
         for scale in capture_ui.SCALES:
             result = self.result(scale)
             self.assertEqual(result.overflow, (),
-                             f"at {scale}% nothing spills off the window: "
+                             f"at {scale}% nothing spills out of its own card or tile: "
                              f"{list(result.overflow)}")
             self.assertEqual(result.geometry_unavailable, (),
                              f"every item's geometry must be readable: "
                              f"{list(result.geometry_unavailable)}")
-            # **Why it is empty, recorded rather than assumed.** No QML file sets `clip: true`,
-            # so the only clip available is the window's own rect. A reader that did not say
-            # so could not tell a fitted screen from an unmeasured one.
-            self.assertEqual(sorted(set(result.clip_sources.values())), ["window"],
-                             f"at {scale}% every item's clip should be the window: "
-                             f"{sorted(set(result.clip_sources.values()))}")
+            # **Every clip is named.** An unnamed clipping ancestor would report as the bare
+            # string `ancestor:`, and a reader could not tell the two card columns from the
+            # card from the window. The two columns are named precisely so this can be said.
+            for name, source in result.clip_sources.items():
+                self.assertTrue(source == "window" or source.startswith("ancestor:")
+                                and len(source) > len("ancestor:"),
+                                f"{name} is clipped by {source!r}, which names nothing; a "
+                                f"report that cannot say which box overflowed cannot be acted on")
+            # **And the card clips are actually in use**, which is the difference between
+            # "nothing overflowed" and "nothing was measured".
+            sources = set(result.clip_sources.values())
+            self.assertTrue(any(s.startswith("ancestor:card_") for s in sources),
+                            f"at {scale}% no card was used as a clip, so the measure is still "
+                            f"window-only: {sorted(sources)}")
+            self.assertTrue(GRID["main"] > 0, "sanity: the grid still has a main band")
 
     def test_no_expected_item_is_absent_or_unreachable(self):
         for scale in capture_ui.SCALES:

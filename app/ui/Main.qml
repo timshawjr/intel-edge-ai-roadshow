@@ -320,8 +320,21 @@ Window {
                             // render came back with a completely empty metrics column and
                             // no QML warning at all, because a `NaN` geometry is legal. The
                             // model's own length is always in scope.
+                            //
+                            // **The gaps come out of the height, not out of nowhere. M3 Task
+                            // 2.** `parent.height / n` ignores the `Column`'s `spacing`, so the
+                            // cards claimed the full 660 px band **plus** two 16 px gaps: 692
+                            // px of content in 660 px of space. Measured before the fix -
+                            // `card_C` bottom **852** against a main band that ends at **820**,
+                            // i.e. the last card drew **32 px into the footer**. A `Column`
+                            // does not clip, so nothing complained and the harness's `overflow`
+                            // could not see it either, because nothing clips. Now:
+                            // `(660 - 16 * 2) / 3 = 209.33` per card, and the column ends
+                            // exactly on the band.
                             height: Math.max(Theme.TYPE_NUMERAL,
-                                             parent.height / Math.max(1, bridge.stream_ids.length))
+                                             (parent.height
+                                              - Theme.GAP * Math.max(0, bridge.stream_ids.length - 1))
+                                             / Math.max(1, bridge.stream_ids.length))
                             explainKey: "cpu"
                             onExplainRequested: key => window.pinnedExplanationKey = key
                         }

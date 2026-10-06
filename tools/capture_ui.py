@@ -173,6 +173,15 @@ class SceneRead:
     strings: Mapping[str, str]
     text_property: Mapping[str, bool]
     visible: Mapping[str, bool]
+    #: `objectName -> font.pixelSize`, **only for items that have a font** (a `Text`). A
+    #: `Rectangle` is absent rather than `0`, because `0` is not a font size.
+    #:
+    #: Read through `property("font").pixelSize()`, measured to work on this PySide6 - `None`
+    #: for an item with no font, and `property("font.pixelSize")` returns `None` for **every**
+    #: item including a `Text`, which is why the `QFont` is asked for the number instead.
+    #: **This is what lets a layout claim "no font size changed" be checked rather than
+    #: asserted**, and it is the measurement M3 Task 6's readability review needs.
+    font_pixels: Mapping[str, int]
     truncated: tuple[str, ...]
     overflow: tuple[str, ...]
     geometry_unavailable: tuple[str, ...]
@@ -189,6 +198,7 @@ class SceneRead:
             "strings": dict(self.strings),
             "text_property": dict(self.text_property),
             "visible": dict(self.visible),
+            "font_pixels": dict(self.font_pixels),
             "truncated": list(self.truncated),
             "overflow": list(self.overflow),
             "geometry_unavailable": list(self.geometry_unavailable),
@@ -219,6 +229,7 @@ class CaptureResult:
     #: can check that claim against the record instead of taking it.
     image_dpr: float
     strings: Mapping[str, str]
+    font_pixels: Mapping[str, int]
     truncated: tuple[str, ...]
     overflow: tuple[str, ...]
     absent: tuple[str, ...]
@@ -255,6 +266,7 @@ class CaptureResult:
             "pixel_height": self.pixel_height,
             "image_dpr": self.image_dpr,
             "strings": dict(self.strings),
+            "font_pixels": dict(self.font_pixels),
             "visible": dict(self.visible),
             "truncated": list(self.truncated),
             "overflow": list(self.overflow),
@@ -422,6 +434,7 @@ def read_scene(root: Any, *,
     geometry_unavailable: list[str] = []
     clip_sources: dict[str, str] = {}
     extents: dict[str, tuple[float, float, float, float]] = {}
+    font_pixels: dict[str, int] = {}
     failures: list[str] = []
     items_seen = 0
 
@@ -451,6 +464,15 @@ def read_scene(root: Any, *,
             flag = None
         if flag is True:
             truncated.append(name)
+        # **The font size, for every named item that has one.** Absent from the map rather
+        # than `0` for an item with no font: a `Rectangle` has no font size and `0` would be
+        # a number a layout claim could be checked against by accident.
+        try:
+            font = item.property("font")
+            if font is not None:
+                font_pixels[name] = int(font.pixelSize())
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
         box = _geometry(item)
         if box is None:
             geometry_unavailable.append(name)
@@ -475,6 +497,7 @@ def read_scene(root: Any, *,
         strings=strings,
         text_property=text_property,
         visible=visible,
+        font_pixels=font_pixels,
         truncated=tuple(sorted(truncated)),
         overflow=tuple(sorted(overflow)),
         geometry_unavailable=tuple(sorted(geometry_unavailable)),
@@ -590,10 +613,86 @@ def load_measured_seed(steady: pathlib.Path | None = None,
 
 
 # --------------------------------------------------------------------------------------
+# The seed -> route rule, written ONCE and shared with the child
+# --------------------------------------------------------------------------------------
+#
+# **It was inline in the child, and that is where the bug was.** The first version of this task
+# added `errors` and `keep_confirmed` and, in the same edit, changed the failed stream's state to
+# `entry.get("state", "failed")`. `entry` **always** has a `state`, and the committed
+# steady-state measurement records all three cameras as `active`, so the failed camera was
+# rendered **`active` with no confirmed device** - a state the booth cannot be in and the state
+# that makes the card look healthy. The capture reported `items 57, strings 32` instead of
+# `56, 33` and still exited 0, because a capture has no opinion about whether the state it was
+# asked for is the state it should be in.
+#
+# So the rule is a **module-level function with no Qt dependency**, `exec`'d into this module's
+# namespace and pasted into the child unchanged. That gives three things: it is unit-testable
+# without spawning anything, the parent and the child cannot drift, and `seed_state` is the only
+# way to override a state - spelled differently from `state` so it cannot be hit by accident.
+
+_ROUTES_FROM_SEED_SOURCE = r'''
+def routes_from_seed(seed):
+    """The bridge routes a seed describes, one dict per stream.
+
+    ## The default, and what each optional key changes
+
+    The stream named by `seed["failed_stream"]` is **failed**, claims **no** device, and carries
+    `seed["failed_reason"]`. Every other stream keeps its measured `state`, its measured
+    `confirmed_devices`, and has no reason.
+
+    Three optional per-stream keys exist because **the busiest layout is not the one the default
+    seed produces**, and this is the reasoning behind each of them:
+
+    - `errors` - a stated reason on a camera that is *not* the failed one. The failed camera has
+      no confirmed device, so its right column shows four rows with **67.3 px** of slack
+      (measured). The case that stresses a card is a camera that **fell back successfully**: it
+      has a confirmed device, so `cardText_` and `cardWindowNote_` appear, *and* a reason from
+      the transition - six rows in one column, the reason last, **43.3 px** of slack (measured).
+    - `keep_confirmed` - the failed stream keeps its measured `confirmed_devices`, so the same
+      six-row shape can be built on the failed stream itself.
+    - `seed_state` - overrides the state **for any stream**, including the failed one. Named
+      differently from `state` on purpose: `state` is what was measured, `seed_state` is what a
+      caller is choosing, and the two must never be confused.
+
+    With none of the three present the result is byte-identical to what M3 Task 1 seeded.
+    """
+    routes = []
+    for entry in seed["streams"]:
+        failed = entry["stream_id"] == seed["failed_stream"]
+        errors = list(entry.get("errors") or [])
+        if failed and not errors:
+            errors = [seed["failed_reason"]]
+        confirmed = list(entry["confirmed_devices"])
+        if failed and not entry.get("keep_confirmed"):
+            confirmed = []
+        routes.append({
+            "stream": entry["stream_id"],
+            "requested": entry["requested_device"],
+            "confirmed": confirmed,
+            "state": entry.get("seed_state", "failed" if failed else entry["state"]),
+            "fell_back": bool(entry.get("fell_back")),
+            "errors": errors,
+        })
+    return routes
+'''
+
+# One definition, live in this module's namespace. `exec` rather than a copy, because a copy is
+# two pieces of code that can disagree and the disagreement is invisible.
+exec(compile(_ROUTES_FROM_SEED_SOURCE, "<routes_from_seed>", "exec"), globals())
+
+
+# --------------------------------------------------------------------------------------
 # The child program
 # --------------------------------------------------------------------------------------
 
 _CHILD = r'''
+# **The seed -> route rule is pasted in above, not reimplemented here.** It is
+# `_ROUTES_FROM_SEED_SOURCE` verbatim, so this child and the parent module share one definition
+# and cannot drift. An earlier version had the rule inline in this string, and it silently
+# rendered the failed camera as `active` with no confirmed device - a state the booth cannot be
+# in. The comment on `_ROUTES_FROM_SEED_SOURCE` is the whole story.
+''' + _ROUTES_FROM_SEED_SOURCE + r'''
+
 """Build (or drive) the real booth scene, settle it, grab it, and read every string back.
 
 Run as a **file**, never with `python -c`: `QT_SCALE_FACTOR` is read by the platform plugin at
@@ -831,18 +930,9 @@ def run_seed(font):
 
     seed = ARGS["seed"]
     bridge.set_streams([entry["stream_id"] for entry in seed["streams"]])
-    for entry in seed["streams"]:
-        sid = entry["stream_id"]
-        failed = sid == seed["failed_stream"]
-        bridge.apply_route({
-            "stream": sid,
-            "requested": entry["requested_device"],
-            "confirmed": [] if failed else list(entry["confirmed_devices"]),
-            "state": "failed" if failed else entry["state"],
-            "fell_back": False,
-            "errors": [seed["failed_reason"]] if failed else [],
-        })
-        bridge.set_stream_metrics(sid, age_p50_ms=entry["age_p50_ms"],
+    for entry, route in zip(seed["streams"], routes_from_seed(seed)):
+        bridge.apply_route(route)
+        bridge.set_stream_metrics(entry["stream_id"], age_p50_ms=entry["age_p50_ms"],
                                   age_p95_ms=entry["age_p95_ms"],
                                   backlog=entry["backlog"],
                                   analysis_fps=entry["analysis_fps"],
@@ -1045,6 +1135,7 @@ def capture(width: int | None = None, height: int | None = None,
         pixel_height=int(report["pixel_height"]),
         image_dpr=float(report["image_dpr"]),
         strings=dict(scene["strings"]),
+        font_pixels=dict(scene.get("font_pixels") or {}),
         truncated=tuple(scene["truncated"]),
         overflow=tuple(scene["overflow"]),
         absent=tuple(scene["absent"]),
