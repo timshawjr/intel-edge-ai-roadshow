@@ -1,0 +1,535 @@
+{
+  "absent": [],
+  "clip_sources": {
+    "cardText_system_cpu_percent": "window",
+    "cardWindowNote_": "window",
+    "cardWindowNote_system_cpu_percent": "window",
+    "card_A": "window",
+    "card_B": "window",
+    "card_C": "window",
+    "deviceBadgeText": "window",
+    "eventCountRow": "window",
+    "heroTile": "window",
+    "stalenessText": "window",
+    "streamActivityText_A": "window",
+    "streamActivityText_B": "window",
+    "streamActivityText_C": "window",
+    "streamAgeText_A": "window",
+    "streamAgeText_B": "window",
+    "streamAgeText_C": "window",
+    "streamBacklogText_A": "window",
+    "streamBacklogText_B": "window",
+    "streamBacklogText_C": "window",
+    "streamBadgeBox_A": "window",
+    "streamBadgeBox_B": "window",
+    "streamBadgeBox_C": "window",
+    "streamBadgeText_A": "window",
+    "streamBadgeText_B": "window",
+    "streamBadgeText_C": "window",
+    "streamRateText_A": "window",
+    "streamRateText_B": "window",
+    "streamRateText_C": "window",
+    "streamReasonText_A": "window",
+    "streamReasonText_B": "window",
+    "streamReasonText_C": "window",
+    "streamStaleText_A": "window",
+    "streamStaleText_B": "window",
+    "streamStaleText_C": "window",
+    "streamWindowText_A": "window",
+    "streamWindowText_B": "window",
+    "streamWindowText_C": "window",
+    "thumb_B": "window",
+    "thumb_C": "window",
+    "tileImage_A": "window",
+    "tileImage_B": "window",
+    "tileImage_C": "window",
+    "tileNoFrameText_A": "window",
+    "tileNoFrameText_B": "window",
+    "tileNoFrameText_C": "window",
+    "tileNoFrame_A": "window",
+    "tileNoFrame_B": "window",
+    "tileNoFrame_C": "window"
+  },
+  "dpr": 2.0,
+  "elapsed_s": 0.3216323000378907,
+  "extents": {
+    "cardText_system_cpu_percent": [
+      1635.1399999999999,
+      262.0,
+      244.85999999999999,
+      20.0
+    ],
+    "cardWindowNote_": [
+      1635.1399999999999,
+      648.0,
+      244.85999999999999,
+      20.0
+    ],
+    "cardWindowNote_system_cpu_percent": [
+      1635.1399999999999,
+      176.0,
+      244.85999999999999,
+      20.0
+    ],
+    "card_A": [
+      1313.0,
+      160.0,
+      583.0,
+      220.0
+    ],
+    "card_B": [
+      1313.0,
+      396.0,
+      583.0,
+      220.0
+    ],
+    "card_C": [
+      1313.0,
+      632.0,
+      583.0,
+      220.0
+    ],
+    "deviceBadgeText": [
+      1741.0,
+      57.0,
+      143.0,
+      30.0
+    ],
+    "eventCountRow": [
+      122.0,
+      931.0,
+      747.0,
+      20.0
+    ],
+    "heroTile": [
+      24.0,
+      160.0,
+      1273.0,
+      538.4
+    ],
+    "stalenessText": [
+      194.0,
+      1019.0,
+      170.0,
+      20.0
+    ],
+    "streamActivityText_A": [
+      1329.0,
+      320.0,
+      290.14,
+      40.0
+    ],
+    "streamActivityText_B": [
+      1329.0,
+      556.0,
+      290.14,
+      40.0
+    ],
+    "streamActivityText_C": [
+      1329.0,
+      792.0,
+      290.14,
+      40.0
+    ],
+    "streamAgeText_A": [
+      1329.0,
+      210.0,
+      290.14,
+      38.0
+    ],
+    "streamAgeText_B": [
+      1329.0,
+      446.0,
+      290.14,
+      38.0
+    ],
+    "streamAgeText_C": [
+      1329.0,
+      682.0,
+      290.14,
+      38.0
+    ],
+    "streamBacklogText_A": [
+      1635.1399999999999,
+      214.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamBacklogText_B": [
+      1635.1399999999999,
+      450.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamBacklogText_C": [
+      1635.1399999999999,
+      686.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamBadgeBox_A": [
+      1635.1399999999999,
+      176.0,
+      244.85999999999999,
+      34.0
+    ],
+    "streamBadgeBox_B": [
+      1635.1399999999999,
+      412.0,
+      244.85999999999999,
+      34.0
+    ],
+    "streamBadgeBox_C": [
+      1635.1399999999999,
+      648.0,
+      244.85999999999999,
+      34.0
+    ],
+    "streamBadgeText_A": [
+      1643.1399999999999,
+      176.0,
+      228.85999999999999,
+      34.0
+    ],
+    "streamBadgeText_B": [
+      1643.1399999999999,
+      412.0,
+      228.85999999999999,
+      34.0
+    ],
+    "streamBadgeText_C": [
+      1643.1399999999999,
+      648.0,
+      228.85999999999999,
+      34.0
+    ],
+    "streamRateText_A": [
+      1635.1399999999999,
+      238.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamRateText_B": [
+      1635.1399999999999,
+      474.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamRateText_C": [
+      1635.1399999999999,
+      710.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamReasonText_A": [
+      1635.1399999999999,
+      176.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamReasonText_B": [
+      1635.1399999999999,
+      412.0,
+      244.85999999999999,
+      20.0
+    ],
+    "streamReasonText_C": [
+      1635.1399999999999,
+      734.0,
+      244.85999999999999,
+      60.0
+    ],
+    "streamStaleText_A": [
+      1329.0,
+      252.0,
+      290.14,
+      40.0
+    ],
+    "streamStaleText_B": [
+      1329.0,
+      488.0,
+      290.14,
+      40.0
+    ],
+    "streamStaleText_C": [
+      1329.0,
+      724.0,
+      290.14,
+      40.0
+    ],
+    "streamWindowText_A": [
+      1329.0,
+      296.0,
+      290.14,
+      20.0
+    ],
+    "streamWindowText_B": [
+      1329.0,
+      532.0,
+      290.14,
+      20.0
+    ],
+    "streamWindowText_C": [
+      1329.0,
+      768.0,
+      290.14,
+      20.0
+    ],
+    "thumb_B": [
+      24.0,
+      714.4,
+      628.5,
+      105.60000000000001
+    ],
+    "thumb_C": [
+      668.5,
+      714.4,
+      628.5,
+      105.60000000000001
+    ],
+    "tileImage_A": [
+      24.0,
+      160.0,
+      1273.0,
+      538.4
+    ],
+    "tileImage_B": [
+      24.0,
+      714.4,
+      628.5,
+      105.60000000000001
+    ],
+    "tileImage_C": [
+      668.5,
+      714.4,
+      628.5,
+      105.60000000000001
+    ],
+    "tileNoFrameText_A": [
+      32.0,
+      419.0,
+      1257.0,
+      20.0
+    ],
+    "tileNoFrameText_B": [
+      32.0,
+      757.4,
+      612.5,
+      20.0
+    ],
+    "tileNoFrameText_C": [
+      676.5,
+      757.4,
+      612.5,
+      20.0
+    ],
+    "tileNoFrame_A": [
+      24.0,
+      160.0,
+      1273.0,
+      538.4
+    ],
+    "tileNoFrame_B": [
+      24.0,
+      714.4,
+      628.5,
+      105.60000000000001
+    ],
+    "tileNoFrame_C": [
+      668.5,
+      714.4,
+      628.5,
+      105.60000000000001
+    ]
+  },
+  "frames_settled": 0,
+  "geometry_unavailable": [],
+  "glyph_pixels": {
+    "cardText_system_cpu_percent": 4880,
+    "cardWindowNote_": 0,
+    "cardWindowNote_system_cpu_percent": 4880,
+    "card_A": 95612,
+    "card_B": 0,
+    "card_C": 305,
+    "deviceBadgeText": 4290,
+    "eventCountRow": 0,
+    "heroTile": 219292,
+    "stalenessText": 0,
+    "streamActivityText_A": 1160,
+    "streamActivityText_B": 0,
+    "streamActivityText_C": 0,
+    "streamAgeText_A": 11020,
+    "streamAgeText_B": 0,
+    "streamAgeText_C": 0,
+    "streamBacklogText_A": 4880,
+    "streamBacklogText_B": 0,
+    "streamBacklogText_C": 0,
+    "streamBadgeBox_A": 8296,
+    "streamBadgeBox_B": 0,
+    "streamBadgeBox_C": 0,
+    "streamBadgeText_A": 7752,
+    "streamBadgeText_B": 0,
+    "streamBadgeText_C": 0,
+    "streamRateText_A": 4880,
+    "streamRateText_B": 0,
+    "streamRateText_C": 0,
+    "streamReasonText_A": 4880,
+    "streamReasonText_B": 0,
+    "streamReasonText_C": 0,
+    "streamStaleText_A": 11600,
+    "streamStaleText_B": 0,
+    "streamStaleText_C": 0,
+    "streamWindowText_A": 5800,
+    "streamWindowText_B": 0,
+    "streamWindowText_C": 0,
+    "thumb_B": 2968,
+    "thumb_C": 0,
+    "tileImage_A": 219292,
+    "tileImage_B": 2968,
+    "tileImage_C": 0,
+    "tileNoFrameText_A": 400,
+    "tileNoFrameText_B": 400,
+    "tileNoFrameText_C": 0,
+    "tileNoFrame_A": 219292,
+    "tileNoFrame_B": 2968,
+    "tileNoFrame_C": 0
+  },
+  "height": 1080,
+  "image_dpr": 1.0,
+  "items_seen": 50,
+  "json_path": null,
+  "mode": "seed",
+  "opened_during_read": [],
+  "overflow": [],
+  "pixel_height": 2160,
+  "pixel_width": 3840,
+  "png_path": "docs\\qualification\\m3-capture\\200pct.png",
+  "qobject_child_count": 81,
+  "qobject_hits": [
+    "deviceBadgeText",
+    "heroTile",
+    "tileNoFrameText_A",
+    "eventCountRow"
+  ],
+  "qobject_missed": [
+    "card_A",
+    "card_B",
+    "card_C",
+    "streamAgeText_A",
+    "streamAgeText_B",
+    "streamAgeText_C",
+    "streamStaleText_A",
+    "streamStaleText_C",
+    "streamWindowText_A",
+    "streamBacklogText_A",
+    "streamRateText_A",
+    "streamBadgeText_A",
+    "streamReasonText_C",
+    "thumb_B",
+    "thumb_C"
+  ],
+  "read_window_closed": true,
+  "scale_percent": 200,
+  "seed_provenance": {
+    "age_p50_ms": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json",
+    "age_p95_ms": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json",
+    "analysis_fps": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json (frames_analysed / seconds)",
+    "backlog": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json",
+    "failed_reason": "docs\\qualification\\m2-headless\\route-stress-fault-visible-fallback.json",
+    "failed_state": "seeded, not measured: this is a fault injected so the failed card's own string is on screen to be measured",
+    "window_samples": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json"
+  },
+  "settle_missed": [],
+  "settled": true,
+  "strings": {
+    "cardText_system_cpu_percent": "no CPU sample yet",
+    "cardWindowNote_": "measured unavailable",
+    "cardWindowNote_system_cpu_percent": "measured unavailable",
+    "deviceBadgeText": "device: CPU",
+    "eventCountRow": "zone_occupancy unavailable    candidate_transfer unavailable    candidate_return unavailable",
+    "stalenessText": "telemetry unavailable",
+    "streamActivityText_A": "analysis fps 13.44 fps  \u00b7  frame age p50 11.7 s  p95 12.3 s",
+    "streamActivityText_B": "analysis fps 13.56 fps  \u00b7  frame age p50 10.7 s  p95 11.4 s",
+    "streamActivityText_C": "analysis fps 13.50 fps  \u00b7  frame age p50 11.1 s  p95 11.9 s",
+    "streamAgeText_A": "11.7 s",
+    "streamAgeText_B": "10.7 s",
+    "streamAgeText_C": "11.1 s",
+    "streamBacklogText_A": "backlog 187 frames",
+    "streamBacklogText_B": "backlog 173 frames",
+    "streamBacklogText_C": "backlog 180 frames",
+    "streamBadgeText_A": "CPU",
+    "streamBadgeText_B": "CPU",
+    "streamBadgeText_C": "no device is running",
+    "streamRateText_A": "analysis 13.44 fps",
+    "streamRateText_B": "analysis 13.56 fps",
+    "streamRateText_C": "analysis 13.50 fps",
+    "streamReasonText_A": "",
+    "streamReasonText_B": "",
+    "streamReasonText_C": "route transition to generation 1 was not acknowledged: stream(s) ['C'] did not confirm a placement on {'C': 'NPU'} within 1.825 s (bounded_by='timeout'). 0 result(s) from the superseded generation were discarded. Nothing to recover for stream(s) ['C']: they are already on {'C': 'NPU'}, the device the recovery wanted, so there was no route change to make. They were **failed** with no worker, so they have been re-selected on the same device, which does spawn a worker and gives them a fresh restart budget. What the failing route said: stream C: (\"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU')\", \"COMPILE FAILURE INJECTED BY THE SUPERVISOR'S TEST SEAM (compile_failure=True). The worker process raised before compiling anything. This says nothing about the requested device's health; it exists so the supervisor's detect-a-dead-worker, restart-once and fail-visibly path can be exercised without a device that genuinely will not compile. A real compile refusal is covered by tests/test_worker.py, which asks for a device this machine does not have. (worker exit code 1; the worker for stream 'C' on device 'NPU'). The restart budget for stream 'C' at generation 1 is spent, so this route is failed and no device is being claimed for it. The requested device 'NPU' is recorded; re-select one to try again. The other streams are unaffected.\")",
+    "streamStaleText_A": "STALE - this picture is 11.7 s old; the limit is 2 s",
+    "streamStaleText_B": "STALE - this picture is 10.7 s old; the limit is 2 s",
+    "streamStaleText_C": "STALE - this picture is 11.1 s old; the limit is 2 s",
+    "streamWindowText_A": "window: 256 analysed frames",
+    "streamWindowText_B": "window: 256 analysed frames",
+    "streamWindowText_C": "window: 256 analysed frames",
+    "tileNoFrameText_A": "no frame from Camera A yet",
+    "tileNoFrameText_B": "no frame from Camera B yet",
+    "tileNoFrameText_C": "no frame from Camera C yet"
+  },
+  "truncated": [
+    "streamReasonText_C"
+  ],
+  "unreachable": [],
+  "visible": {
+    "cardText_system_cpu_percent": true,
+    "cardWindowNote_": false,
+    "cardWindowNote_system_cpu_percent": false,
+    "card_A": true,
+    "card_B": true,
+    "card_C": true,
+    "deviceBadgeText": true,
+    "eventCountRow": true,
+    "heroTile": true,
+    "stalenessText": true,
+    "streamActivityText_A": true,
+    "streamActivityText_B": true,
+    "streamActivityText_C": true,
+    "streamAgeText_A": true,
+    "streamAgeText_B": true,
+    "streamAgeText_C": true,
+    "streamBacklogText_A": true,
+    "streamBacklogText_B": true,
+    "streamBacklogText_C": true,
+    "streamBadgeBox_A": true,
+    "streamBadgeBox_B": true,
+    "streamBadgeBox_C": true,
+    "streamBadgeText_A": true,
+    "streamBadgeText_B": true,
+    "streamBadgeText_C": true,
+    "streamRateText_A": true,
+    "streamRateText_B": true,
+    "streamRateText_C": true,
+    "streamReasonText_A": false,
+    "streamReasonText_B": false,
+    "streamReasonText_C": true,
+    "streamStaleText_A": true,
+    "streamStaleText_B": true,
+    "streamStaleText_C": true,
+    "streamWindowText_A": true,
+    "streamWindowText_B": true,
+    "streamWindowText_C": true,
+    "thumb_B": true,
+    "thumb_C": true,
+    "tileImage_A": true,
+    "tileImage_B": true,
+    "tileImage_C": true,
+    "tileNoFrameText_A": true,
+    "tileNoFrameText_B": true,
+    "tileNoFrameText_C": true,
+    "tileNoFrame_A": true,
+    "tileNoFrame_B": true,
+    "tileNoFrame_C": true
+  },
+  "walk_complete": true,
+  "width": 1920
+}
