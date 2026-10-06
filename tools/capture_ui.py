@@ -29,7 +29,30 @@ are kept apart, because collapsing them is the defect:
   Those names are listed in `unreachable`, and `walk_complete` is `False`.
 
 A fourth state is per-field: an item with **no `text` property at all** (an `Item`, a `Rectangle`)
-is reached but has `text is None`, which is not `""`.
+is reached but has `text is None`, which is not `""`. It is carried in
+`CaptureResult.text_property` and written to every JSON as **`text_property`**, so the fourth state is
+discernible from the record rather than only from a docstring.
+
+## `glyph_pixels` is counted in **device** pixels, and that correction is load-bearing
+
+For a named item, `glyph_pixels[name]` is the number of pixels **inside its reported extent** that
+differ from the image's modal colour. The image is a **device-pixel** image: at 125 % a 1920x1080
+logical canvas is a **2400x1350** file. So the box must be scaled by `image.width() / window.width()`
+before it indexes the buffer.
+
+**The first version did not, and reported `0` for items that are plainly drawn.** `streamStaleText_A`
+read `0` at 150 % and `680` at 125 %, `eventCountRow` read `0` at 150 % and 200 %, and **35 of 54**
+named items read `0` at 150 %. A measure whose whole purpose is to prove an item *is drawn* reported
+"not drawn" for a third of the screen, and the only assertion on it ran at 100 % where the scale
+factor is `1.0` and the bug is invisible. **A self-check that only passes at the scale where the bug
+cannot show is not a self-check.** The scaled values are in every committed JSON and
+`tests/test_capture_ui.py` asserts `glyph_pixels > 0` for **every** `BOOTH_EXPECTED` name at **every**
+scale, against the saved PNG.
+
+**What the count is, precisely: non-modal pixels, not glyph outlines.** A panel fill, a border stroke
+or a glyph all count. So a large positive number is evidence that *something is drawn inside that
+box*, and it is not a measure of how many glyphs there are or how dark they are. Legibility at 2-3 m
+is M3 Task 6's measurement; this is "the box is not empty".
 
 ## Truncation and overflow are different faults
 
@@ -42,11 +65,16 @@ is reached but has `text is None`, which is not `""`.
   rect**, and `clip_sources` records which of the two applied. It is never estimated from a font
   metric and never computed with `Math.max` over a possibly-`NaN` height.
 
-**No item in the shipped QML sets `clip: true`** (measured - `grep` finds no `clip:` in
-`app/ui/*.qml`, and the live read returns `clip=False` for every named item), so on the real booth
-screen `overflow` is measured against the window rect. That is a real result and it is reported as
-one; a card's text spilling past its own card is invisible to this measure, and the harness says so
-through `clip_sources` rather than pretending otherwise.
+**What clips, and what deliberately does not.** `clip: true` is set on **four** items in the shipped
+QML: the card root and its two `Column`s in `ComputeCard.qml`, and the tile root in `VideoTile.qml`.
+So `overflow` is mostly a **per-card** and **per-tile** measure, and `clip_sources` names which box
+applied - `ancestor:card_A`, `ancestor:cardLeftColumn_A`, `ancestor:thumb_B` - so a report that says
+"something overflowed" says *which box*. **The bands do not clip**, by choice (M3 Task 2's recorded
+decision): the header `Column`, the footer `Item`, the hero column and the pipeline strip own the rest
+of their own space, and clipping them would have swapped a per-card measure for a per-band one without
+adding information. Those items read `window` in `clip_sources`, which is the honest answer for them -
+and it is the answer to read, because for those items `overflow == ()` only says nothing ran off the
+canvas.
 
 ## Where the seeded numbers come from
 
@@ -116,15 +144,24 @@ import time
 from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
+    "BOOTH_EXPECTED",
+    "BOOTH_NONEMPTY",
     "CaptureResult",
     "NotProvisioned",
     "READ_AUDIT",
     "SCALES",
     "SceneRead",
+    "TOLERANCE_PX",
     "capture",
     "load_measured_seed",
     "main",
     "read_scene",
+    # **`routes_from_seed` is exported because tests import it.** The rule lives in this module
+    # as one definition (`_ROUTES_FROM_SEED_SOURCE`) that is `exec`'d here and pasted into the
+    # child; `__all__` is what a reader consults for "what is this module's surface", and
+    # leaving out the one function with six tests on it made the list misleading rather than
+    # merely incomplete.
+    "routes_from_seed",
     "walk_items",
 ]
 
@@ -229,6 +266,11 @@ class CaptureResult:
     #: can check that claim against the record instead of taking it.
     image_dpr: float
     strings: Mapping[str, str]
+    #: **`objectName -> "has a `text` property"`.** Carried here rather than only inside
+    #: `SceneRead` because it is the **fourth per-field state**: an item with no `text`
+    #: property at all is reached, is *not* in `strings`, and is *not* `""`. Dropping this
+    #: field made the docstring's claim about it undiscernible from the committed evidence.
+    text_property: Mapping[str, bool]
     font_pixels: Mapping[str, int]
     truncated: tuple[str, ...]
     overflow: tuple[str, ...]
@@ -239,14 +281,33 @@ class CaptureResult:
     extents: Mapping[str, tuple[float, float, float, float]]
     visible: Mapping[str, bool]
     walk_complete: bool
+    #: **The paths the walk could not descend**, i.e. the reason `walk_complete` may be
+    #: `False`. Reported so "the walk did not finish" is actionable rather than a bare boolean.
+    walk_failures: tuple[str, ...]
     items_seen: int
     settled: bool
     settle_missed: tuple[str, ...]
+    #: **How many readiness polls ran before the scene satisfied the capture.**
+    #:
+    #: **`settled` is a construction check, not a rendering check** - it says every expected
+    #: name is in the walk, and a capture in which every binding yielded `""` satisfies it. So
+    #: the count is reported: a capture that settled on the **first** poll has not waited for
+    #: anything to be rendered, and in live mode it means the screen was read before telemetry
+    #: arrived (measured: the first poll lands about 25 ms after the scene is built).
+    settle_polls: int
+    #: **Expected names that were present but whose `text` was empty.** Non-empty only when the
+    #: caller passed `expect_nonempty`; empty is the honest answer for a capture that did not.
+    empty_nonempty: tuple[str, ...]
     frames_settled: int
     qobject_hits: tuple[str, ...]
     qobject_missed: tuple[str, ...]
     qobject_child_count: int | None
     glyph_pixels: Mapping[str, int]
+    #: **`[device_width / logical_width, device_height / logical_height]`**, the factor the
+    #: pixel count scaled the logical extents by before indexing the buffer. **1.0 / 1.25 / 1.5
+    #: / 2.0 at the four scales**, reported so a reader can see the scaling happened rather than
+    #: take the corrected numbers on trust.
+    glyph_scale: tuple[float, float]
     elapsed_s: float
     mode: str
     seed_provenance: Mapping[str, str]
@@ -266,6 +327,7 @@ class CaptureResult:
             "pixel_height": self.pixel_height,
             "image_dpr": self.image_dpr,
             "strings": dict(self.strings),
+            "text_property": dict(self.text_property),
             "font_pixels": dict(self.font_pixels),
             "visible": dict(self.visible),
             "truncated": list(self.truncated),
@@ -276,14 +338,18 @@ class CaptureResult:
             "clip_sources": dict(self.clip_sources),
             "extents": {k: list(v) for k, v in self.extents.items()},
             "walk_complete": self.walk_complete,
+            "walk_failures": list(self.walk_failures),
             "items_seen": self.items_seen,
             "settled": self.settled,
             "settle_missed": list(self.settle_missed),
+            "settle_polls": self.settle_polls,
+            "empty_nonempty": list(self.empty_nonempty),
             "frames_settled": self.frames_settled,
             "qobject_hits": list(self.qobject_hits),
             "qobject_missed": list(self.qobject_missed),
             "qobject_child_count": self.qobject_child_count,
             "glyph_pixels": dict(self.glyph_pixels),
+            "glyph_scale": list(self.glyph_scale),
             "elapsed_s": self.elapsed_s,
             "mode": self.mode,
             "seed_provenance": dict(self.seed_provenance),
@@ -518,14 +584,20 @@ def read_scene(root: Any, *,
 #: reason a reader can check:
 #:
 #: - **a `Repeater` delegate** - `card_A`, `card_B`, `card_C` and every `stream*Text_*`. **All
-#:   fifteen** of the nineteen names `QObject.findChild` misses on this screen are in this list;
+#:   seventeen** of the twenty-one names `QObject.findChild` misses on this screen are in this list;
 #:   the four it does reach are `deviceBadgeText`, `heroTile`, `tileNoFrameText_A` and
 #:   `eventCountRow`. Measured on the committed `100pct.json`: `qobject_hits` 4,
-#:   `qobject_missed` 15.
+#:   `qobject_missed` 17.
 #: - **a binding that read the wrong thing** - `streamWindowText_A`, the window line, which is
 #:   the one M2's `Window`-note guard exists for.
-#: - **a list concatenated with a string** - `thumb_B` and `thumb_C`, the captions that
-#:   rendered `Camera B · -1`.
+#: - **a list concatenated with a string** - **`tileCaptionText_B` and `tileCaptionText_C`**, the
+#:   captions that rendered `Camera B · -1`. **This pair is here because of the defect, and it used
+#:   not to be able to be.** The caption `Text` in `VideoTile.qml` had **no `objectName`**, so the
+#:   walk never yielded it, it was absent from `strings` in all four committed JSONs, and **if
+#:   `stream_confirmed_labels` regressed every one of those JSONs would have come out byte-identical
+#:   and the CLI would still have exited 0** - a defect the module's own table above names as the
+#:   third way this project invents a number, invisible to the very instrument built to catch it.
+#:   So the caption is named, listed here, and its value asserted per camera.
 #:
 #: `card_A` and `thumb_B` have **no `text` property** and are here precisely so their absence
 #: from `strings` can be asserted: a box must not be reported as a blank label.
@@ -540,13 +612,44 @@ BOOTH_EXPECTED: tuple[str, ...] = (
     "streamBadgeText_A",
     "streamReasonText_C",
     "heroTile", "thumb_B", "thumb_C",
+    "tileCaptionText_B", "tileCaptionText_C",
     "tileNoFrameText_A",
     "eventCountRow",
 )
 
-#: Audit hook flag name. The child flips this immediately before `read_scene`, so the audit
-#: records exactly the window in which strings are produced - and a `.qml` file opened inside
-#: that window would mean the harness had gone to the source instead of the scene.
+#: Names whose `text` must **not** be empty for the capture to count as ready.
+#:
+#: **This is the answer to "how does the harness know the screen was rendered and not merely
+#: constructed".** `expect` answers "was it built"; this answers "does it show something". Under a
+#: mutant that broke `stream_confirmed_labels`, **every** expected name was present - so `settled`
+#: was `True`, `opened_during_read` was `[]`, `read_window_closed` was `True` and `items_seen` was
+#: normal - **and the screen was wrong.** The empty reason lines for the healthy cameras are left out
+#: on purpose: an empty line there is correct, and requiring it to be non-empty would be a test that
+#: fails on a healthy screen.
+#:
+#: `cardText_*` / `cardWindowNote_*` are left out too, because they only exist once telemetry has
+#: arrived and their absence is legitimate.
+BOOTH_NONEMPTY: tuple[str, ...] = (
+    "deviceBadgeText",
+    "streamAgeText_A", "streamStaleText_A", "streamWindowText_A",
+    "streamBacklogText_A", "streamRateText_A", "streamBadgeText_A",
+    "streamReasonText_C",
+    "tileCaptionText_B", "tileCaptionText_C",
+    "tileNoFrameText_A",
+    "eventCountRow",
+)
+
+#: Audit hook flag name, and **the parent's half of the wiring**: the child program has this
+#: literal pasted into its `_PHASE` dict as `@@AUDIT_FLAG@@`, and `capture()` substitutes this
+#: name for it before writing the child. The child flips the flag immediately before `read_scene`
+#: and clears it in a `finally`, so the audit records exactly the window in which strings are
+#: produced - and a `.qml` file opened inside that window would mean the harness had gone to the
+#: source instead of the scene.
+#:
+#: **It used to be wired to nothing.** The child's hook read a hardcoded `_PHASE["reading"]` while
+#: this constant and a `@@AUDIT_FLAG@@` substitution sat in the parent, so the substitution matched
+#: nothing and the module docstring credited a mechanism that was not connected to anything. The
+#: flag is now the single source of the key name on both sides.
 READ_AUDIT = "_capture_reading"
 
 
@@ -725,13 +828,16 @@ sys.path.insert(0, @@REPO@@)
 # -- the audit: every file opened inside the read window ------------------------------
 # Module level, and harmless on a re-import: installing an audit hook costs nothing and opens
 # nothing. Only the reader's own `open` events matter, and the reader does not run here.
+# **`READ_FLAG` is the parent's `READ_AUDIT`, pasted in.** It is the key both the hook and
+# `read_scene` below use, so there is one name for it on both sides of the process boundary.
 _OPENED = []
-_PHASE = {"reading": False}
+READ_FLAG = "@@AUDIT_FLAG@@"
+_PHASE = {READ_FLAG: False}
 READ_WINDOW_CLOSED = False
 
 
 def _hook(event, args):
-    if _PHASE["reading"] and event == "open":
+    if _PHASE[READ_FLAG] and event == "open":
         try:
             _OPENED.append(str(args[0]))
         except Exception:
@@ -740,12 +846,12 @@ def _hook(event, args):
 
 def read_scene(window, expect, window_rect):
     import tools.capture_ui as harness
-    _PHASE["reading"] = True
+    _PHASE[READ_FLAG] = True
     try:
         return harness.read_scene(window.contentItem(), window_rect=window_rect,
                                   expect=expect)
     finally:
-        _PHASE["reading"] = False
+        _PHASE[READ_FLAG] = False
         # **Recorded, because an audit window that is opened and never closed is an audit that
         # proves nothing.** Nothing opens a file after the read in this child, so leaving the
         # hook armed would still report an empty list - measured as an equivalent mutant - and
@@ -757,7 +863,7 @@ def read_scene(window, expect, window_rect):
 def grab_and_read(window, started, expect, out, elapsed_note=""):
     """Wait for the scene to reach the state it was asked to capture, grab, then read.
 
-    ## Readiness is a **scene-graph** fact, not a frame count
+    ## Readiness is a **scene-graph** fact, not a frame count - **and it is not enough**
 
     The first version waited on `frameSwapped` and reported `frames_settled: 0` on every scale -
     measured, with the offscreen platform - because a window that is not on a real screen does
@@ -767,13 +873,51 @@ def grab_and_read(window, started, expect, out, elapsed_note=""):
     So readiness is **every expected name being present in the walk**, polled on a `QTimer` with
     the same reader the report uses. Both facts are reported: `settled` (bool) and
     `frames_settled` (the frame-swap count, which may honestly be 0).
+
+    ### **`settled` is a construction check, not a rendering check, and the second version said so
+    ### wrongly**
+
+    An item being *in the walk* says it was built. It says nothing about what it shows. Under a
+    mutant that broke `stream_confirmed_labels`, **every expected name was still present**, so
+    `settled` was `True`, `opened_during_read` was `[]`, `read_window_closed` was `True` and
+    `items_seen` was normal - **and the screen was wrong.** What actually caught it was one *value*
+    assertion, not `settled`.
+
+    So a caller may pass **`expect_nonempty`**: names whose `text` must not be `""`. Those join the
+    same poll, and a capture with an empty one of them does not report `ok`. A capture in which
+    **every** binding yielded `""` is the M2 shape, and it is now refused rather than reported.
+
+    ### `settle_polls` is reported because "settled on the first poll" is a fact worth having
+
+    The first poll fires 25 ms after the event loop starts. In seed mode the bindings are
+    resolved by then and the count is small; in **live** mode the scene is read *before telemetry
+    arrives* unless the caller waits (measured: `elapsed_s` 0.207 s at seed, 0.331 s live, against a
+    120 ms / `seconds * 1000` ms pre-grab delay), and the render happened at all only because
+    `grabWindow()` forces one. So `settle_polls` is carried up into `CaptureResult` and a live
+    capture asserts `settle_polls > 1` - **one poll is a construction check and nothing more.**
+
+    ## **The grab comes before the read, and that order is load-bearing**
+
+    `window.grabWindow()` **forces a render**, and two of the reported facts are consequences of
+    that render rather than of anything Qt would have done on its own:
+
+    - `Text.truncated` is `True` only once the text has been laid out against its width, and
+    - `font.pixelSize` is only populated on a `Text` that has been prepared by the scene graph.
+
+    A refactor that read first and grabbed afterwards would still pass every assertion in this
+    file - and would quietly report an empty `truncated` list, which **this project has already
+    shipped once**: at M3 Task 1 `truncated` named `streamReasonText_C` because Qt had elided the
+    reason, and an empty `truncated` is one of the proofs in `docs/qualification/m3-capture/`. So
+    the order is deliberate and it is written down here rather than left to be rediscovered.
     """
     from PySide6.QtCore import QEventLoop, QTimer
     import tools.capture_ui as harness
 
     deadline_s = float(ARGS["seconds"])
+    nonempty = list(ARGS.get("expect_nonempty") or ())
     loop = QEventLoop()
-    state = {"frames": 0, "settled": False, "missed": list(expect), "polls": 0}
+    state = {"frames": 0, "settled": False, "missed": list(expect), "polls": 0,
+             "empty": []}
     started_at = time.perf_counter()
 
     def on_frame():
@@ -784,14 +928,24 @@ def grab_and_read(window, started, expect, out, elapsed_note=""):
     def poll():
         state["polls"] += 1
         present = set()
+        shown = {}
         try:
             for name, item in harness.walk_items(window.contentItem()):
-                if item is not None:
-                    present.add(name)
+                if item is None:
+                    continue
+                present.add(name)
+                if name in nonempty:
+                    try:
+                        raw = item.property("text")
+                    except (AttributeError, RuntimeError):
+                        raw = None
+                    shown[name] = None if raw is None else str(raw)
         except Exception:
             pass
         state["missed"] = [name for name in expect if name not in present]
-        if not state["missed"]:
+        state["empty"] = [name for name in nonempty
+                          if name in shown and not shown[name]]
+        if not state["missed"] and not state["empty"]:
             state["settled"] = True
             loop.quit()
         elif time.perf_counter() - started_at > deadline_s:
@@ -807,6 +961,8 @@ def grab_and_read(window, started, expect, out, elapsed_note=""):
     except Exception:
         pass
 
+    # **Grab, then read.** See the function docstring: the grab forces the render that
+    # `truncated` and `font.pixels` both depend on. Do not reorder these two lines.
     image = window.grabWindow()
     saved = image.save(out + ".png")
 
@@ -818,6 +974,7 @@ def grab_and_read(window, started, expect, out, elapsed_note=""):
         "settled": state["settled"],
         "settle_polls": state["polls"],
         "settle_missed": state["missed"],
+        "empty_nonempty": state["empty"],
         "mode": ARGS["mode"],
         "dpr": float(window.devicePixelRatio()),
         "logical_width": int(window.width()),
@@ -853,6 +1010,30 @@ def _qobject_and_pixel_evidence(window, read, image, expect):
     word is thousands and an empty rectangle is zero, so it is the PNG confirming the item is
     drawn - which is what stops the `findChild` comparison from being two pieces of Python
     agreeing with each other.
+
+    ## **The box is scaled into device pixels before it indexes the buffer**
+
+    `image` is what `grabWindow()` returned: **device pixels**. At 125 % a 1920x1080 logical canvas
+    is a 2400x1350 file, and `read.extents` is in **logical** pixels. Indexing the device image with
+    logical coordinates reads the **top-left** fraction of the screen, so an item at x=1313 was being
+    counted inside a box that ended at x=1896 in a 2400-wide buffer - and at 150 % the count ran past
+    the buffer's own width and clamped to `0`.
+
+    **Measured consequence of not scaling, against the committed PNGs:**
+
+    | item | 100 % | 125 % (was / scaled) | 150 % (was / scaled) | 200 % (was / scaled) |
+    |---|---|---|---|---|
+    | `card_A` | 121847 | 71237 / 190269 | 48389 / 274750 | 95612 / 487388 |
+    | `streamStaleText_A` | 12560 | 680 / 19600 | **0** / 28260 | 12560 / 50240 |
+    | `eventCountRow` | 14940 | 462 / 23350 | **0** / 33600 | **0** / 59760 |
+
+    **Zero-valued entries: 0 / 4 / 35 / 31 of 54 at 100 / 125 / 150 / 200 %.** At 100 % the scale
+    factor is `1.0` and the bug is *invisible*, which is why the only assertion on this number ran
+    there and passed. `tests/test_capture_ui.py` now asserts `glyph_pixels > 0` for every
+    `BOOTH_EXPECTED` name at **every** scale, against the saved image.
+
+    `image_dpr` is deliberately **not** used for this: it is `1.0` at every scale on this machine,
+    including a 3840x2160 grab. The ratio of the two `width()`s is measured, not assumed.
     """
     evidence = {}
     qobject_hits, qobject_missed = [], []
@@ -879,12 +1060,25 @@ def _qobject_and_pixel_evidence(window, read, image, expect):
         w, h, stride = rgb.width(), rgb.height(), rgb.bytesPerLine()
         raw = bytes(rgb.constBits())
         modal = Counter(raw[i:i + 3] for i in range(0, len(raw), 3)).most_common(1)[0][0]
+        # **Measured, not assumed: the ratio of the device width to the logical width.** `1.0`
+        # at 100 %, `1.25` at 125 %, `2.0` at 200 %. Guarded against a zero-width window,
+        # where the honest answer is one device pixel per logical pixel and the loop bounds
+        # below clamp to nothing either way.
+        try:
+            scale_x = float(w) / float(window.width())
+            scale_y = float(h) / float(window.height())
+        except (AttributeError, RuntimeError, TypeError, ValueError, ZeroDivisionError):
+            scale_x = scale_y = 1.0
+        if not (scale_x > 0.0) or not (scale_y > 0.0):
+            scale_x = scale_y = 1.0
+        evidence["glyph_scale"] = [scale_x, scale_y]
         for name, box in read.extents.items():
+            x0, y0 = box[0] * scale_x, box[1] * scale_y
+            x1, y1 = (box[0] + box[2]) * scale_x, (box[1] + box[3]) * scale_y
             count = 0
-            for yy in range(max(0, int(box[1])), min(h - 1, int(box[1] + box[3]))):
+            for yy in range(max(0, int(y0)), min(h - 1, int(y1))):
                 base = yy * stride
-                for xx in range(max(0, int(box[0])),
-                                min(w - 1, int(box[0] + box[2]))):
+                for xx in range(max(0, int(x0)), min(w - 1, int(x1))):
                     off = base + xx * 3
                     if raw[off:off + 3] != modal:
                         count += 1
@@ -1010,6 +1204,7 @@ def capture(width: int | None = None, height: int | None = None,
             seed_frames: Mapping[str, Any] | None = None,
             out_dir: pathlib.Path | str | None = None,
             expect: Sequence[str] = BOOTH_EXPECTED,
+            expect_nonempty: Sequence[str] = BOOTH_NONEMPTY,
             absent_expected: Sequence[str] = (),
             font: str | None = None,
             extra_args: Sequence[str] = ()) -> CaptureResult:
@@ -1033,6 +1228,17 @@ def capture(width: int | None = None, height: int | None = None,
     requires naming it. They are accounted for exactly like `expect` but excluded from
     readiness, because a capture that waits for something that will never exist would time
     out on a correct screen.
+
+    ## `expect_nonempty`: presence is not rendering
+
+    **`settled` is a construction check.** It says every expected name is in the walk, and a
+    capture in which *every* binding yielded `""` satisfies it - that is the M2 shape, and under
+    one mutant (`stream_confirmed_labels`) it produced `settled: true`, `opened_during_read: []`,
+    `read_window_closed: true` and a normal `items_seen` on a **wrong screen**. So a caller may
+    pass names whose `text` must not be empty; they join the same poll, a capture with one of
+    them empty does not report `ok`, and `CaptureResult.empty_nonempty` names the ones that were
+    empty. The default is `BOOTH_NONEMPTY` - the seeded figures on the cards, the per-camera
+    staleness sentences, the two captions, and the footer row.
     """
     if scale_percent not in SCALES:
         raise ValueError(
@@ -1074,6 +1280,7 @@ def capture(width: int | None = None, height: int | None = None,
         "device": device or "CPU",
         "mode": mode,
         "expect": list(expect),
+        "expect_nonempty": list(expect_nonempty),
         "absent_expected": list(absent_expected),
         "font": resolved_font,
         "seed": dict(seed_frames or {}),
@@ -1115,6 +1322,7 @@ def capture(width: int | None = None, height: int | None = None,
             f"the capture child reported a failure. "
             f"settled={report.get('settled')} "
             f"settle_missed={report.get('settle_missed')} "
+            f"empty_nonempty={report.get('empty_nonempty')} "
             f"png_saved={report.get('png_saved')} "
             f"walk_complete={report.get('scene', {}).get('walk_complete')} "
             f"error={report.get('error') or '-'}\nSTDOUT:\n" + completed.stdout[-1500:]
@@ -1135,6 +1343,7 @@ def capture(width: int | None = None, height: int | None = None,
         pixel_height=int(report["pixel_height"]),
         image_dpr=float(report["image_dpr"]),
         strings=dict(scene["strings"]),
+        text_property=dict(scene.get("text_property") or {}),
         font_pixels=dict(scene.get("font_pixels") or {}),
         truncated=tuple(scene["truncated"]),
         overflow=tuple(scene["overflow"]),
@@ -1145,18 +1354,27 @@ def capture(width: int | None = None, height: int | None = None,
         extents={k: tuple(v) for k, v in scene["extents"].items()},
         visible=dict(scene["visible"]),
         walk_complete=bool(scene["walk_complete"]),
+        walk_failures=tuple(scene.get("walk_failures") or ()),
         items_seen=int(scene["items_seen"]),
         settled=bool(report.get("settled")),
         settle_missed=tuple(report.get("settle_missed") or ()),
+        settle_polls=int(report.get("settle_polls") or 0),
+        empty_nonempty=tuple(report.get("empty_nonempty") or ()),
         frames_settled=int(report["frames_settled"]),
         qobject_hits=tuple(report.get("qobject_hits") or ()),
         qobject_missed=tuple(report.get("qobject_missed") or ()),
         qobject_child_count=report.get("qobject_child_count"),
         glyph_pixels=dict(report.get("glyph_pixels") or {}),
+        glyph_scale=tuple(float(v) for v in (report.get("glyph_scale") or (1.0, 1.0))),
         elapsed_s=float(report["elapsed_s"]),
         mode=mode,
         seed_provenance=provenance,
-        opened_during_read=tuple(scene.get("opened_during_read") or ()),
+        # **`report`, not `scene`.** The audit list is produced by the child's `_hook` and put at
+        # the top level of its report; `scene` is `read.as_dict()` and has never carried it. Reading
+        # it from `scene` returned `()` **by construction**, so the audit's whole result was discarded
+        # before it reached `CaptureResult` and the flag this module wires (`READ_AUDIT`) terminated
+        # in a dead lookup. That is the same vacuity the READ_AUDIT minor fixed, one layer up.
+        opened_during_read=tuple(report.get("opened_during_read") or ()),
         read_window_closed=bool(report.get("read_window_closed")),
     )
 
@@ -1194,17 +1412,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         json_path = out_dir / f"{scale}pct.json"
         json_path.write_text(
             json.dumps(result.as_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # **The self-check, in the CLI and not only in the tests.** An expected name with **zero**
+        # non-modal pixels inside its own reported extent is an item the walk found and the PNG
+        # says is not drawn - the exact shape of a capture that renders nothing and exits 0.
+        # Counted, named and set against the exit code, because "the file appeared" is not a claim.
+        blank = sorted(name for name in BOOTH_EXPECTED
+                       if name in result.glyph_pixels and result.glyph_pixels[name] <= 0)
         print(f"[{scale}%] {result.png_path}  {result.pixel_width}x{result.pixel_height} px "
               f"(logical {result.width}x{result.height}, dpr {result.dpr})  "
-              f"items {result.items_seen}  frames {result.frames_settled}  "
+              f"items {result.items_seen}  polls {result.settle_polls}  "
+              f"frames {result.frames_settled}  "
               f"strings {len(result.strings)}  truncated {list(result.truncated)}  "
               f"overflow {list(result.overflow)}  absent {list(result.absent)}  "
-              f"-> {json_path}")
+              f"blank {len(blank)}  -> {json_path}")
         if result.absent or result.unreachable or result.geometry_unavailable:
             failures += 1
+        if blank:
+            failures += 1
+            print(f"\n{scale}%: {len(blank)} expected item(s) have no painted pixels inside "
+                  f"their own extent, which means the walk found something the PNG does not "
+                  f"show: {blank}", file=sys.stderr)
     if failures:
         print(f"\n{failures} of {len(scales)} capture(s) had items the harness could not "
-              f"account for. The JSON says which and how.", file=sys.stderr)
+              f"account for, or items the PNG does not show. The JSON says which and how.",
+              file=sys.stderr)
     return 1 if failures else 0
 
 

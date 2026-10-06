@@ -42,6 +42,60 @@ from tools import capture_ui  # noqa: E402
 
 
 # --------------------------------------------------------------------------------------
+# Reading the saved PNG back, independently of the harness
+# --------------------------------------------------------------------------------------
+#
+# **These two helpers exist so a number in a JSON can be checked against the file it came from.**
+# The harness counts pixels in the child process and writes the count into the JSON; nothing in
+# the test suite ever opened the PNG. So the JSON could have been wrong about its own image and
+# nothing would have noticed - and it was: `glyph_pixels` was `0` for 35 of 54 named items at
+# 150 % because the **device**-pixel image was indexed with **logical** extents.
+
+def _load_png(path):
+    """Open a saved capture. `QImage` reads a PNG without a `QGuiApplication`."""
+    from PySide6.QtGui import QImage
+
+    image = QImage(str(path))
+    if image.isNull():
+        raise AssertionError(f"{path} did not load as an image; it is "
+                             f"{path.stat().st_size if path.is_file() else 'absent'} bytes on disk")
+    return image
+
+
+def _count_non_modal(image, box, scale_x, scale_y):
+    """Non-modal pixels inside `box`, **scaled into device pixels first**.
+
+    **Deliberately not a copy of the harness's loop.** This one uses ordinary half-open
+    `[x0, x1) x [y0, y1)` bounds, and the harness's excludes the final row and column. So the two
+    differ by **at most one row plus one column**, and that difference is what
+    `test_the_pixel_count_in_the_json_matches_the_png_it_claims_to_describe` asserts. A harness
+    that indexed the device image with logical coordinates would be off by a factor of the scale -
+    at 150 % that is 274 750 against 48 389 for a card - which no edge-row allowance covers.
+    """
+    from collections import Counter
+
+    from PySide6.QtGui import QImage
+
+    rgb = image.convertToFormat(QImage.Format_RGB888)
+    width, height = rgb.width(), rgb.height()
+    stride = rgb.bytesPerLine()
+    raw = bytes(rgb.constBits())
+    modal = Counter(raw[i:i + 3] for i in range(0, len(raw), 3)).most_common(1)[0][0]
+    x0 = max(0, min(width, int(box[0] * scale_x)))
+    x1 = max(0, min(width, int((box[0] + box[2]) * scale_x)))
+    y0 = max(0, min(height, int(box[1] * scale_y)))
+    y1 = max(0, min(height, int((box[1] + box[3]) * scale_y)))
+    count = 0
+    for yy in range(y0, y1):
+        base = yy * stride
+        for xx in range(x0, x1):
+            off = base + xx * 3
+            if raw[off:off + 3] != modal:
+                count += 1
+    return count, (x1 - x0) + (y1 - y0)
+
+
+# --------------------------------------------------------------------------------------
 # Fakes, for the reader's own logic
 # --------------------------------------------------------------------------------------
 
@@ -573,6 +627,16 @@ class BoothCapture(unittest.TestCase):
         self.assertTrue(all(self.result(s).png_path.is_file() for s in capture_ui.SCALES))
 
     def test_every_scale_settled_and_the_png_is_not_blank(self):
+        """**The PNG is loaded here.** It was not, and the test's name was a claim it never made.
+
+        The first version of this test asserted `settled`, `settle_missed`, `walk_complete` and
+        `items_seen` - all *construction* facts - and nothing about the image it saved. Meanwhile
+        `glyph_pixels`, the measure that is supposed to say an item **is drawn**, was reported as
+        `0` for items that are plainly on screen at three of the four scales (see
+        `test_every_expected_name_has_painted_pixels_at_every_scale`). A test called
+        `..._and_the_png_is_not_blank` that never opens the PNG is a test whose name outruns it.
+        So this one opens the file, checks its size, and checks it has more than one colour.
+        """
         for scale in capture_ui.SCALES:
             result = self.result(scale)
             self.assertTrue(result.settled,
@@ -580,10 +644,258 @@ class BoothCapture(unittest.TestCase):
                             f"missing {result.settle_missed}. A capture that settled on "
                             f"nothing would save a plausible-looking blank PNG.")
             self.assertEqual(result.settle_missed, ())
-            self.assertTrue(result.walk_complete)
+            self.assertTrue(result.walk_complete,
+                            f"at {scale}% the walk did not complete somewhere: "
+                            f"{result.walk_failures}")
             self.assertGreater(result.items_seen, 40,
                                f"only {result.items_seen} named items were reached at "
                                f"{scale}%; the booth screen has more than that")
+            self.assertTrue(result.png_path.is_file(),
+                            f"the capture reported a PNG at {result.png_path} and there is "
+                            f"nothing there")
+            # **Actually load it.** `QImage` reads a PNG without a `QGuiApplication`, so this does
+            # not disturb any other test's application instance.
+            image = _load_png(result.png_path)
+            self.assertEqual((image.width(), image.height()),
+                             (result.pixel_width, result.pixel_height),
+                             f"at {scale}% the file on disk must be the size the capture "
+                             f"reported: {result.pixel_width}x{result.pixel_height}, the file "
+                             f"is {image.width()}x{image.height()}")
+            colours = len({image.pixel(x, y)
+                           for x in range(0, image.width(), max(1, image.width() // 64))
+                           for y in range(0, image.height(), max(1, image.height() // 64))})
+            self.assertGreater(colours, 3,
+                               f"at {scale}% the PNG holds {colours} sampled colour(s). A "
+                               f"single-colour image is a blank image, and a blank image plus "
+                               f"`settled: true` is exactly the result that would have been "
+                               f"believed.")
+
+    def test_every_expected_name_has_painted_pixels_at_every_scale(self):
+        """**C1. The anti-vacuity evidence, checked where it was wrong.**
+
+        `glyph_pixels[name]` is the number of non-modal pixels inside the item's reported extent,
+        in **device** pixels. `read.extents` is in **logical** pixels, so the box has to be scaled
+        by `image.width() / window.width()` before it indexes the buffer - the harness does that,
+        and `glyph_scale` in each JSON is the factor it used.
+
+        **What this assertion is worth depends entirely on running it at every scale.** At 100 %
+        the factor is `1.0` and a harness that forgot to scale still passes. At 150 % the old
+        code reported `0` for **35 of 54** named items, including `streamStaleText_A` and
+        `eventCountRow` - items that are on the screen in front of the reader. A self-check that
+        only runs at the one scale where the bug cannot show is not a self-check.
+        """
+        for scale in capture_ui.SCALES:
+            result = self.result(scale)
+            self.assertEqual(tuple(result.glyph_scale), (scale / 100.0, scale / 100.0),
+                             f"at {scale}% the pixel measure must have scaled the logical "
+                             f"extents by the scale factor; it used {result.glyph_scale}. If "
+                             f"this is 1.0 at 125% or more the box is being indexed in the "
+                             f"wrong space and the counts below are meaningless.")
+            missing = []
+            for name in capture_ui.BOOTH_EXPECTED:
+                painted = result.glyph_pixels.get(name)
+                if painted is None or painted <= 0:
+                    missing.append((name, painted))
+            self.assertEqual(missing, [],
+                             f"at {scale}% these expected items have **no painted pixels** "
+                             f"inside their own reported extent: {missing}. The walk found "
+                             f"them and the image says nothing is drawn there - which is the "
+                             f"shape of a capture that renders nothing and exits 0.")
+            # **And the count must grow with the scale.** A box that is not scaled reports the
+            # same number at every scale, so this is the assertion the previous test was missing.
+            if scale > 100:
+                base = self.result(100).glyph_pixels
+                smaller = [name for name in capture_ui.BOOTH_EXPECTED
+                           if result.glyph_pixels.get(name, 0) <= base.get(name, 0)]
+                self.assertEqual(smaller, [],
+                                 f"at {scale}% every expected item must account for *more* "
+                                 f"device pixels than at 100%; these did not: {smaller}")
+
+    def test_the_pixel_count_in_the_json_matches_the_png_it_claims_to_describe(self):
+        """**The JSON checked against the file, at every scale.** See `_count_non_modal`.
+
+        This is the assertion that would have caught C1 from the outside. The harness reported
+        `0` for `eventCountRow` at 150 % and 200 %; the JSON said `0`; no test opened the PNG, so
+        nothing contradicted it. Here the count is recomputed from the **file on disk** and
+        compared against the **reported** number, and the only slack allowed is the one row and
+        one column the harness's loop bounds exclude by construction.
+        """
+        for scale in capture_ui.SCALES:
+            result = self.result(scale)
+            image = _load_png(result.png_path)
+            scale_x = result.glyph_scale[0]
+            scale_y = result.glyph_scale[1]
+            self.assertEqual((scale_x, scale_y), (scale / 100.0, scale / 100.0),
+                             f"at {scale}% the harness must have scaled by the scale factor, "
+                             f"not 1.0: {result.glyph_scale}")
+            for name in capture_ui.BOOTH_EXPECTED:
+                box = result.extents.get(name)
+                self.assertIsNotNone(box, f"{scale}%: {name} must be measured for this to "
+                                          f"mean anything")
+                mine, edge = _count_non_modal(image, box, scale_x, scale_y)
+                theirs = result.glyph_pixels.get(name, 0)
+                self.assertGreater(theirs, 0,
+                                   f"at {scale}% the JSON says {name} has {theirs} painted "
+                                   f"pixels and the PNG has {mine}. A zero is the C1 shape: "
+                                   f"the walk found an item the image does not show.")
+                self.assertLessEqual(theirs, mine,
+                                     f"at {scale}% {name}: the JSON claims {theirs} pixels but "
+                                     f"the box holds only {mine}. The reported count cannot "
+                                     f"exceed what is in the box.")
+                self.assertLessEqual(mine - theirs, edge,
+                                     f"at {scale}% {name}: the JSON says {theirs} and the PNG "
+                                     f"says {mine}, a gap of {mine - theirs} against an "
+                                     f"allowance of {edge} for the loop's excluded edge. A gap "
+                                     f"this size is the box being indexed in the wrong space - "
+                                     f"at {scale}% a logical box covers 1/{scale / 100.0:g}th "
+                                     f"of the buffer.")
+
+    def test_every_camera_caption_is_named_read_and_correct(self):
+        """**I1. The caption was invisible to the instrument that exists to check it.**
+
+        M2 shipped `Camera B · -1`: a `QVariantList` concatenated with a string, over a real
+        picture. The `Text` carrying it had **no `objectName`**, so `walk_items` never yielded it
+        and it appeared in none of the four committed JSONs - and `BOOTH_EXPECTED`'s own comment
+        claimed `thumb_B`/`thumb_C` were listed *because* they are the captions that rendered it,
+        which was false. **A regression here would have left all four JSONs byte-identical and the
+        CLI exiting 0.**
+
+        So the caption is named `tileCaptionText_<streamId>`, it is in `BOOTH_EXPECTED` and
+        `BOOTH_NONEMPTY`, and its value is asserted here **per camera** - including that it names
+        the camera that is on the tile and the device that camera actually confirmed.
+        """
+        from tools.capture_ui import load_measured_seed
+
+        seed = load_measured_seed()
+        # **The route's confirmed device, not the seed's measured one.** The seed->route rule
+        # renders the failed camera with **no** confirmed device, so its caption is
+        # `Camera C · not confirmed` even though the committed steady-state measurement records
+        # a device for it. Reading `entry["confirmed_devices"]` directly here expected `CPU` and
+        # failed on a correct screen: the expectation has to come from the rule the capture
+        # actually applies, or the assertion is about a different render than the one on screen.
+        routes = {route["stream"]: route for route in capture_ui.routes_from_seed(seed)}
+        for scale in capture_ui.SCALES:
+            result = self.result(scale)
+            for sid, name in (("A", "tileCaptionText_A"), ("B", "tileCaptionText_B"),
+                              ("C", "tileCaptionText_C")):
+                self.assertIn(name, result.extents,
+                              f"{scale}%: {name} must be a **named, measured** item; if it is "
+                              f"not named the harness cannot read it at all")
+            # A and B are the thumbnails; C is the failed camera. The hero shares the component
+            # and its caption Text exists with `""` because `Main.qml` gives the hero no caption -
+            # so it is deliberately not in `BOOTH_EXPECTED` and is not required to be non-empty.
+            for sid in ("B", "C"):
+                name = f"tileCaptionText_{sid}"
+                want = ", ".join(routes[sid]["confirmed"]) or "not confirmed"
+                want = f"Camera {sid} \u00b7 {want}"
+                self.assertEqual(result.strings.get(name), want,
+                                 f"{scale}%: {name} reads "
+                                 f"{result.strings.get(name)!r}, expected {want!r}. This is the "
+                                 f"M2 defect: a caption that is present, plausible and wrong. "
+                                 f"Nothing about a screenshot of it says so.")
+                self.assertNotIn("-1", result.strings.get(name, ""),
+                                 f"{scale}%: {name} reads -1, which is the literal M2 symptom: "
+                                 f"a QVariantList stringified and concatenated")
+                self.assertIn(f"Camera {sid}", result.strings.get(name, ""),
+                              f"{scale}%: the caption must name the camera on its own tile")
+            # **The hero's caption exists and is empty, and both are facts worth keeping apart.**
+            self.assertEqual(result.strings["tileCaptionText_A"], "",
+                             "the hero tile is given no caption by Main.qml, so its caption Text "
+                             "is present and empty - reached, not absent, and not a blank label "
+                             "invented for a box")
+
+    def test_a_capture_waits_for_those_items_to_show_something_not_just_to_exist(self):
+        """**I2. `settled` is a construction check, and this is the other half.**
+
+        `settled` says every expected name is in the walk. Under the mutant that broke
+        `stream_confirmed_labels`, **every expected name was still present** - so `settled` was
+        `True`, `opened_during_read` was `[]`, `read_window_closed` was `True` and `items_seen`
+        was normal - **on a wrong screen.** A capture in which every binding yielded `""` is the
+        M2 shape, so `expect_nonempty` now joins the same poll.
+        """
+        for scale in capture_ui.SCALES:
+            result = self.result(scale)
+            self.assertEqual(result.empty_nonempty, (),
+                             f"at {scale}% these were present but showed nothing: "
+                             f"{list(result.empty_nonempty)}. Present-and-empty is the shape of "
+                             f"a capture that renders an empty screen and calls it settled.")
+            for name in capture_ui.BOOTH_NONEMPTY:
+                self.assertTrue(result.strings.get(name),
+                                f"at {scale}% {name} is required to be non-empty and was "
+                                f"{result.strings.get(name)!r}")
+
+    def test_the_committed_records_are_what_this_code_produces_today(self):
+        """**The four committed captures, checked against a fresh render.**
+
+        I1 was possible *because* nothing compared them: if `stream_confirmed_labels` regressed,
+        all four JSONs would have come out identical and the CLI would still have exited 0.
+        So the committed files are not left as evidence of a past run - they are compared here,
+        field by field, against the captures this class just made.
+
+        **Which fields are compared is stated, because "identical" would be false.** `elapsed_s`,
+        `json_path` and `png_path` are per-run by construction, and `seed_provenance` is a
+        constant but is listed anyway. Everything else - every string, every extent, every glyph
+        count - has to match exactly.
+        """
+        comparable = ("pixel_width", "pixel_height", "dpr", "image_dpr", "width", "height",
+                      "scale_percent", "strings", "text_property", "font_pixels", "visible",
+                      "truncated", "overflow", "absent", "unreachable",
+                      "geometry_unavailable", "clip_sources", "extents", "walk_complete",
+                      "walk_failures", "items_seen", "settled", "settle_missed",
+                      "empty_nonempty", "qobject_hits", "qobject_missed",
+                      "qobject_child_count", "glyph_pixels", "glyph_scale",
+                      "seed_provenance", "opened_during_read", "read_window_closed", "mode")
+        for scale in capture_ui.SCALES:
+            committed_path = (REPO_ROOT / "docs" / "qualification" / "m3-capture"
+                              / f"{scale}pct.json")
+            self.assertTrue(committed_path.is_file(),
+                            f"the committed record {committed_path} is missing; a capture that "
+                            f"is only in this run's temporary directory is not evidence")
+            committed = json.loads(committed_path.read_text(encoding="utf-8"))
+            fresh = self.result(scale).as_dict()
+            for field in comparable:
+                self.assertEqual(
+                    fresh[field], committed.get(field),
+                    f"{scale}%: the committed {committed_path.name} no longer matches what "
+                    f"this code produces for {field}. The record is the evidence; a record that "
+                    f"has drifted from the instrument is worse than none. Re-render with "
+                    f"`python -m tools.capture_ui --out docs/qualification/m3-capture` and "
+                    f"commit by explicit path.")
+            # And the two things a byte comparison would have hidden, checked explicitly.
+            self.assertNotIn("elapsed_s", comparable,
+                             "elapsed_s is wall-clock and differs run to run")
+            self.assertNotIn("json_path", comparable,
+                             "json_path is written by the CLI after the result is built")
+
+    def test_the_record_carries_the_fourth_per_field_state_and_the_walk_failures(self):
+        """**I4. Three fields the docstring claimed and the JSON did not carry.**
+
+        `text_property` is how "reached but has no `text` property" is told apart from "reached
+        and blank"; `walk_failures` is *why* `walk_complete` might be false; and `settle_polls` is
+        how many times readiness was polled before the scene qualified. All three were in the
+        code and in no committed record, which made the docstring's claim about them
+        undiscernible from the evidence.
+        """
+        for scale in capture_ui.SCALES:
+            result = self.result(scale)
+            payload = json.loads((REPO_ROOT / "docs" / "qualification" / "m3-capture"
+                                  / f"{scale}pct.json").read_text(encoding="utf-8"))
+            for field in ("text_property", "walk_failures", "settle_polls"):
+                self.assertIn(field, payload,
+                              f"{scale}%: `{field}` is claimed in capture_ui's docstring, so it "
+                              f"has to be in the committed record")
+            # **And they say something.** `text_property` separates a box from a blank label:
+            # `card_A` is reached, has no `text` property, and is absent from `strings`.
+            self.assertIn("card_A", result.text_property)
+            self.assertFalse(result.text_property["card_A"])
+            self.assertIn("deviceBadgeText", result.text_property)
+            self.assertTrue(result.text_property["deviceBadgeText"])
+            self.assertEqual(result.walk_failures, (),
+                             f"at {scale}% the walk completed, so it names no failures: "
+                             f"{result.walk_failures}")
+            self.assertGreaterEqual(result.settle_polls, 1,
+                                    f"at {scale}% readiness was polled at least once, and the "
+                                    f"count is what says a capture settled on the first try")
 
     def test_the_strings_come_from_the_scene_and_not_from_the_qml_source(self):
         # **The audit is the assertion.** An `open` audit hook is armed immediately before the
@@ -809,6 +1121,34 @@ class HarnessSelfChecks(unittest.TestCase):
         self.assertEqual(capture_ui.SCALES, (100, 125, 150, 200),
                          "the M3 gate names exactly these four")
 
+    def test_a_required_nonempty_string_that_is_empty_stops_the_capture(self):
+        """**I2, proved on a seed capture and not only on provisioned hardware.**
+
+        `expect_nonempty` is what separates "the item was built" from "the item shows
+        something". On the four committed captures every required string happens to be
+        non-empty, so a capture that ignored `expect_nonempty` would look identical there.
+        This asks for a name that is **legitimately blank on a correct screen** - camera A's
+        reason line - and requires it to be non-empty, which no correct screen satisfies.
+
+        A poll that ignored `expect_nonempty` would settle on the first look and return a
+        result, so the capture would **not** raise. The assertion below is therefore the
+        difference between a readiness check and a construction check, and it needs no
+        inference worker: it is the `stream_confirmed_labels`-class hole, reached without the
+        live path.
+        """
+        with tempfile.TemporaryDirectory(prefix="capture-empty-") as tmp:
+            with self.assertRaises(RuntimeError) as caught:
+                capture_ui.capture(
+                    scale_percent=100, seconds=1.0, out_dir=pathlib.Path(tmp),
+                    expect=("streamReasonText_A",),
+                    expect_nonempty=("streamReasonText_A",))
+        message = str(caught.exception)
+        self.assertIn("empty_nonempty", message,
+                      f"the failure must name the empty required string, not merely time out: "
+                      f"{message[-400:]}")
+        self.assertIn("streamReasonText_A", message,
+                      f"and it must be that string that was empty: {message[-400:]}")
+
     def test_a_missing_measurement_raises_rather_than_defaulting(self):
         # **The honesty test.** A capture seeded with invented figures measures nothing, so a
         # missing committed measurement must be an error the caller has to handle - not a
@@ -877,11 +1217,42 @@ class HarnessSelfChecks(unittest.TestCase):
             self.assertTrue(png.is_file())
             self.assertTrue(data.is_file())
             payload = json.loads(data.read_text(encoding="utf-8"))
-            for key in ("pixel_width", "pixel_height", "strings", "truncated", "overflow",
-                        "absent", "unreachable", "opened_during_read", "seed_provenance"):
+            for key in ("pixel_width", "pixel_height", "strings", "text_property",
+                        "truncated", "overflow", "absent", "unreachable", "opened_during_read",
+                        "seed_provenance", "walk_failures", "settle_polls", "glyph_scale",
+                        "glyph_pixels"):
                 self.assertIn(key, payload, f"the JSON is the record; {key} must be in it")
             self.assertEqual((payload["pixel_width"], payload["pixel_height"]), (1920, 1080))
             self.assertEqual(payload["strings"]["deviceBadgeText"], "device: CPU")
+            self.assertEqual(payload["glyph_scale"], [1.0, 1.0],
+                             "at 100% the device-to-logical ratio is 1.0, and the record says "
+                             "so - which is the scale factor the pixel count used")
+
+    def test_the_caption_the_instrument_checks_is_named_in_the_qml(self):
+        """**The `objectName`, pinned, because an unnamed label is a label nobody can read.**
+
+        The caption `Text` in `VideoTile.qml` had no `objectName`, so `walk_items` never yielded
+        it, it was absent from `strings` in all four committed captures, and
+        `BOOTH_EXPECTED`'s comment claimed `thumb_B`/`thumb_C` were listed *because* they are the
+        captions that rendered `Camera B · -1` - which was false. **If `stream_confirmed_labels`
+        had regressed, all four committed JSONs would have come out byte-identical and the CLI
+        would still have exited 0.** The end-to-end assertions are in `BoothCapture`; this is the
+        guard that names the mechanism, so removing the name is a failure with a message rather
+        than a silent hole in the instrument.
+        """
+        tile = (REPO_ROOT / "app" / "ui" / "VideoTile.qml").read_text(encoding="utf-8")
+        self.assertIn('objectName: "tileCaptionText_" + tile.streamId', tile,
+                      "the caption Text must be named per stream, or the harness cannot read "
+                      "the caption and the defect it was built to catch is invisible to it")
+        self.assertEqual(tile.count('objectName: "tileCaptionText_"'), 1,
+                         "one caption Text, one name; a second would mean the string is "
+                         "reported under a name nothing else agrees with")
+        # **And it is one of the names the harness waits for and asserts on**, so removing it from
+        # either list would fail rather than quietly reduce coverage.
+        self.assertIn("tileCaptionText_B", capture_ui.BOOTH_EXPECTED)
+        self.assertIn("tileCaptionText_C", capture_ui.BOOTH_EXPECTED)
+        self.assertIn("tileCaptionText_B", capture_ui.BOOTH_NONEMPTY)
+        self.assertIn("tileCaptionText_C", capture_ui.BOOTH_NONEMPTY)
 
     def test_the_cli_fails_loudly_when_it_could_not_account_for_an_item(self):
         # The CLI's exit code is a claim about the captures, so it must be driven by the
@@ -925,6 +1296,13 @@ class LiveCaptureOnTheRealApplication(unittest.TestCase):
                 expect=("deviceBadgeText", "heroTile", "card_A",
                         "streamAgeText_A", "streamBadgeText_A", "tileNoFrameText_A",
                         "eventCountRow"),
+                # **The two names whose emptiness would be a rendering failure.** `expect` says
+                # "was it built"; these say "does it show something". `expect_nonempty` is what
+                # refuses a capture in which a required binding came out `""`, and it is proved
+                # deterministically (with no hardware) by
+                # `HarnessSelfChecks.test_a_required_nonempty_string_that_is_empty_stops_the_capture`.
+                expect_nonempty=("deviceBadgeText", "streamBadgeText_A",
+                                 "streamAgeText_A"),
                 # **Named as expected-to-be-missing.** The live run has one camera, so
                 # `card_B` does not exist and never will; waiting for it would time the
                 # capture out on a correct screen.
@@ -943,6 +1321,25 @@ class LiveCaptureOnTheRealApplication(unittest.TestCase):
         result = self.result
         self.assertTrue(result.settled, f"missing {result.settle_missed}")
         self.assertEqual(result.settle_missed, ())
+        # **I2, and a correction to the review's diagnosis.** The review asked this test to
+        # assert `settle_polls > 1`, on the reasoning that the live path "reads the screen before
+        # telemetry arrives". **Measured on this machine: it does not.** `run_live` schedules the
+        # grab at `seconds * 1000` ms (14 000 ms here) and only then begins polling, so by the
+        # first poll every required string is already non-empty - measured `settle_polls == 1`,
+        # `elapsed_s` 17.76 s, `streamBadgeText_A == "CPU"`, `streamAgeText_A == "53.2 ms"`.
+        # Asserting `> 1` therefore fails on a **correct** screen (it did, in a 1317-test suite
+        # run), which is the "assert a timing accident" defect this project has already recorded.
+        # So the count is asserted as what this capture actually produces, and the property the
+        # review wanted - a capture whose bindings are empty must **not** settle - is proved
+        # deterministically, with no hardware and no timing, by
+        # `HarnessSelfChecks.test_a_required_nonempty_string_that_is_empty_stops_the_capture`.
+        self.assertGreaterEqual(result.settle_polls, 1,
+                                f"the live capture must have polled at least once; it polled "
+                                f"{result.settle_polls}. `settle_polls` is reported so this is a "
+                                f"checkable value and not a construction truth.")
+        self.assertEqual(result.empty_nonempty, (),
+                         f"these were present but showed nothing: "
+                         f"{list(result.empty_nonempty)}")
         self.assertEqual([name for name in result.absent if name != "card_B"], [],
                          f"only the camera that was deliberately not built may be absent: "
                          f"{list(result.absent)}")

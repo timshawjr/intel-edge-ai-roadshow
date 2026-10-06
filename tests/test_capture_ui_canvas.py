@@ -166,7 +166,11 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
         want = card_height(len(self.STREAMS))
         for scale in capture_ui.SCALES:
             for sid in self.STREAMS:
-                got = result_h = self.result(scale).extents[f"card_{sid}"][3]
+                # **One name for one value.** The first version wrote `got = result_h = ...`,
+                # which bound two names to the same number and left `result_h` dead: a reader
+                # could not tell which of the two the assertion was about, and renaming one
+                # later would have silently changed nothing.
+                got = self.result(scale).extents[f"card_{sid}"][3]
                 self.assertAlmostEqual(got, want, places=1,
                                        msg=f"{scale}%: card {sid} is {got:.2f} px tall, "
                                            f"recomputed {want:.2f} = "
@@ -437,13 +441,33 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
                                 f"{result.strings['streamReasonText_B']!r}")
                 # **The reason is the LAST row, so if it fits, the column fits.** Recomputed
                 # from the measured extents rather than trusted from the overflow list alone.
+                #
+                # **The bound is the column's own measured extent, not `SPACING["sm"]`.** The
+                # first version built `column_bottom` from the token the card's margins bind to,
+                # which is the same pattern T2.11 fixed: an expectation derived from the thing
+                # under test moves with it, so a margin change would move the bound and the
+                # assertion would keep passing. `cardRightColumn_B` is a **named, clipping** item
+                # on the live scene, so its extent *is* the measured inner box - measured by Qt,
+                # not by this test.
+                column = result.extents["cardRightColumn_B"]
+                self.assertEqual(
+                    result.clip_sources["streamReasonText_B"], "ancestor:cardRightColumn_B",
+                    f"{scale}%: the reason's clip must be the right column for its extent to "
+                    f"be the bound; it is {result.clip_sources.get('streamReasonText_B')!r}")
+                column_bottom = column[1] + column[3]
                 reason_bottom = (result.extents["streamReasonText_B"][1]
                                  + result.extents["streamReasonText_B"][3])
-                column_bottom = (result.extents["card_B"][1] + result.extents["card_B"][3]
-                                 - theme.SPACING["sm"])
                 self.assertLessEqual(reason_bottom, column_bottom + 0.5,
                                      f"{scale}%: the six-row reason ends at {reason_bottom:.2f} "
-                                     f"and the card's inner bottom is {column_bottom:.2f}")
+                                     f"and the measured right column ends at "
+                                     f"{column_bottom:.2f}")
+                # **And the slack is reported, because "fits" and "fits with room" are different
+                # claims.** 43.3 px at three cameras is what Task 2 measured for this shape; the
+                # card is 209.33 px tall and a third row of reason would not fit in that.
+                slack = column_bottom - reason_bottom
+                self.assertGreater(slack, 0.0,
+                                   f"{scale}%: the six-row case has {slack:.2f} px of slack in "
+                                   f"the right column")
                 self.assertEqual(result.overflow, (),
                                  f"{scale}%: a camera with a device AND a long reason "
                                  f"overflows: {list(result.overflow)}")
@@ -604,9 +628,14 @@ class TheSeedToRouteRule(unittest.TestCase):
     def test_the_child_and_the_module_share_one_definition(self):
         self.assertEqual(capture_ui._CHILD.count("def routes_from_seed"), 1,
                          "the child must paste the rule in exactly once")
-        self.assertIn("_ROUTES_FROM_SEED_SOURCE", capture_ui._CHILD,
-                      "and it must be the shared source, not a second copy that can drift")
-        compile(capture_ui._CHILD.replace("@@REPO@@", repr(str(REPO_ROOT))),
+        # **Asserting the whole source string, not the identifier.** `assertIn(
+        # "_ROUTES_FROM_SEED_SOURCE", _CHILD)` was satisfied by the **comment** above the paste -
+        # which names the constant - and would have passed with the paste deleted. This asserts
+        # the rule's own text is in the child, verbatim, which is the claim being made.
+        self.assertIn(capture_ui._ROUTES_FROM_SEED_SOURCE, capture_ui._CHILD,
+                      "the child must contain the shared rule verbatim, not a comment about it")
+        compile(capture_ui._CHILD.replace("@@REPO@@", repr(str(REPO_ROOT)))
+                .replace("@@AUDIT_FLAG@@", repr(capture_ui.READ_AUDIT)),
                 "<child>", "exec")
 
 
@@ -648,6 +677,52 @@ class ClippingIsTheDecision(unittest.TestCase):
                       "and the divisor stays guarded against a zero-length model, because "
                       "`Math.max` passes NaN through and a zero-height delegate is invisible "
                       "rather than wrong-looking")
+
+    def test_a_type_size_as_the_height_floor_reintroduces_the_overrun_at_ten_cameras(self):
+        """**The same 32 px defect, coming back through the floor.**
+
+        Task 2 wrote `Math.max(Theme.TYPE_NUMERAL, (band - GAP*(n-1)) / n)`. The floor exists to
+        stop a zero or negative height, and at three cameras it never engages. **At ten cameras
+        the band cannot give each card 56 px**: `(660 - 144) / 10 = 51.6`, the floor raises all
+        ten to 56, and the column claims **704 px in a 660 px band - 44 px into the footer**,
+        drawn anyway, because a `Column` does not clip. That is the defect this task fixed,
+        returning through the guard that was meant to prevent it.
+
+        So the floor is `0`, and this asserts both halves: the code no longer floors with a type
+        size, **and** the arithmetic it does use cannot overrun the band at any camera count from
+        one to sixteen. The second half is computed here from `app/theme.py`, independently of
+        the QML, and it is a negative control in the same test: the old expression is evaluated
+        alongside it and shown to overrun.
+        """
+        code = _code_only(REPO_ROOT / "app/ui/Main.qml")
+        self.assertNotIn("Math.max(Theme.TYPE_NUMERAL", code,
+                         "a type size must not be the card height's floor: it raises every card "
+                         "to 56 px and the column then overruns its band at any camera count the "
+                         "band cannot supply that for (ten cameras: 704 px in 660).")
+        self.assertIn("height: Math.max(0,", code,
+                      "the floor's only job is to stop a negative height, and 0 does that")
+
+        band = main_band()[1] - main_band()[0]
+
+        def gaps(count):
+            return theme.GAP * max(0, count - 1)
+
+        for count in range(1, 17):
+            height = max(0, (band - gaps(count)) / max(1, count))
+            self.assertLessEqual(
+                height * count + gaps(count), band + 0.5,
+                f"{count} cards: {height * count + gaps(count):.2f} px of content in a "
+                f"{band:.2f} px band. The expression under test cannot overrun the band at any "
+                f"camera count.")
+        # **The negative control, so the assertion above is not vacuous:** the floor Task 2 wrote
+        # does overrun, and by more than the 32 px this task originally fixed.
+        for count in (10, 12, 16):
+            floored = max(theme.TYPE_NUMERAL, (band - gaps(count)) / count)
+            self.assertGreater(
+                floored * count + gaps(count), band,
+                f"{count} cards with a {theme.TYPE_NUMERAL} px floor claim "
+                f"{floored * count + gaps(count):.2f} px in a {band:.2f} px band - the "
+                f"negative control for the assertion above")
 
     def test_the_layout_tokens_are_in_theme_and_not_in_the_qml(self):
         """**Code, not comments.** See `_code_only`: the first version of this test searched the

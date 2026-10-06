@@ -919,7 +919,7 @@ interactive act.
 | 4 | Clip redistribution clearance | **not established** - unchanged |
 | 5 | Detector licence | **AGPL-3.0, unresolved** - M6 |
 | 6 | Code signing | **unmet M6 gate** - M6 ships unsigned |
-| 7 | 1920x1080 DPI gate and `tools/capture_ui.py` | **not run - M3.** This report commits **no screenshot**; the live booth is 2293x960 and M0 measured usable height at 960 px |
+| 7 | 1920x1080 DPI gate and `tools/capture_ui.py` | **closed by M3 (Tasks 1-2), see the M3 section below.** The live booth is 2293x960 and M0 measured usable height at 960 px, so the gate is measured **offscreen**; the four committed captures and their corrected device-space `glyph_pixels` are under `docs/qualification/m3-capture/` |
 | 8 | AC status | **unavailable, permanently** - unchanged |
 | 9 | Hardware SKU | **unreconciled** - unchanged |
 | 10 | Second annotated frame with a non-square object | **open** - the `w`/`h` transposition blind spot stands and the current annotation's aspect check is **inverted** |

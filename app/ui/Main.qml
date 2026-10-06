@@ -331,10 +331,21 @@ Window {
                             // could not see it either, because nothing clips. Now:
                             // `(660 - 16 * 2) / 3 = 209.33` per card, and the column ends
                             // exactly on the band.
-                            height: Math.max(Theme.TYPE_NUMERAL,
-                                             (parent.height
-                                              - Theme.GAP * Math.max(0, bridge.stream_ids.length - 1))
-                                             / Math.max(1, bridge.stream_ids.length))
+                            //
+                            // **The floor is `0`, not `Theme.TYPE_NUMERAL`.** Task 2 first wrote
+                            // `Math.max(Theme.TYPE_NUMERAL, ...)`, which is a guard against a
+                            // zero or negative height - and it **reintroduces the same overrun it
+                            // had just fixed** at any camera count where the band cannot give
+                            // each card 56 px: `n = 10` gives `(660 - 144) / 10 = 51.6`, the
+                            // floor raises all ten cards to 56, and the column claims
+                            // **704 px in a 660 px band - 44 px into the footer**, silently, with
+                            // nothing clipping. Latent at three cameras; a defect at ten. The
+                            // divisor is already guarded against a zero-length model by
+                            // `Math.max(1, ...)`, so the floor only has to stop a negative
+                            // height, and `0` does that.
+                            height: Math.max(0, (parent.height
+                                                 - Theme.GAP * Math.max(0, bridge.stream_ids.length - 1))
+                                                / Math.max(1, bridge.stream_ids.length))
                             explainKey: "cpu"
                             onExplainRequested: key => window.pinnedExplanationKey = key
                         }

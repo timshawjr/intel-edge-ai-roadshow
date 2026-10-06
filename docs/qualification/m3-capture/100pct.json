@@ -46,6 +46,9 @@
     "streamWindowText_C": "ancestor:cardLeftColumn_C",
     "thumb_B": "window",
     "thumb_C": "window",
+    "tileCaptionText_A": "ancestor:heroTile",
+    "tileCaptionText_B": "ancestor:thumb_B",
+    "tileCaptionText_C": "ancestor:thumb_C",
     "tileImage_A": "ancestor:heroTile",
     "tileImage_B": "ancestor:thumb_B",
     "tileImage_C": "ancestor:thumb_C",
@@ -57,7 +60,8 @@
     "tileNoFrame_C": "ancestor:thumb_C"
   },
   "dpr": 1.0,
-  "elapsed_s": 0.20669589994940907,
+  "elapsed_s": 0.20649100001901388,
+  "empty_nonempty": [],
   "extents": {
     "cardLeftColumn_A": [
       1321.0,
@@ -69,13 +73,13 @@
       1321.0,
       393.33333333333337,
       314.14,
-      193.33333333333337
+      193.33333333333334
     ],
     "cardLeftColumn_C": [
       1321.0,
       618.6666666666667,
       314.14,
-      193.33333333333337
+      193.33333333333334
     ],
     "cardRightColumn_A": [
       1643.1399999999999,
@@ -87,13 +91,13 @@
       1643.1399999999999,
       393.33333333333337,
       244.85999999999999,
-      193.33333333333337
+      193.33333333333334
     ],
     "cardRightColumn_C": [
       1643.1399999999999,
       618.6666666666667,
       244.85999999999999,
-      193.33333333333337
+      193.33333333333334
     ],
     "cardText_system_cpu_percent": [
       1643.1399999999999,
@@ -329,6 +333,24 @@
       628.5,
       105.60000000000001
     ],
+    "tileCaptionText_A": [
+      32.0,
+      671.4,
+      0.0,
+      20.0
+    ],
+    "tileCaptionText_B": [
+      32.0,
+      793.0,
+      135.0,
+      20.0
+    ],
+    "tileCaptionText_C": [
+      676.5,
+      793.0,
+      207.0,
+      20.0
+    ],
     "tileImage_A": [
       24.0,
       160.0,
@@ -415,6 +437,9 @@
     "streamWindowText_A": 18,
     "streamWindowText_B": 18,
     "streamWindowText_C": 18,
+    "tileCaptionText_A": 18,
+    "tileCaptionText_B": 18,
+    "tileCaptionText_C": 18,
     "tileNoFrameText_A": 18,
     "tileNoFrameText_B": 18,
     "tileNoFrameText_C": 18
@@ -467,6 +492,9 @@
     "streamWindowText_C": 6280,
     "thumb_B": 23383,
     "thumb_C": 23468,
+    "tileCaptionText_A": 0,
+    "tileCaptionText_B": 2700,
+    "tileCaptionText_C": 4140,
     "tileImage_A": 7330,
     "tileImage_B": 23383,
     "tileImage_C": 23468,
@@ -477,9 +505,13 @@
     "tileNoFrame_B": 23383,
     "tileNoFrame_C": 23468
   },
+  "glyph_scale": [
+    1.0,
+    1.0
+  ],
   "height": 1080,
   "image_dpr": 1.0,
-  "items_seen": 56,
+  "items_seen": 59,
   "json_path": null,
   "mode": "seed",
   "opened_during_read": [],
@@ -509,7 +541,9 @@
     "streamBadgeText_A",
     "streamReasonText_C",
     "thumb_B",
-    "thumb_C"
+    "thumb_C",
+    "tileCaptionText_B",
+    "tileCaptionText_C"
   ],
   "read_window_closed": true,
   "scale_percent": 100,
@@ -523,6 +557,7 @@
     "window_samples": "docs\\qualification\\m2-headless\\allcpu-steady-120s.json"
   },
   "settle_missed": [],
+  "settle_polls": 1,
   "settled": true,
   "strings": {
     "cardText_system_cpu_percent": "no CPU sample yet",
@@ -555,9 +590,71 @@
     "streamWindowText_A": "window: 256 analysed frames",
     "streamWindowText_B": "window: 256 analysed frames",
     "streamWindowText_C": "window: 256 analysed frames",
+    "tileCaptionText_A": "",
+    "tileCaptionText_B": "Camera B \u00b7 CPU",
+    "tileCaptionText_C": "Camera C \u00b7 not confirmed",
     "tileNoFrameText_A": "no frame from Camera A yet",
     "tileNoFrameText_B": "no frame from Camera B yet",
     "tileNoFrameText_C": "no frame from Camera C yet"
+  },
+  "text_property": {
+    "cardLeftColumn_A": false,
+    "cardLeftColumn_B": false,
+    "cardLeftColumn_C": false,
+    "cardRightColumn_A": false,
+    "cardRightColumn_B": false,
+    "cardRightColumn_C": false,
+    "cardText_system_cpu_percent": true,
+    "cardWindowNote_": true,
+    "cardWindowNote_system_cpu_percent": true,
+    "card_A": false,
+    "card_B": false,
+    "card_C": false,
+    "deviceBadgeText": true,
+    "eventCountRow": true,
+    "heroTile": false,
+    "stalenessText": true,
+    "streamActivityText_A": true,
+    "streamActivityText_B": true,
+    "streamActivityText_C": true,
+    "streamAgeText_A": true,
+    "streamAgeText_B": true,
+    "streamAgeText_C": true,
+    "streamBacklogText_A": true,
+    "streamBacklogText_B": true,
+    "streamBacklogText_C": true,
+    "streamBadgeBox_A": false,
+    "streamBadgeBox_B": false,
+    "streamBadgeBox_C": false,
+    "streamBadgeText_A": true,
+    "streamBadgeText_B": true,
+    "streamBadgeText_C": true,
+    "streamRateText_A": true,
+    "streamRateText_B": true,
+    "streamRateText_C": true,
+    "streamReasonText_A": true,
+    "streamReasonText_B": true,
+    "streamReasonText_C": true,
+    "streamStaleText_A": true,
+    "streamStaleText_B": true,
+    "streamStaleText_C": true,
+    "streamWindowText_A": true,
+    "streamWindowText_B": true,
+    "streamWindowText_C": true,
+    "thumb_B": false,
+    "thumb_C": false,
+    "tileCaptionText_A": true,
+    "tileCaptionText_B": true,
+    "tileCaptionText_C": true,
+    "tileImage_A": false,
+    "tileImage_B": false,
+    "tileImage_C": false,
+    "tileNoFrameText_A": true,
+    "tileNoFrameText_B": true,
+    "tileNoFrameText_C": true,
+    "tileNoFrame_A": false,
+    "tileNoFrame_B": false,
+    "tileNoFrame_C": false
   },
   "truncated": [],
   "unreachable": [],
@@ -607,6 +704,9 @@
     "streamWindowText_C": true,
     "thumb_B": true,
     "thumb_C": true,
+    "tileCaptionText_A": false,
+    "tileCaptionText_B": true,
+    "tileCaptionText_C": true,
     "tileImage_A": true,
     "tileImage_B": true,
     "tileImage_C": true,
@@ -618,5 +718,6 @@
     "tileNoFrame_C": true
   },
   "walk_complete": true,
+  "walk_failures": [],
   "width": 1920
 }

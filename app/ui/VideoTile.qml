@@ -176,6 +176,19 @@ Item {
         color: Theme.BG_PANEL_DEEP
         radius: Theme.RADIUS
         Text {
+            // **Named, and this is the third M2 defect.**
+            //
+            // M2 shipped `Camera B · -1` under a thumbnail: a `QVariantList` concatenated with
+            // a string. The fix was in the bridge (`stream_confirmed_labels`). **But the caption
+            // `Text` had no `objectName`,** so `capture_ui`'s walk never yielded it, it was
+            // absent from `strings` in all four committed captures, and **the defect the harness
+            // was built to catch was invisible to the harness** - a regression here would have
+            // left all four committed JSONs byte-identical and the CLI exiting 0.
+            //
+            // Naming it makes it one of the strings the instrument reads, and
+            // `BOOTH_EXPECTED`/`BOOTH_NONEMPTY` list it so a capture waits for it and a test
+            // asserts its value per camera. **A label nobody can read is not a label.**
+            objectName: "tileCaptionText_" + tile.streamId
             anchors.left: parent.left
             anchors.leftMargin: Theme.SPACING.sm
             anchors.verticalCenter: parent.verticalCenter
