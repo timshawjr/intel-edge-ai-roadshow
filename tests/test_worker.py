@@ -36,9 +36,11 @@ import numpy as np
 
 from app.contracts.frame import FramePacket
 from app.engine.worker import (
+    DISPLAY_COPY_MAX_WIDTH,
     InferenceResult,
     WorkerConfig,
     _confirmed_devices,
+    display_copy,
     infer_once,
     run_worker,
 )
@@ -622,6 +624,89 @@ def _drain(frames) -> list:
             results.append(out_q.get_nowait())
         except Exception:  # noqa: BLE001 - queue.Empty on every implementation
             return results
+
+
+class TheResultIsReducedToDisplayResolutionAfterInference(unittest.TestCase):
+    """**The detector sees full resolution; only what crosses back is smaller.**
+
+    The frame the UI feeder submits is full-resolution because the detector letterboxes it
+    to 640x640 and small-object detection depends on that source. The frame that comes
+    *back* is only ever painted, and it was coming back at 1920x1080: ~6.2 MB of pickle and
+    an unpickle per frame plus a `QImage` construction on the UI thread - measured on the
+    three-camera booth at ~3.4 ms and ~13-18 ms of CPU per frame respectively - for pixels
+    the hero displays at 957x538.
+
+    `run_worker` now reduces each successful result to `DISPLAY_COPY_MAX_WIDTH` **after**
+    `infer_once` returns, scaling the detection boxes with the frame so every normalised
+    coordinate is unchanged.
+
+    Every assertion here has a mutation that would break it:
+
+    - not reducing at all fails the shape assertion (the frame stays 1920x1080);
+    - reducing the frame without scaling the boxes moves every box, which the
+      normalised-agreement test catches against a direct full-resolution `infer_once`;
+    - reducing **before** `infer_once` changes the detection set, which the same test
+      catches.
+    """
+
+    def test_display_copy_scales_1080p_to_the_heros_native_width(self):
+        source = np.zeros((1080, 1920, 3), np.uint8)
+        copy = display_copy(source)
+        self.assertEqual(copy.shape, (540, 960, 3), copy.shape)
+        self.assertEqual(copy.dtype, np.uint8)
+        self.assertAlmostEqual(copy.shape[1] / copy.shape[0], 1920 / 1080, places=3)
+        self.assertEqual(DISPLAY_COPY_MAX_WIDTH, 960)
+
+    def test_a_frame_at_or_below_the_target_is_not_resized(self):
+        """A small source must not acquire a resize cost, and must not be re-allocated."""
+        source = np.zeros((360, 640, 3), np.uint8)
+        self.assertIs(display_copy(source), source)
+
+    def test_run_worker_returns_a_result_at_display_resolution(self):
+        _require_device("CPU")
+        frame = _frame(REAL_FRAME_INDEX, image=_real_frame())
+        result = _drain([frame])[0]
+        self.assertIsNone(result.error, result.error)
+        self.assertEqual(result.frame.image.shape, (540, 960, 3), result.frame.image.shape)
+        self.assertEqual((result.frame.width, result.frame.height), (960, 540),
+                         "the extents must match the image the frame now carries")
+        self.assertNotEqual(result.frame.width, 1920,
+                            "the 1920x1080 pixels must not travel back")
+
+    def test_a_small_frame_is_returned_untouched(self):
+        """A source already at display resolution pays nothing and keeps its own frame."""
+        _require_device("CPU")
+        small = cv2.resize(_real_frame(), (640, 360), interpolation=cv2.INTER_AREA)
+        frame = _frame(REAL_FRAME_INDEX, image=small)
+        result = _drain([frame])[0]
+        self.assertIsNone(result.error, result.error)
+        self.assertEqual(result.frame.image.shape, (360, 640, 3), result.frame.image.shape)
+
+    def test_the_normalised_detections_agree_with_a_direct_full_resolution_run(self):
+        """**The non-vacuous form of 'the geometry is unmoved'.**
+
+        Reducing the frame without scaling its boxes would keep every box inside [0, 1]
+        on the smaller extents but put it in the wrong place - the "correct box, wrong
+        picture" class. Comparing the **normalised** boxes (box / frame extents) against a
+        direct full-resolution `infer_once` is what catches it; a shape check cannot.
+        """
+        _require_device("CPU")
+        frame = _frame(REAL_FRAME_INDEX, image=_real_frame())
+        direct = infer_once(None, frame, _cfg())
+        drained = _drain([frame])[0]
+        self.assertIsNone(direct.error, direct.error)
+        self.assertIsNone(drained.error, drained.error)
+        self.assertTrue(direct.detections, "no detections to compare - the test is vacuous")
+        self.assertEqual(len(drained.detections), len(direct.detections))
+        for direct_det, drained_det in zip(direct.detections, drained.detections):
+            self.assertEqual(drained_det.class_id, direct_det.class_id)
+            for got, want, extent_got, extent_want in (
+                    (drained_det.box[0], direct_det.box[0], drained.frame.width, direct.frame.width),
+                    (drained_det.box[1], direct_det.box[1], drained.frame.height, direct.frame.height),
+                    (drained_det.box[2], direct_det.box[2], drained.frame.width, direct.frame.width),
+                    (drained_det.box[3], direct_det.box[3], drained.frame.height, direct.frame.height)):
+                self.assertAlmostEqual(got / extent_got, want / extent_want, places=5,
+                                       msg="a reduced box must normalise to the same place")
 
 
 class MeasuredLatencyIsAPercentileOfRealWork(unittest.TestCase):

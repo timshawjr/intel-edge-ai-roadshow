@@ -1260,6 +1260,12 @@ def _frame_payload(frame: Any, tracker: Any, events: Sequence[Any],
     rebuilt on the UI thread by the slot; see `_on_result` for why the pixels travel here
     rather than as a `QImage`.
 
+    **`frame` is the result's own frame, and on the windowed path it has already been
+    reduced to display resolution by the worker** (`app.engine.worker._display_result`):
+    its image is `DISPLAY_COPY_MAX_WIDTH`-wide and its detections are in the same scaled
+    coordinates, so `frame.image`, `frame.width`/`frame.height` and every box below agree.
+    Nothing here needs to know that; a frame that was never reduced is handled identically.
+
     ## `stream` is the whole of the per-camera split
 
     **M2.** The payload says which camera it is, and `UiBridge.apply_frame` files the

@@ -75,9 +75,10 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, fields
-from typing import Any
+from dataclasses import dataclass, fields, replace
+from typing import Any, Final
 
+import cv2
 import numpy as np
 
 from app.contracts.frame import FramePacket
@@ -97,12 +98,88 @@ from app.inference.devices import (
 from app.inference.pinned import MODEL_ID, num_classes, pinned_input_shape, verified_ir_path
 from app.inference.preprocess import preprocess_bgr
 
-__all__ = ["InferenceResult", "WorkerConfig", "infer_once", "run_worker"]
+__all__ = ["DISPLAY_COPY_MAX_WIDTH", "InferenceResult", "WorkerConfig", "display_copy",
+           "infer_once", "run_worker"]
 
 #: The port key the tensor is filed under. `app.inference.decode` keys on the port
 #: **index as a string**, because the pinned export's output port has no name at all and
 #: there is nothing else that identifies it.
 OUTPUT_PORT_KEY = port_key(0)
+
+#: The long edge the **display** copy of a frame is scaled to before it crosses back to
+#: the UI process. **960, and it is derived rather than chosen.**
+#:
+#: The booth's hero tile is `Theme.VIDEO_WIDTH_FRACTION` (0.68) of the 1920 px canvas wide
+#: and the main band tall, and `VideoTile.qml`'s `Image` is `fillMode: PreserveAspectFit`.
+#: Measured from those two numbers: the hero box is 1306 x 538, so a 16:9 image is fitted
+#: at `min(1306/1920, 538/1080) = 0.4985` and **displayed at 957 x 538**. A 960-wide copy
+#: is therefore native for the hero and four times more than a 187 px thumbnail needs.
+#:
+#: **The detector never sees this copy.** `run_worker` calls `infer_once` on the
+#: full-resolution packet first and only then builds the display copy, so small-object
+#: detection is unchanged (AGENTS.md rule: do not downscale anything the detector
+#: consumes).
+DISPLAY_COPY_MAX_WIDTH: Final[int] = 960
+
+
+def display_copy(image: np.ndarray, *,
+                 max_width: int = DISPLAY_COPY_MAX_WIDTH) -> np.ndarray:
+    """A smaller BGR `uint8` copy of `image` for display, or `image` itself if it is small.
+
+    `INTER_AREA` because this is a downscale and area averaging is the correct filter for
+    one; `INTER_LINEAR` (what the letterbox uses) aliases on a 2x reduction.
+
+    Returns `image` unchanged when it is already at or below `max_width` - a source that
+    is small enough is not resized, so a test frame does not acquire a resize cost.
+    """
+    array = np.asarray(image)
+    height, width = int(array.shape[0]), int(array.shape[1])
+    if width <= int(max_width):
+        return array
+    scale = float(max_width) / float(width)
+    target = (int(max_width), max(1, int(round(height * scale))))
+    return cv2.resize(array, target, interpolation=cv2.INTER_AREA)
+
+
+def _display_result(result: InferenceResult) -> InferenceResult:
+    """The result as it crosses back to the UI: pixels and geometry at display resolution.
+
+    **The detector has already run on the full-resolution frame** - `infer_once` letterboxed
+    `frame.image` and decoded boxes in its source pixels - so this only changes what is
+    transported and painted. It does two things, and they must happen together:
+
+    1. the frame's image is replaced by `display_copy(frame.image)` and its `width`/`height`
+       with the copy's, so the 6.2 MB full-resolution array is **not** in the return
+       pickle at all;
+    2. every detection box is scaled by the copy's own x and y factors, so a box stays in
+       the same **normalised** position against the smaller extents.
+
+    Doing (1) without (2) would move every overlay box and mis-classify every zone
+    membership, because both `app.main._frame_payload` and
+    `app.engine.events._normalise` divide a box by the frame's own extents. Scaling both
+    together leaves every normalised coordinate identical - IoU is scale-invariant, so the
+    tracker's matching is unchanged too - while the pixels that travel back are four times
+    smaller.
+
+    A failure is returned untouched: there is nothing to display and no geometry to scale.
+    A frame already at or below `DISPLAY_COPY_MAX_WIDTH` is returned untouched, so the
+    single-stream and test paths pay nothing.
+    """
+    if result.error is not None:
+        return result
+    frame = result.frame
+    copy = display_copy(frame.image)
+    if copy is frame.image:
+        return result
+    scale_x = copy.shape[1] / float(frame.width)
+    scale_y = copy.shape[0] / float(frame.height)
+    display_frame = replace(frame, width=int(copy.shape[1]), height=int(copy.shape[0]),
+                            image=copy)
+    display_detections = tuple(
+        replace(detection, box=(detection.box[0] * scale_x, detection.box[1] * scale_y,
+                                detection.box[2] * scale_x, detection.box[3] * scale_y))
+        for detection in result.detections)
+    return replace(result, frame=display_frame, detections=display_detections)
 
 
 def _require_positive_int(name: str, value: Any) -> int:
@@ -616,10 +693,22 @@ def run_worker(config: WorkerConfig, in_queue: Any, out_queue: Any) -> None:
     A frame that cannot be handled - not a packet, a session that will not compile, a
     plugin that throws - produces an `InferenceResult` with `error` set and the loop
     continues. Only the `None` sentinel stops it.
+
+    **Every successful result is reduced to display resolution before it is put on the
+    queue.** `_display_result` replaces the frame's pixels and extents with a
+    `DISPLAY_COPY_MAX_WIDTH`-wide copy and scales the detection boxes to match, and it runs
+    **after** `infer_once` has finished, so the detector always saw the full-resolution
+    frame. What it saves is the return transport and the UI process's work, both of which
+    scale with pixel count; what it preserves is every normalised coordinate, so the
+    overlay and the zone rules are unmoved.
     """
     while True:
         frame = in_queue.get()
         if frame is None:
             return
         result = infer_once(None, frame, config)
-        out_queue.put(result)
+        # **Reduce the result to display resolution after the inference, never before it.**
+        # `infer_once` has already letterboxed and run on `frame.image` at full
+        # resolution, so the detector's input is untouched; this only decides what is
+        # pickled back and painted. See `_display_result`.
+        out_queue.put(_display_result(result))
