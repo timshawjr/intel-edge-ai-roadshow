@@ -1,0 +1,64 @@
+{
+  "backlog_warmup_note": "The three-stream conditions warm up for 130 s because frame age is a consequence of accumulated queue depth: at 15 fps offered and 13.44-13.56 fps analysed a CPU stream gains 1.50 frames of backlog per second, so the 173-187 frames M2 measured is 115-125 s of accumulation. A six-second window cannot show the booth's real state.",
+  "calibrated_saturators": 6,
+  "conditions_failed": [
+    {
+      "condition": "three-cpu-no-saturators",
+      "error": "three-cpu-no-saturators: another Python process started during the measured window, so this window is not a clean measurement. Competing censuses seen: [{\"clean\": false, \"our_pids\": [2316, 6748, 9188, 10616, 17172, 20764, 22924, 25048], \"python_pids\": [6748, 12740, 22924, 25048], \"competing_pids\": [12740], \"detail\": \"1 Python process(es) outside this run's process tree: [12740]\"}]. Stop the other process and re-run, or set ACKLD_ALLOW_DIRTY=1 to keep a deliberately dirty figure."
+    },
+    {
+      "condition": "three-own-devices-no-saturators",
+      "error": "the machine is not clean enough to measure on: 5 Python process(es) outside this run's process tree: [12648, 16696, 19540, 23916, 26520]. A tick, leak or latency figure taken while other Python processes run is not a measurement of this application. Stop them (on Windows: `Stop-Process -Id 12648, 16696, 19540, 23916, 26520`) and run again, or set ACKLD_ALLOW_DIRTY=1 to record a deliberately dirty run."
+    },
+    {
+      "condition": "one-cpu-saturated",
+      "error": "the machine is not clean enough to measure on: 5 Python process(es) outside this run's process tree: [12648, 16696, 19540, 23916, 26520]. A tick, leak or latency figure taken while other Python processes run is not a measurement of this application. Stop them (on Windows: `Stop-Process -Id 12648, 16696, 19540, 23916, 26520`) and run again, or set ACKLD_ALLOW_DIRTY=1 to record a deliberately dirty run."
+    },
+    {
+      "condition": "three-cpu-saturated",
+      "error": "the machine is not clean enough to measure on: 5 Python process(es) outside this run's process tree: [12648, 16696, 19540, 23916, 26520]. A tick, leak or latency figure taken while other Python processes run is not a measurement of this application. Stop them (on Windows: `Stop-Process -Id 12648, 16696, 19540, 23916, 26520`) and run again, or set ACKLD_ALLOW_DIRTY=1 to record a deliberately dirty run."
+    }
+  ],
+  "gate_thresholds_quoted_not_tuned": {
+    "note": "These are the existing gate's own numbers, quoted from the gate and deliberately not tuned. Nothing in this tool can change them; a threshold adjusted until the answer came out the way somebody wanted would not be a measurement.",
+    "p95_ms": 200.0,
+    "source": "tests/test_main.py::InputAcknowledgement",
+    "worst_tick_ms": 2000.0
+  },
+  "machine_clean_note": "The census taken before the run. `competing_pids` must be empty for the timing figures to be a measurement of this application and nothing else; a run taken with ACKLD_ALLOW_DIRTY=1 carries `overridden: true` and is deliberately dirty.",
+  "machine_state": {
+    "clean": true,
+    "competing_pids": [],
+    "detail": "no Python process outside this run's process tree",
+    "our_pids": [
+      2316,
+      6748,
+      9188,
+      10616,
+      17172,
+      20764,
+      25048
+    ],
+    "python_pids": [
+      6748,
+      25048
+    ]
+  },
+  "per_condition_ranges": [],
+  "repeats_per_condition": 2,
+  "saturator_note": "cpu_count()-2 = 6 here, the existing gate's calibration. It is a FLOOR, not a bound, and not comparable across machines: at cpu_count() of 8 the same probe measured p95 195.6 ms and max 1105.5 ms while still reporting green.",
+  "summary": {
+    "disagreeing_conditions": [],
+    "frame_age_stale": 0,
+    "gate_pass": 0,
+    "gate_passes_while_frame_age_stale": 0,
+    "windows_measured": 0
+  },
+  "the_table": [],
+  "the_two_numbers_are_separate_claims": "Frame age is not inference cost. On the NPU the measured p95 frame age is seconds while the inference itself costs about 5.9 ms; the gap is queue wait. They are never added, averaged, or presented as one figure.",
+  "tick_period_ms": 20,
+  "tool": "tools/input_ack_under_load.py",
+  "warmup_override_s": null,
+  "what_this_measures": "UI-thread tick lateness (what the input-acknowledgement gate measures) and per-stream inference backlog (what it does not), measured in the SAME window of the SAME application process.",
+  "window_s": 30.0
+}
