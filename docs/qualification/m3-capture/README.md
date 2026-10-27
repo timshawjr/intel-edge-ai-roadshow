@@ -93,7 +93,11 @@ of the committed JSONs, not asserted.
   second, silent cut was left behind**.
 - **`font_pixels` was added by Task 2**, and it is what makes "no font size changed" checkable. At
   100%: **18 px on 29 items**, **26 px on 1** (`deviceBadgeText`, `TYPE_LABEL`), **34 px on 3** (the
-  three `streamAgeText_*` headlines, `TYPE_NUMERAL_SMALL`). No other size appears on the screen.
+  three `streamAgeText_*` headlines, `TYPE_NUMERAL_SMALL`). No other size appears among the
+  **named** items - and that qualifier is a correction made by M3 Task 6: the screen also
+  carries a **40 px** title, 26 px card headings and 18 px footer and scope-note text that
+  have no `objectName`, and this census cannot see any of them. See
+  [M3-readability-review.md](../M3-readability-review.md), section 3.
 - **`glyph_pixels` vs `qobject_missed` is the delegate-read proof, in numbers.** `QObject.findChild`
   reaches **4** of the **21** expected names and misses **17** — every one of the misses a `Repeater`
   delegate — while the walk reaches all 21 and the PNG's own pixels show non-background pixels

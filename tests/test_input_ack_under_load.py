@@ -672,20 +672,60 @@ class AMeasurementRefusesADirtyMachine(unittest.TestCase):
     """
 
     def test_a_python_process_outside_our_tree_is_reported_as_competing(self):
-        with mock.patch.object(ack, "python_processes", return_value=[11, 22, 33, 44]), \
-                mock.patch.object(ack, "_our_process_tree", return_value={11, 22, 33}):
+        me = os.getpid()
+        table = {1: (0, "opencode-cli.exe"),
+                 me: (1, "python.exe"),          # us
+                 22: (me, "python.exe"),         # our own child
+                 44: (1, "python.exe")}          # another session's, under the shared ancestor
+        with mock.patch.object(ack, "_process_table", return_value=table):
             state = ack.machine_state()
         self.assertFalse(state["clean"])
         self.assertEqual(state["competing_pids"], [44])
         self.assertIn("44", state["detail"])
 
     def test_our_own_process_tree_is_not_mistaken_for_a_competitor(self):
-        with mock.patch.object(ack, "python_processes", return_value=[11, 22]), \
-                mock.patch.object(ack, "_our_process_tree", return_value={11, 22}):
+        me = os.getpid()
+        table = {1: (0, "opencode-cli.exe"),
+                 me: (1, "python.exe"),
+                 11: (me, "python.exe"),
+                 22: (11, "python.exe")}
+        with mock.patch.object(ack, "_process_table", return_value=table):
             state = ack.machine_state()
         self.assertTrue(state["clean"])
         self.assertEqual(state["competing_pids"], [])
-        self.assertEqual(state["python_pids"], [11, 22])
+        self.assertEqual(state["python_pids"], sorted([me, 11, 22]))
+
+    def test_the_census_reads_one_snapshot_so_our_own_new_child_is_not_a_competitor(self):
+        """**The false positive that made a clean run refuse itself.**
+
+        The probe spawns three workers a moment after it starts. With two snapshots - one for
+        "which PIDs are ours", one for "which PIDs are Python" - a worker that appeared between
+        them was in the Python list but not in the descendant set, and the census reported **our
+        own worker as a competing process**. Measured on this machine: two clean runs refused
+        with exactly one extra PID, and the machine idles with zero `python.exe`.
+
+        The assertion is on the **number of snapshots**, because that is the mechanism: one read
+        cannot disagree with itself. A mutant that restores the second read fails here even on a
+        table where the extra PID would also have been ours.
+        """
+        me = os.getpid()
+        before = {1: (0, "opencode-cli.exe"), me: (1, "python.exe")}
+        after = dict(before)
+        after[9001] = (me, "python.exe")            # our worker, one instant later
+        tables = iter([before, after])
+        reads: list[int] = []
+
+        def one_snapshot() -> dict:
+            reads.append(1)
+            return next(tables)
+
+        with mock.patch.object(ack, "_process_table", side_effect=one_snapshot):
+            state = ack.machine_state()
+        self.assertEqual(len(reads), 1,
+                         "the census must take ONE process-table snapshot; two reads let a "
+                         "child of ours appear to be a competitor")
+        self.assertTrue(state["clean"], state)
+        self.assertEqual(state["competing_pids"], [])
 
     def test_the_census_reads_python_processes_and_their_parents(self):
         table = {1: (0, "opencode-cli.exe"),
@@ -773,6 +813,53 @@ class AMeasurementRefusesADirtyMachine(unittest.TestCase):
         self.assertFalse(contaminated[0]["clean"])
         self.assertIn("999", contaminated[0]["detail"])
 
+    def test_the_refusal_is_a_typed_runtime_error(self):
+        """**The type is what lets a suite skip and a tool still refuse.**
+
+        It must stay a `RuntimeError`: every caller written before it existed catches
+        `RuntimeError`, and those callers must keep refusing a dirty figure. It must also be its
+        own type, because a suite has to tell "the machine is busy" (skip) apart from "the probe
+        measured nothing" (error). Both properties are asserted, because dropping either one
+        breaks something that is not visible from here.
+        """
+        self.assertTrue(issubclass(ack.MachineNotClean, RuntimeError),
+                        "callers that catch RuntimeError must keep catching this refusal")
+        caught = None
+        with mock.patch.object(ack, "machine_state", return_value={
+                "clean": False, "competing_pids": [999], "detail": "busy"}):
+            try:
+                ack.assert_machine_clean(settle_s=0.0)
+            except ack.MachineNotClean as exc:  # noqa: F841 - the class is the assertion
+                caught = exc
+        self.assertIsNotNone(caught, "assert_machine_clean must raise MachineNotClean")
+        self.assertIsInstance(caught, RuntimeError)
+
+    def test_a_competitor_seen_mid_window_returns_no_row(self):
+        """**The whole point: a dirty window is refused, not returned with a caveat.**
+
+        Reproduced without spawning anything and without waiting six minutes: the census before
+        the child is patched clean, the census during it is patched dirty, and `measure` must
+        raise before it parses a single payload. A patch that let `measure` carry on would
+        return a row built from a window somebody else was loading.
+        """
+        dirty = {"clean": False, "competing_pids": [999],
+                 "detail": "1 Python process(es) outside this run's process tree: [999]"}
+        clean = {"clean": True, "competing_pids": [], "detail": "clean"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = pathlib.Path(tmp) / "child.out"
+            err_path = pathlib.Path(tmp) / "child.err"
+            with open(out_path, "w", encoding="utf-8") as out_file, \
+                    open(err_path, "w", encoding="utf-8") as err_file, \
+                    mock.patch.object(ack, "assert_machine_clean", return_value=dict(clean)), \
+                    mock.patch.object(ack, "_run_monitored",
+                                      return_value=(0, [dict(dirty)])):
+                with self.assertRaises(ack.MachineNotClean) as caught:
+                    ack.measure(ack.CONDITIONS[0], seconds=1.0, repeats=1, warmup_s=0.0,
+                                timeout=5.0)
+        self.assertIn("999", str(caught.exception),
+                      "the refusal must name the competing process it saw")
+        self.assertIn("not a clean measurement", str(caught.exception))
+
 
 def _provisioned() -> str | None:
     """Why this machine cannot run the real pipeline, or `None` if it can.
@@ -831,15 +918,36 @@ class TheCoReportedWindowOnTheRealApplication(unittest.TestCase):
         # machine carrying 66 orphaned `python.exe` processes from interrupted experiments. Those
         # failures were pollution, not code. Rather than fail misleadingly, this test says so and
         # skips **with the reason** - a skip that states why, never a quiet pass.
+        #
+        # **Two opportunities to be busy, and both are handled.** The census below catches a
+        # machine that is already dirty. `measure` takes its own census before it spawns the
+        # child *and* polls once per second while the window runs, so a process that appears
+        # *during* the window is caught too - and that path used to escape as a `RuntimeError`,
+        # which turned a busy machine into a red suite. It is a `MachineNotClean` now, and this
+        # is where the refusal becomes a skip.
+        #
+        # **The refusal itself is not weakened.** `measure` still raises and still returns no
+        # row on a dirty machine, so nothing here can put a dirty figure into a record; the only
+        # change is that the suite says "the machine was busy" instead of "the code is broken".
+        # Any *other* `RuntimeError` - the probe produced nothing, the window never opened - is
+        # still an error, because that one is the code.
         state = ack.machine_state()
         if not state["clean"]:
             raise unittest.SkipTest(
                 "the machine is not clean, so a live frame-age figure would be a figure about "
                 f"whatever else is running: {state['detail']}. Stop those processes and re-run "
                 "(the standing rule: assert the machine is clean before any timing measurement).")
-        cls.rows = ack.measure(
-            next(c for c in ack.CONDITIONS if c["label"] == "three-cpu-no-saturators"),
-            seconds=cls.WINDOW_S, repeats=1, warmup_s=cls.WARMUP_S, timeout=600.0)
+        try:
+            cls.rows = ack.measure(
+                next(c for c in ack.CONDITIONS if c["label"] == "three-cpu-no-saturators"),
+                seconds=cls.WINDOW_S, repeats=1, warmup_s=cls.WARMUP_S, timeout=600.0)
+        except ack.MachineNotClean as exc:
+            raise unittest.SkipTest(
+                "a competing Python process appeared while this window was running, so the "
+                "window was refused and **no frame-age figure was recorded**: "
+                f"{exc}. This is the guard working, not a defect: re-run on an idle machine "
+                "for the measurement. (The experiment is `python -m tools.input_ack_under_load "
+                "--seconds 30 --repeats 2`.)") from exc
 
     def test_exactly_one_window_was_measured_through_the_applications_path(self):
         self.assertEqual(len(self.rows), 1, self.rows)
@@ -922,6 +1030,76 @@ class TheCoReportedWindowOnTheRealApplication(unittest.TestCase):
         self.assertLess(row.warmup_s, ack.BACKLOG_WARMUP_S,
                         "this test's warm-up is deliberately short; the record must say so")
         self.assertIn(f"{row.warmup_s:.0f} s", row.conditions_documented)
+
+
+class ABusyMachineSkipsTheLiveTestInsteadOfErroring(unittest.TestCase):
+    """**The mechanism Task 3 described and only half-built.**
+
+    Task 3's report says the live test "takes a census and skips with the reason". The first
+    census did; the mid-window refusal did not - it escaped `measure` as a bare `RuntimeError`,
+    so on a machine where a `python.exe` appeared *during* the window the suite went red and the
+    message read like a code defect. These tests pin the translation in both directions: a
+    dirty-machine refusal becomes a **skip that names the reason**, and every other failure stays
+    an **error**, because that one is the code.
+
+    They run no hardware and no child process: the refusal is injected at `measure`, which is the
+    seam the tool exposes for exactly this reason.
+    """
+
+    #: The message `measure` raises on a mid-window competitor, in its own words.
+    REFUSAL = ("three-cpu-no-saturators: another Python process started during the measured "
+               "window, so this window is not a clean measurement. Competing censuses seen: "
+               "[{\"clean\": false, \"competing_pids\": [999]}].")
+
+    def _call_set_up_class(self, *, state: dict, measure_side_effect):
+        """Run the live test's `setUpClass` with the census and `measure` under control."""
+        with mock.patch.object(ack, "machine_state", return_value=dict(state)), \
+                mock.patch.object(ack, "measure", side_effect=measure_side_effect) as measure:
+            with self.assertRaises(BaseException) as caught:  # noqa: B017 - SkipTest is not ValueError
+                TheCoReportedWindowOnTheRealApplication.setUpClass()
+        return caught.exception, measure
+
+    def test_a_window_refused_mid_run_skips_with_the_reason_and_names_no_figure(self):
+        """The path that put an error in a green suite. It must be a **skip**, and the skip must
+        say both why and that nothing was recorded."""
+        clean = {"clean": True, "competing_pids": [], "detail": "clean"}
+        before = getattr(TheCoReportedWindowOnTheRealApplication, "rows", None)
+        exc, measure = self._call_set_up_class(
+            state=clean, measure_side_effect=ack.MachineNotClean(self.REFUSAL))
+        self.assertIsInstance(exc, unittest.SkipTest,
+                              f"a dirty-machine refusal must skip, not error: {exc!r}")
+        message = str(exc)
+        self.assertIn("competing Python process appeared", message)
+        self.assertIn("no frame-age figure was recorded", message)
+        self.assertIn("[999]", message, "the reason must name the competitor it saw")
+        self.assertIn("tools.input_ack_under_load", message,
+                      "the skip must name the experiment a reader should run instead")
+        measure.assert_called_once()
+        self.assertIs(getattr(TheCoReportedWindowOnTheRealApplication, "rows", None), before,
+                      "a refused window must leave no rows behind for the tests to read")
+
+    def test_an_already_dirty_machine_skips_before_anything_is_spawned(self):
+        """The other half, unchanged: the pre-flight census refuses **before** `measure`."""
+        dirty = {"clean": False, "competing_pids": [999],
+                 "detail": "1 Python process(es) outside this run's process tree: [999]"}
+        exc, measure = self._call_set_up_class(
+            state=dirty, measure_side_effect=AssertionError("measure must not be called"))
+        self.assertIsInstance(exc, unittest.SkipTest)
+        self.assertIn("the machine is not clean", str(exc))
+        self.assertIn("[999]", str(exc))
+        measure.assert_not_called()
+
+    def test_any_other_failure_is_still_an_error(self):
+        """**The guard on the guard.** Widening the skip to every `RuntimeError` would swallow a
+        real defect - a probe that measured nothing - as "the machine was busy"."""
+        clean = {"clean": True, "competing_pids": [], "detail": "clean"}
+        exc, _measure = self._call_set_up_class(
+            state=clean,
+            measure_side_effect=RuntimeError(
+                "three-cpu-no-saturators: the probe produced no ACKLD line."))
+        self.assertNotIsInstance(exc, unittest.SkipTest,
+                                 "a probe failure is the code, not a busy machine")
+        self.assertIsInstance(exc, RuntimeError)
 
 
 if __name__ == "__main__":

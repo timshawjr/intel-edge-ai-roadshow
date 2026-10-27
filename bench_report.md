@@ -8,6 +8,8 @@ given.
 
 - `docs/qualification/M0-qualification.md` — the full M0 qualification report
 - `docs/qualification/M0-content-gate.md` — rights, footage review, content gate
+- `docs/qualification/M3-readability-review.md` — the 2–3 m readability review, the four committed captures, and the DPI gate verdict
+- `docs/qualification/m3-capture/` — the four booth-screen captures (PNG + the JSON of every string read out of the scene)
 - `docs/qualification/qualification-matrix.csv` — scenario x model x device, with untested cells explicit
 
 ---
@@ -965,3 +967,381 @@ interactive act.
 `logs/` are gitignored. Every record under `docs/qualification/m2-headless/` is **committed** and has
 its command in that directory's `README.md`; nothing in this section rests on a file under `logs\`, or
 on the gitignored milestone working directory, except where it is labelled as such.
+
+---
+
+## M3 — the booth screen at 1920×1080
+
+Date: 2026-10-26 (Task 6, the closing task of the milestone)
+Milestone: M3 (design §9, spec §8 / §10)
+
+**Verdict: the layout gate passes at all four scale factors, and the screen is not readable at
+2–3 m.** The four scales were really rendered and their pixel sizes measured from the images; the
+readability review then computed the angular size of every element a passer-by must read and found
+that **nothing on the screen clears 16 arcmin at 3 m** on the display the review assumes, and that
+every 18 px line is below the 5 arcmin acuity floor at 3 m. The failures are recorded as failures in
+[docs/qualification/M3-readability-review.md](docs/qualification/M3-readability-review.md) and are
+M4's to fix. **One M3 exit criterion is unmet (6, the input-acknowledgement blindness
+demonstration), and criterion 2 is met only in its "or the failure is documented" form —
+because the numbers are not legible.**
+
+`tools/preflight.py` is **16 PASS / 2 WARN / 0 FAIL (Limited)**, exit 0; `verify_sources` is 6 PASS /
+0 FAIL; `--selftest` PASS; the suite is **1376 tests, OK, 522.5 s** (wall 523.5 s).
+
+### M3.1 The gate set, run in the M3 Task 6 session
+
+All on branch `main`, on a machine asserted clean before the timing runs (`Get-Process python` → 0;
+the tool's own census reports `"clean": true`).
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+STATUS  ID                    KIND      DETAIL
+----------------------------------------------
+PASS    yolo11n-fp16          xml       xml+OpenVINO-IR, 412503 bytes, sha256 4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95
+PASS    yolo11n-fp16:weights  binary    binary, 5283218 bytes, sha256 f14632518ebb4e312a89c26faa4cd2f95d4264b6f5f22aa6e0d5707b4667863e
+PASS    yolo11n-fp16:labels   text      text+utf-8, 80 lines, 701 bytes, sha256 82bf6a434f132c4d78534c0f2e0f991fc22c73cd911f6d5fc74a418c39c339ec
+PASS    retail_checkout       mp4       mp4+ftyp, 64996307 bytes, sha256 e107db69155af4774f907abe8ddbf24493dfcf9d81d51f3e71ff25300e4f5906
+PASS    store_aisle_alt       mp4       mp4+ftyp, 9214573 bytes, sha256 3526fee39cac70d6366471e4324a6d63b337c8f8ab99c015521bee0d60ed6e04
+PASS    queue_alt             mp4       mp4+ftyp, 3291918 bytes, sha256 a5964aa259099a482a8b360ffc2c57b5a30f84d5919236a4dad01f8e929ac07c
+
+Source verification: 6 PASS, 0 FAIL                              exit 0
+```
+
+```
+$ .venv\Scripts\python.exe tools\preflight.py
+... 16 PASS rows elided here for width; the only two non-PASS rows are ...
+WARN  Telemetry: in-process PDH GPU/NPU utilisation
+WARN  Telemetry: LUID-to-device attribution and hardware identity
+Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows
+Status: Limited
+Exit code: 0.                                                   exit 0
+```
+
+The full 18-row preflight output is pasted verbatim in
+[docs/qualification/M3-readability-review.md](docs/qualification/M3-readability-review.md), section 6.2.
+
+The two `WARN`s are the carried telemetry rows (in-process PDH value read; derived LUID
+attribution), unchanged since M0. Nothing was relaxed.
+
+```
+$ .venv\Scripts\python.exe -m app.main --selftest
+  ok   preprocess           letterbox 640x640 pad=114 scaled=640x360
+  ok   infer                29.19 ms on confirmed ['CPU']
+  ok   decode-track-event   1 zone_occupancy event(s) from a synthetic presence
+  ok   render-metadata      unavailable renders as unavailable, and no device is claimed before an inference confirms one
+PASS                                                             exit 0
+```
+
+```
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1376 tests in 522.476s
+
+OK                                                               exit 0, wall 523.5 s
+```
+
+**Four suite runs, all reported.** Run 1 (1368 tests, 520.3 s) **failed the known RSS-ratio flake**
+`test_route_stress...test_nothing_grows_that_the_retained_records_do_not_account_for`, which M2
+recorded failing 3 times in 15 full runs and passing 7/7 in isolation — pre-existing, unchanged, not
+fixed here. Run 2 (1368, 518.8 s) was **OK with one skip**: the live input-acknowledgement window was
+refused by the clean-machine census, which is the blocker fix below working. Run 3 (1376, 524.9 s)
+followed that fix. **Run 4 (1376, 522.5 s) is the gate run above**, repeating run 3 after a
+docstring-only edit so the figure belongs to the committed tree: **no skips**, including the seven
+live-window assertions.
+
+### M3.2 The four committed captures — and what they do not show
+
+`docs/qualification/m3-capture/{100,125,150,200}pct.png` + `.json`, produced by
+`python -m tools.capture_ui --out docs/qualification/m3-capture`. They were committed by M3
+Tasks 1-2 and re-rendered at Task 5; **Task 6 changes none of the eight files**, and this
+commit adds the review that reads them.
+
+| scale | pixels, **measured from the PNG** | JSON record | logical | dpr | `image.devicePixelRatio()` |
+|---|---|---|---|---|---|
+| 100 % | **1920 × 1080** | 1920 × 1080 | 1920 × 1080 | 1.00 | 1.00 |
+| 125 % | **2400 × 1350** | 2400 × 1350 | 1920 × 1080 | 1.25 | 1.00 |
+| 150 % | **2880 × 1620** | 2880 × 1620 | 1920 × 1080 | 1.50 | 1.00 |
+| 200 % | **3840 × 2160** | 3840 × 2160 | 1920 × 1080 | 2.00 | 1.00 |
+
+Decoded with OpenCV and compared against each record, because a gate that reads `dpr` would pass at
+100 % and fail at 200 %: `QImage.devicePixelRatio()` is **1.00 at all four**.
+
+- `overflow`, `truncated`, `absent`, `unreachable`, `geometry_unavailable`: **empty at all four**.
+- The **33 non-empty named strings and every logical extent are identical at all four**. That is
+  structurally correct — a scale factor is a rendering scale, not a layout change — and it is
+  **not evidence of legibility at 125/150/200 %**. The capture README says so in its own words and
+  the review repeats it; this section does not upgrade it.
+- **Font census `{18: 29, 26: 1, 34: 3}`**, identical at all four, over named items with non-empty
+  text. The raw map has 36 entries because three are blank and invisible (`streamReasonText_A`,
+  `streamReasonText_B`, `tileCaptionText_A`).
+- **`glyph_pixels` scales with area, not length**: `card_A` 121 847 → 190 269 → 274 750 → 487 388,
+  a **4.0000×** ratio from 100 % to 200 %. That is the arithmetic proof the count indexes the
+  **device-pixel** buffer — the first version indexed a 3840×2160 buffer with logical extents and
+  reported 0 for drawn items at three of four scales. 76 of 77 entries are positive; the one zero is
+  `tileCaptionText_A`, which is invisible and empty, so zero is the correct answer.
+
+**What they do not show — stated because a "committed screenshot" sounds like more than it is:**
+
+1. **No capture contains a video frame.** All three tiles read `no frame from Camera N yet`. The
+   captures prove layout, strings, clipping, pixel size and the font census; they do **not** prove
+   the video surface or the overlay boxes. M2's live run is the picture evidence
+   (`docs/qualification/M2-qualification.md`), and a live capture is M4 work.
+2. **The draws are seeded from a measurement that understates the live screen** — §M3.4.
+3. **The census covers named items only**, and the screen carries unnamed 40 px and 26 px text that
+   it cannot see — §M3.7.
+
+### M3.3 The readability review at 2–3 m — the failures
+
+**The display is not established anywhere in the repository.** The review assumes **0.310 mm per
+logical pixel** (a 595 mm-wide canvas) — the midpoint of two independent anchors that agree to
+0.8 %: a 27-inch 16:9 panel (0.3113 mm/px) and the **measured** 34-inch DELL S3422DWG with a 16:9
+canvas pillarboxed to its height (0.3088 mm/px). It states the whole table as a function of panel
+width so a reader can substitute the real booth panel.
+
+Thresholds: **16 arcmin** character height for comfortable reading (ISO 9241-3's ergonomic minimum),
+**10–16′** marginal (the 20/40 band), **< 5′** below the acuity floor (a Snellen 20/20 letter is
+5 × 1 arcmin). Character height is cap height; for mixed-case sentences the x-height is 0.72 of it,
+so sentences are 28 % worse than their row says.
+
+| element | font px | cap px | mm | 2 m | 3 m | verdict at 2 m | verdict at 3 m |
+|---|---:|---:|---:|---:|---:|---|---|
+| Title `Intel Edge AI Roadshow` | 40 | 29 | 8.99 | 15.5′ | 10.3′ | marginal | marginal |
+| `Recorded footage · live inference` | 26 | 19 | 5.89 | 10.1′ | 6.7′ | marginal | **FAIL** |
+| `device: CPU` (placement proof) | 26 | 19 | 5.89 | 10.1′ | 6.7′ | marginal | **FAIL** |
+| `Camera A` + state | 26 | 19 | 5.89 | 10.1′ | 6.7′ | marginal | **FAIL** |
+| `events:` prefix | 26 | 19 | 5.89 | 10.1′ | 6.7′ | marginal | **FAIL** |
+| **frame-age headline `11.7 s` (×3)** | 34 | 24 | 7.44 | 12.8′ | 8.5′ | marginal | **FAIL** |
+| `STALE - this picture is 11.7 s old; the limit is 2 s` (×3) | 18 | 13 | 4.03 | 6.9′ | 4.6′ | **FAIL** | **FAIL (below acuity)** |
+| per-camera badge (×3) | 18 | 13 | 4.03 | 6.9′ | 4.6′ | **FAIL** | **FAIL (below acuity)** |
+| `backlog 187 frames`, `analysis 13.44 fps`, `window: 256 analysed frames`, activity line (×3 each) | 18 | 13 | 4.03 | 6.9′ | 4.6′ | **FAIL** | **FAIL (below acuity)** |
+| events row, pipeline strip, status line, scope note, drawer buttons | 18 | 13 | 4.03 | 6.9′ | 4.6′ | **FAIL** | **FAIL (below acuity)** |
+
+**The four findings, in order of how much they matter:**
+
+1. **The three frame-age headlines — the numbers spec §7 makes the whole screen about — are 12.8′ at
+   2 m and 8.5′ at 3 m.** They are the largest live numbers on the screen and they fail the comfort
+   threshold at both distances on the assumed panel.
+2. **All 18 px text fails at 2 m and is below the acuity floor at 3 m.** That includes the sentence
+   that says *why* the number is stale, the device badges, the backlog and rate, the event row, the
+   pipeline and the status line.
+3. **The two pieces of text that make the screen honest — the recorded-footage label and the reduced
+   scope note — are in the failing set** (26′ marginal at 2 m / failing at 3 m; 18′ failing at both),
+   and **the scope note is elided mid-word on screen** (`…on ret…`), because it has no `objectName`
+   and no harness reports the cut.
+4. **On a 55-inch 1080p panel** the age headlines pass at both distances (26.2′ / 17.4′) and the 18 px
+   text still fails at 3 m (9.4′). **On the 27-inch anchor, nothing clears 16′ at either distance.**
+
+**This is recorded, not fixed.** A font enlarged here would have needed a new 1920×1080 layout and
+would have broken the four-scale evidence the milestone exists to produce. The fix is M4's: the
+booth's physical panel, a ramp for a 2–3 m viewing distance, and an explicit decision about which
+numbers a passer-by is *entitled* to read at that distance.
+
+### M3.4 The seeded staleness **understates** the live screen — measured
+
+The captures' staleness (`11.7 / 10.7 / 11.1 s`) is seeded from
+`docs/qualification/m2-headless/allcpu-steady-120s.json`. That file came from
+`tools/route_stress.py::measure_steady_state`, which builds a **bare `Supervisor` and a
+`QCoreApplication`** — no Qt window, no `FrameImageProvider`, no render loop, no UI-thread
+`_on_result`/`_store_image`. So the seed is the age of a picture measured on a lighter process than
+the booth runs.
+
+Three measurements of the same condition (three CPU streams, 15 fps offered each, no churn), on this
+machine:
+
+| path | hold | frame age p50 (worst stream) | p95 | backlog | analysed |
+|---|---|---:|---:|---:|---:|
+| **committed seed** (M2, 2026-10-03, bare `Supervisor`) | 120 s | **11 319 ms** | 12 286 ms | 173–187 | ~13.5 of 15 fps |
+| bare `Supervisor`, **re-measured today** | 120.2 s | **4 465 ms** | 4 848 ms | 58–73 | 1729–1744 of 1802 |
+| **live windowed app** (`app.main.run_windowed`, 130 s warm-up) | 163.5 / 193.6 s | **40 111 / 48 572 ms** | 43 217 / 51 682 ms | 642–836 | 5 172 / 6 145 frames |
+
+**The seed understates the screen by 3.4×–4.5×, and the presentation path is where the difference
+comes from**: today's *bare* `Supervisor` is **faster** than M2's committed figure (4.5 s against
+11.3 s), while the windowed app on the same machine, same day, same clip reaches 40–49 s. The live
+run also **dropped 32 frames** where the headless holds dropped none.
+
+**What is not established:** the share of the gap between "the UI path costs worker throughput" and
+"the machine has drifted since 2026-10-03". Today's headless run argues against drift being the
+cause, but one day is not a cause. **The screenshots were not re-seeded**; the discrepancy is
+recorded, and a live capture under the booth's real load is M4 work. (A live capture for this review
+landed in **attract mode** after 90 s idle, which is why it was not used as the committed screenshot —
+the idle timer has to be handled before a live capture can stand in for a seeded one.)
+
+### M3.5 The 1920×1080 DPI gate — `passed with documented failures`
+
+A **new value** in `docs/qualification/qualification-matrix.csv`, added the way M2 added `failed`
+when the vocabulary did not have the value it needed.
+
+- **The render half is met:** four scales really rendered, pixel sizes measured from the images,
+  nothing overflowing, strings read out of the scene in a closed audit window.
+- **The readability half failed**, and is documented. Per this task's instruction that is the second
+  admissible path; a clean `passed` would be a round-up and `not passed` would misdescribe the render
+  gate. M2 set the standard by **downgrading** an M0 `passed` to `not tested` when the evidence did
+  not support it; this is the same standard applied in the other direction.
+
+### M3.6 M3 exit criteria
+
+| # | criterion | verdict | evidence |
+|---|---|---|---|
+| 1 | renders at 1920×1080, no overflow, nothing outside the canvas at 100/125/150/200 % | **PASSED** | four captures; pixel sizes measured from the PNGs; `overflow`/`absent`/`unreachable`/`geometry_unavailable` empty at all four |
+| 2 | every number a passer-by must read is legible at 2–3 m **or the failure is documented** | **MET IN ITS SECOND FORM ONLY — the numbers are not legible** | M3.3: nothing clears 16′ at 3 m on the assumed panel; the 34 px age headline is 12.8′ at 2 m / 8.5′ at 3 m; all 18 px text is below the acuity floor at 3 m |
+| 3 | a committed screenshot at each scale, strings read out of the scene graph | **PASSED** | `m3-capture/{100,125,150,200}pct.{png,json}`; `opened_during_read: []`, `read_window_closed: true`, `walk_complete: true`, 33 non-empty strings at every scale |
+| 4 | attract mode shows no number it cannot date, and restores the interrupted state exactly | **PASSED** (Task 4, re-verified in the 1376-test run) | three dated headlines with sources, no live figure — `AttractModeOnTheScreen::test_no_live_figure_appears_in_attract_mode`, `…test_leaving_attract_restores_the_live_screen_exactly`; a live 150 s capture landed in attract mode and showed the dated claims, not a reading |
+| 5 | the presenter drawer moves nothing and states the retail scope note verbatim | **PASSED** (Task 5, re-verified in the 1376-test run) | `PresenterDrawerOnTheScreen::test_opening_the_drawer_moves_nothing`, `…test_closing_the_drawer_puts_every_item_back_where_it_was`, `…test_the_drawer_states_what_the_delivered_event_is` / `…_is_not`; 32 items identical before/during/after; drawer left edge x = 1306 against a video column ending at 1297 |
+| 6 | the input-ack gate's blindness to inference backlog is **demonstrated** | **UNMET** | the four-condition matrix was never obtained. One condition was measured for this review (M3.8) and the gate passed while the frame age was 40–49 s — that is a window, not the matrix, and is not claimed as the demonstration |
+
+### M3.7 The blocker carried into Task 6, and the defect under it
+
+The suite arrived at **1362/1363 with one error**: the live input-acknowledgement test's `setUpClass`
+errored when the clean-machine guard saw a `python.exe` outside the run's process tree appear during
+the window. On a busy machine the correct behaviour is to **skip with the reason**, not to error —
+Task 3's report already claimed it did.
+
+- **The refusal is now a type**, `MachineNotClean(RuntimeError)`, raised by `assert_machine_clean`
+  and by `measure`'s mid-window census. Every existing caller keeps refusing exactly as before, and
+  **`measure` still returns no row**, so a figure measured on a dirty machine still cannot be
+  recorded. The type only lets a caller tell "busy machine" (skip) from "probe measured nothing"
+  (error).
+- **The live test translates that one exception into a skip** naming the reason, the competing PID
+  and the fact that nothing was recorded, and names the experiment to run instead. Every other
+  `RuntimeError` still errors — asserted by a test that fails if the skip is widened.
+- **The root cause of the false positive: the census took two process-table snapshots.** It asked
+  `_our_process_tree()` (snapshot A) which PIDs were ours and `python_processes()` (snapshot B)
+  which PIDs were Python. **Our own worker, spawned between the two reads, was in B but not in A —
+  and was reported as a competitor.** Measured twice, on a machine that idles with zero `python.exe`.
+  The census now takes **one** snapshot. That is what makes the live window run in the suite
+  (run 3: no skips).
+- **Mutation-checked: 6 mutants, 6 killed, 0 controls** (skip removed; skip widened to all
+  `RuntimeError`; type not a `RuntimeError`; bare `RuntimeError` in `measure`; pre-flight census
+  removed; two snapshots restored). One mutant first appeared to survive because of a **stale
+  `.pyc`**; with bytecode deleted, all six are killed deterministically.
+
+### M3.8 The input-ack blindness: one condition measured, the criterion still unmet
+
+Measured for this review's live-frame-age question, on an asserted-clean machine, two windows of one
+process (`python -m tools.input_ack_under_load --condition three-cpu-no-saturators --seconds 30
+--repeats 2 --warmup 130`):
+
+```
+condition                rep  streams sat  load_s  tick p50  tick p95  tick max   age p50   age p95  backlog   gate    age
+three-cpu-no-saturators    0        3   0     164       0.0      10.2      25.2   40111.1   43216.9      709   pass  stale
+three-cpu-no-saturators    1        3   0     194       0.0      11.3      26.6   48572.3   51681.5      836   pass  stale
+
+gate says pass                : 2
+frame age says stale          : 2
+gate passes while age is stale: 2  ['three-cpu-no-saturators']
+```
+
+**The gate passed while the picture was 40–49 seconds old, twice.** That is the shape criterion 6
+exists to demonstrate. It is **not** the demonstration: the criterion asks for the four-condition
+matrix, and three conditions were not run. **Criterion 6 stays unmet**, and the reason is recorded —
+the two measurements that each need an idle machine were run concurrently by the previous task, so
+every window was refused. This session ran its timing measurements **sequentially** on an
+asserted-clean machine.
+
+### M3.9 The performance fix, and its ceiling
+
+Commit `6e4253a`, measured with a temporary probe on the real windowed application under three
+cameras (full detail in the M3 Task 3b report, which is **not committed** — `.superpowers/` is
+gitignored — so these are **[quoted]** figures, per M0's convention):
+
+| metric | before | after |
+|---|---:|---:|
+| UI-thread CPU per result (`_on_result`) | **19.7 ms** | **7.0 ms** |
+| `_store_image` (BGR→RGB + `QImage` + `.copy()`) | **18.2 ms** | **6.0 ms** |
+| return unpickle per result | 1.70 ms | 0.57 ms |
+| UI apply throughput | 8.6 results/s | **32.3 results/s** |
+
+**Root cause: 91 % of the UI thread's work was building a full-resolution `QImage` per result.** The
+fix reduces each successful result to a **960 px wide display copy after `infer_once`**, scaling the
+detection boxes with the frame; the detector still sees the full-resolution frame, which was the
+forbidden change and was not made.
+
+**The ceiling, stated rather than hidden: total UI-process CPU barely moved** (1.61–1.87 cores
+before, 1.72 after), because the ~0.48–0.87 cores of unattributed Qt/OpenVINO threads are unaffected
+and the submit-side pickle of the full-resolution frame is unchanged. **This fixes UI responsiveness,
+not aggregate load.** Aggregate load is M4's problem.
+
+Two defects found on the way and recorded: **`_on_result` runs on the UI main thread**, not the
+reader thread its docstring claimed (per-thread instrumentation, 724/724 calls), so per-result tracker
+and event work was landing on the thread that must stay responsive; and **`--headless --streams 3`
+was silently ignored** — it ran one stream and said nothing, which is why headless reported ~301
+frames whether asked for 1 or 3 cameras. That is now **refused with a stated reason**:
+
+```
+$ .venv\Scripts\python.exe -m app.main --headless --streams 3 --seconds 1
+--streams 3 is not supported by --headless: the headless run builds one supervisor for one stream
+and its summary is single-stream, so accepting this flag would run one camera while claiming 3.
+Use --windowed for the multi-camera layout, or omit --streams.
+                                                                 exit 2
+```
+
+**Correct behaviour, not a restriction to work around.**
+
+### M3.10 Attract mode and the drawer
+
+- **Attract mode** (Task 4, `fcef5cf`): after **90 s** with no presenter input, the live screen is
+  replaced by an overlay carrying **three dated recorded claims with their sources** — the M2
+  per-device latency range (`recorded 2026-10-03 · docs/qualification/M2-qualification.md`), the M2
+  three-camera frame age (`… allcpu-steady-120s*.json (3 holds)`), and the M1 delivered event
+  (`recorded 2026-10-02 · docs/qualification/M1-qualification.md`). **No live value appears in
+  attract mode**; the live CPU figure was asserted absent from every `attract*` string at the same
+  moment the bridge carried it. Leaving attract restores the interrupted state item by item, and the
+  font census across a round trip is unchanged. The spec's slide **rotation** is deliberately not
+  implemented.
+- **The presenter drawer** (Task 5, `fb3cccd`): it is an overlay anchored to the right at
+  **x = 1306**, so it cannot reflow the hero, the tiles, the badges or the staleness line — **32
+  items are identical before, during and after**, and the drawer's left edge is to the right of the
+  video column's 1297. It states the retail scope note **verbatim** (people-in-zone presence, not a
+  people count, not a dwell measurement) and states that GPU/NPU utilisation is unavailable and why.
+  `F1` opens, `Escape` closes.
+
+**Presenter-guide note — `--fail-stream`.** `--fail-stream A|B|C` is a **qualification aid, not a
+booth feature**: a fault-injection flag so the visible-failure path can be exercised without breaking
+a real device. **Do not use it while a customer is watching, and do not present it as a demo
+feature.** The same applies to `--fault-stream` in `tools/route_stress.py`.
+
+### M3.11 Unmet gates and open blockers after M3
+
+| # | item | status |
+|---|---|---|
+| 1 | **M3 exit criterion 6 — the input-ack blindness matrix** | **UNMET.** The tool exists and is tested; one condition measured (M3.8); the four-condition matrix was never obtained |
+| 2 | **The screen is not readable at 2–3 m** | **NEW, documented in full** (M3.3) — the 34 px age headlines are 12.8′ / 8.5′; all 18 px text is below the acuity floor at 3 m on the assumed panel. **M4** |
+| 3 | **The seeded captures understate the live screen** | **NEW, measured** — 10.7–11.7 s seeded against 40.1 / 48.6 s live; not re-seeded. A live capture under load is **M4** |
+| 4 | **No committed capture contains a frame** | **NEW** — the screenshots prove layout and strings, not the video surface. **M4** |
+| 5 | **The scope note is elided on screen** and no harness reports it | **NEW** — full wording in the `zone` explanation and the drawer; the header cuts it mid-word. design/M4 |
+| 6 | **The font census covers named items only** | **NEW, corrected** — 40 px text (the title) is on screen and outside the census; the capture README is corrected |
+| 7 | M0 gate 9's **SILENT** half | **open, cannot close on this machine** (all three devices execute where asked; compile failure kills the worker before it runs). M6 |
+| 8 | The 2 s warm-transition target | **MISSED** — p50 2.238–2.261 s, 37/50 over 2 s at the real 2.0 s default. Documented. M4/M6 |
+| 9 | The leak at the real 2 s timeout: **182.4 MiB total, 175.3 MiB unexplained** | **open, not characterised.** M4 |
+| 10 | GPU/NPU utilisation attribution | **open** — the inference PID never appears as a counter instance; the cards read "Utilization unavailable", never 0 %. M4 |
+| 11 | Shelf-to-basket | **unmet by design** — people-in-zone presence, not a count, not a dwell |
+| 12 | Clip redistribution clearance; detector licence (AGPL-3.0); code signing | **unchanged / unresolved / unmet.** M6 |
+| 13 | Hardware SKU `unreconciled`; AC status unavailable | **unchanged** |
+| 14 | A 60 s+ unattended soak | **not run.** M6 |
+| 15 | The RSS-ratio suite flake | **pre-existing, unchanged** — failed 1 of this session's 3 full runs, passes in isolation |
+
+### M3.12 Known costs and limits of M3
+
+- **Suite 522.5 s (wall 523.5 s)** on a clean machine, against M2's 359–360 s — and 518.8 s,
+  520.3 s and 524.9 s across the other three runs of this session. Ruling 20 already
+  recorded that the M3-era runtime is genuinely higher and that the harness tests do not account for
+  it; **unexplained, and not attributed.**
+- **The machine's headless throughput moved in the *opposite* direction from its windowed
+  throughput** in this session: headless 4.5 s (faster than M2's 11.3 s) and windowed 40–49 s. Any
+  future report that quotes one as the other is wrong; they are different paths and M3.4 is the
+  measurement.
+- **The harness once measured a 1×1 window.** M3 Task 4/5's report records it: the child never set
+  the window size, so every button measured **0 × 0** and clicks landed on nothing — a harness that
+  would have "verified" every affordance while clicking empty space. Fixed; the harness now sets
+  the size the way `tools/capture_ui.py` does. Recorded because it is the same class as Ruling 1: **the measuring
+  instrument was the thing measured**.
+- **`--fail-stream` and `--fault-stream` remain in the shipped CLI** as qualification aids (M3.10).
+- **The DPI evidence is four offscreen renders.** The live desktop here is 2293 × 960, so a
+  1920 × 1080 window cannot be displayed at all; nothing in this section is a claim about this
+  monitor.
+
+**Reproduction.** `python -m tools.capture_ui --out docs/qualification/m3-capture` renders the four
+captures (seed mode; no inference worker needed). The readability table is generated by the script in
+§11 of [the review](docs/qualification/M3-readability-review.md). The gates are the four commands in
+M3.1. Everything under `docs/qualification/m3-capture/` is committed; nothing in this section rests
+on `logs/` or on the gitignored milestone directory except the four figures in M3.9, which are
+labelled **[quoted]**.

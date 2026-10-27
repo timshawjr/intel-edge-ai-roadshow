@@ -666,6 +666,27 @@ CONDITIONS: tuple[dict[str, Any], ...] = (
 CLEAN_OVERRIDE_ENV = "ACKLD_ALLOW_DIRTY"
 
 
+class MachineNotClean(RuntimeError):
+    """**The refusal, as a type.** A measurement was declined because another Python process was
+    on the machine - either before the window opened or during it.
+
+    It is a `RuntimeError`, deliberately: every caller written before this class existed already
+    refuses a dirty measurement by catching `RuntimeError` / letting one propagate, and those
+    callers keep exactly the behaviour they had. Nothing about the refusal is relaxed by naming
+    it - `measure()` still raises and still returns **no row**, so no figure measured on a dirty
+    machine can reach a record.
+
+    What the type buys is the one thing a *caller* could not do before: tell this refusal apart
+    from a real failure ("the probe produced nothing", "the window never opened"). A test suite
+    that hits it on a busy developer machine should **skip with the reason** rather than error -
+    an error says "the code is broken", and this says "the machine is busy". A test suite that
+    hit any other `RuntimeError` must still error, because that one *is* the code.
+
+    Raised by `assert_machine_clean` and by `measure`'s mid-window census. `ACKLD_ALLOW_DIRTY=1`
+    still turns both into a recorded, deliberately dirty run.
+    """
+
+
 def _process_table() -> dict[int, tuple[int, str]]:
     """`pid -> (parent_pid, image_name)` for every process on the machine.
 
@@ -740,13 +761,17 @@ def _our_process_tree(table: Mapping[int, tuple[int, str]] | None = None) -> set
     return ours
 
 
-def python_processes() -> list[int]:
+def python_processes(table: Mapping[int, tuple[int, str]] | None = None) -> list[int]:
     """Every `python.exe` PID on this machine.
 
     `[]` on a non-Windows host or if the census itself fails. **An empty census is read as "cannot
     see a competitor", not as "clean"** - `machine_state` says which it was.
+
+    `table` is passed by `machine_state` so that **one snapshot** answers both "which PIDs are
+    Python" and "which of them are ours". See `machine_state`.
     """
-    return sorted(pid for pid, (_parent, name) in _process_table().items()
+    table = table if table is not None else _process_table()
+    return sorted(pid for pid, (_parent, name) in table.items()
                   if name.lower() == "python.exe")
 
 
@@ -756,9 +781,21 @@ def machine_state() -> dict[str, Any]:
     **`competing_pids` is the number that matters.** Anything running Python that is not this
     process or one of its ancestors is either a leaked worker from an interrupted run or a
     second suite, and either one invalidates a timing figure measured now.
+
+    ## One snapshot, not two
+
+    **The two questions must be answered from the same process-table snapshot.** The first
+    version called `_our_process_tree()` (snapshot A) and then `python_processes()` (snapshot
+    B). A child of ours that started between the two reads was in B's Python list but not in
+    A's descendant set, so **our own measurement worker was reported as a competing process**.
+    Measured: a mid-window poll refused a clean run with exactly one extra PID, twice, on a
+    machine that idles with zero `python.exe` processes; the probe spawns three workers a
+    moment after it is started, which is precisely the interval between the two reads. A guard
+    that cries wolf is a guard somebody turns off, so the snapshot is taken once.
     """
-    ours = _our_process_tree()
-    pythons = python_processes()
+    table = _process_table()
+    ours = _our_process_tree(table)
+    pythons = python_processes(table)
     competing = sorted(p for p in pythons if p not in ours)
     clean = not competing
     return {
@@ -798,7 +835,7 @@ def assert_machine_clean(*, settle_s: float = 5.0,
         f"{', '.join(str(p) for p in state['competing_pids'])}`) and run again, or set "
         f"{CLEAN_OVERRIDE_ENV}=1 to record a deliberately dirty run.")
     if not allow_dirty:
-        raise RuntimeError(message)
+        raise MachineNotClean(message)
     state["overridden"] = True
     state["warning"] = message
     return state
@@ -858,6 +895,11 @@ def measure(condition: Mapping[str, Any], *, seconds: float, repeats: int,
     Raises `RuntimeError` if no window opened or the probe did not reach the application's
     threading path. It does not return a zeroed result: a probe that cannot measure and reports
     "no lateness, no backlog" is indistinguishable from a healthy system.
+
+    Raises `MachineNotClean` - a `RuntimeError` subclass, so callers that already catch
+    `RuntimeError` are unchanged - when another Python process is running before the window or
+    appears during it. **Both refusals return no row**, so a figure measured on a dirty machine
+    cannot be recorded; the type only lets a test suite skip with the reason instead of erroring.
     """
     label = str(condition["label"])
     # **Refuse to measure on a machine somebody else is loading.** A tick/latency figure taken
@@ -906,8 +948,10 @@ def measure(condition: Mapping[str, Any], *, seconds: float, repeats: int,
         # **A competitor that started mid-window is refused, not averaged in.** The census is
         # polled while the child runs; a second Python process appearing during the window means
         # this figure is about the application *and* about whatever else was running, and the
-        # standing rule says such a figure is not a measurement.
-        raise RuntimeError(
+        # standing rule says such a figure is not a measurement. `MachineNotClean` rather than a
+        # bare `RuntimeError`, so a caller can skip with this reason instead of reporting a
+        # broken suite - the row is still never returned.
+        raise MachineNotClean(
             f"{label}: another Python process started during the measured window, so this window "
             f"is not a clean measurement. Competing censuses seen: "
             f"{json.dumps(contaminated)[:2000]}. Stop the other process and re-run, or set "
