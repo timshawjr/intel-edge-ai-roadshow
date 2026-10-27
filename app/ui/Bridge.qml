@@ -87,10 +87,21 @@ QtObject {
     readonly property int mainHeight: Math.round(canvasHeight * Theme.GRID.main)
     readonly property int footerHeight: canvasHeight - headerHeight - mainHeight
 
+    // The presenter drawer's width. **M3 Task 5.** Derived from the theme token here, once,
+    // so `Main.qml` binds the `Loader`'s width to a named value rather than multiplying the
+    // canvas by a fraction itself - and so the drawer's width has exactly one definition.
+    readonly property int drawerWidth: Math.round(canvasWidth * Theme.DRAWER_WIDTH_FRACTION)
+
     // ---- explanation content ------------------------------------------------------
 
-    readonly property var explanationKeys:
-        ["yolo", "tracking", "zone", "cpu", "gpu", "utilisation", "metrics"]
+    // **The keys, read from the bridge rather than listed here. M3 Task 5.** The list
+    // used to be a literal in this file. The drawer - loaded from its own file by a
+    // `Loader` - bound its `Repeater` to `bridge.explanationKeys`, which is a property of
+    // the **Python** bridge that does not exist; the model was `undefined` and the drawer's
+    // seven explanation buttons **did not exist at all**. `app.ui.bridge.EXPLANATIONS` owns
+    // the list now and both surfaces read it, so there is one definition and no way for the
+    // two surfaces to offer different sets.
+    readonly property var explanationKeys: bridge.explanation_keys
 
     // The pinned panel's text. `Main.qml` called `bridgeUi.explain(...)` and **this
     // function did not exist** - it had been dropped from this file in an earlier edit,

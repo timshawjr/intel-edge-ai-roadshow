@@ -1,6 +1,10 @@
 {
   "absent": [],
   "clip_sources": {
+    "attractLoader": "window",
+    "cardExplainMouse_A": "ancestor:card_A",
+    "cardExplainMouse_B": "ancestor:card_B",
+    "cardExplainMouse_C": "ancestor:card_C",
     "cardLeftColumn_A": "ancestor:card_A",
     "cardLeftColumn_B": "ancestor:card_B",
     "cardLeftColumn_C": "ancestor:card_C",
@@ -14,8 +18,24 @@
     "card_B": "window",
     "card_C": "window",
     "deviceBadgeText": "window",
+    "drawerLoader": "window",
     "eventCountRow": "window",
+    "explainButtonMouse_cpu": "window",
+    "explainButtonMouse_gpu": "window",
+    "explainButtonMouse_metrics": "window",
+    "explainButtonMouse_tracking": "window",
+    "explainButtonMouse_utilisation": "window",
+    "explainButtonMouse_yolo": "window",
+    "explainButtonMouse_zone": "window",
+    "explainButton_cpu": "window",
+    "explainButton_gpu": "window",
+    "explainButton_metrics": "window",
+    "explainButton_tracking": "window",
+    "explainButton_utilisation": "window",
+    "explainButton_yolo": "window",
+    "explainButton_zone": "window",
     "heroTile": "window",
+    "liveScreen": "window",
     "stalenessText": "window",
     "streamActivityText_A": "ancestor:cardLeftColumn_A",
     "streamActivityText_B": "ancestor:cardLeftColumn_B",
@@ -60,9 +80,33 @@
     "tileNoFrame_C": "ancestor:thumb_C"
   },
   "dpr": 1.5,
-  "elapsed_s": 0.26436339993961155,
+  "elapsed_s": 0.25994490000084625,
   "empty_nonempty": [],
   "extents": {
+    "attractLoader": [
+      0.0,
+      0.0,
+      1920.0,
+      1080.0
+    ],
+    "cardExplainMouse_A": [
+      1313.0,
+      160.0,
+      583.0,
+      209.33333333333334
+    ],
+    "cardExplainMouse_B": [
+      1313.0,
+      385.33333333333337,
+      583.0,
+      209.33333333333334
+    ],
+    "cardExplainMouse_C": [
+      1313.0,
+      610.6666666666667,
+      583.0,
+      209.33333333333334
+    ],
     "cardLeftColumn_A": [
       1321.0,
       168.0,
@@ -141,17 +185,113 @@
       143.0,
       30.0
     ],
+    "drawerLoader": [
+      1306.0,
+      0.0,
+      614.0,
+      1080.0
+    ],
     "eventCountRow": [
       122.0,
       931.0,
       747.0,
       20.0
     ],
+    "explainButtonMouse_cpu": [
+      1592.0,
+      1012.0,
+      45.0,
+      34.0
+    ],
+    "explainButtonMouse_gpu": [
+      1645.0,
+      1012.0,
+      46.0,
+      34.0
+    ],
+    "explainButtonMouse_metrics": [
+      1798.0,
+      1012.0,
+      74.0,
+      34.0
+    ],
+    "explainButtonMouse_tracking": [
+      1442.0,
+      1012.0,
+      79.0,
+      34.0
+    ],
+    "explainButtonMouse_utilisation": [
+      1699.0,
+      1012.0,
+      91.0,
+      34.0
+    ],
+    "explainButtonMouse_yolo": [
+      1385.0,
+      1012.0,
+      49.0,
+      34.0
+    ],
+    "explainButtonMouse_zone": [
+      1529.0,
+      1012.0,
+      55.0,
+      34.0
+    ],
+    "explainButton_cpu": [
+      1592.0,
+      1012.0,
+      45.0,
+      34.0
+    ],
+    "explainButton_gpu": [
+      1645.0,
+      1012.0,
+      46.0,
+      34.0
+    ],
+    "explainButton_metrics": [
+      1798.0,
+      1012.0,
+      74.0,
+      34.0
+    ],
+    "explainButton_tracking": [
+      1442.0,
+      1012.0,
+      79.0,
+      34.0
+    ],
+    "explainButton_utilisation": [
+      1699.0,
+      1012.0,
+      91.0,
+      34.0
+    ],
+    "explainButton_yolo": [
+      1385.0,
+      1012.0,
+      49.0,
+      34.0
+    ],
+    "explainButton_zone": [
+      1529.0,
+      1012.0,
+      55.0,
+      34.0
+    ],
     "heroTile": [
       24.0,
       160.0,
       1273.0,
       538.4
+    ],
+    "liveScreen": [
+      0.0,
+      0.0,
+      1920.0,
+      1080.0
     ],
     "stalenessText": [
       194.0,
@@ -447,6 +587,10 @@
   "frames_settled": 0,
   "geometry_unavailable": [],
   "glyph_pixels": {
+    "attractLoader": 2943264,
+    "cardExplainMouse_A": 274750,
+    "cardExplainMouse_B": 274750,
+    "cardExplainMouse_C": 274750,
     "cardLeftColumn_A": 136590,
     "cardLeftColumn_B": 136590,
     "cardLeftColumn_C": 136590,
@@ -460,8 +604,24 @@
     "card_B": 274750,
     "card_C": 274750,
     "deviceBadgeText": 9675,
+    "drawerLoader": 1489480,
     "eventCountRow": 33600,
+    "explainButtonMouse_cpu": 3417,
+    "explainButtonMouse_gpu": 3519,
+    "explainButtonMouse_metrics": 5661,
+    "explainButtonMouse_tracking": 6018,
+    "explainButtonMouse_utilisation": 6987,
+    "explainButtonMouse_yolo": 3774,
+    "explainButtonMouse_zone": 4233,
+    "explainButton_cpu": 3417,
+    "explainButton_gpu": 3519,
+    "explainButton_metrics": 5661,
+    "explainButton_tracking": 6018,
+    "explainButton_utilisation": 6987,
+    "explainButton_yolo": 3774,
+    "explainButton_zone": 4233,
     "heroTile": 14469,
+    "liveScreen": 2943264,
     "stalenessText": 7650,
     "streamActivityText_A": 28260,
     "streamActivityText_B": 28260,
@@ -511,7 +671,7 @@
   ],
   "height": 1080,
   "image_dpr": 1.0,
-  "items_seen": 59,
+  "items_seen": 79,
   "json_path": null,
   "mode": "seed",
   "opened_during_read": [],
@@ -519,7 +679,7 @@
   "pixel_height": 1620,
   "pixel_width": 2880,
   "png_path": "docs\\qualification\\m3-capture\\150pct.png",
-  "qobject_child_count": 81,
+  "qobject_child_count": 85,
   "qobject_hits": [
     "deviceBadgeText",
     "heroTile",
@@ -598,6 +758,10 @@
     "tileNoFrameText_C": "no frame from Camera C yet"
   },
   "text_property": {
+    "attractLoader": false,
+    "cardExplainMouse_A": false,
+    "cardExplainMouse_B": false,
+    "cardExplainMouse_C": false,
     "cardLeftColumn_A": false,
     "cardLeftColumn_B": false,
     "cardLeftColumn_C": false,
@@ -611,8 +775,24 @@
     "card_B": false,
     "card_C": false,
     "deviceBadgeText": true,
+    "drawerLoader": false,
     "eventCountRow": true,
+    "explainButtonMouse_cpu": false,
+    "explainButtonMouse_gpu": false,
+    "explainButtonMouse_metrics": false,
+    "explainButtonMouse_tracking": false,
+    "explainButtonMouse_utilisation": false,
+    "explainButtonMouse_yolo": false,
+    "explainButtonMouse_zone": false,
+    "explainButton_cpu": false,
+    "explainButton_gpu": false,
+    "explainButton_metrics": false,
+    "explainButton_tracking": false,
+    "explainButton_utilisation": false,
+    "explainButton_yolo": false,
+    "explainButton_zone": false,
     "heroTile": false,
+    "liveScreen": false,
     "stalenessText": true,
     "streamActivityText_A": true,
     "streamActivityText_B": true,
@@ -659,6 +839,10 @@
   "truncated": [],
   "unreachable": [],
   "visible": {
+    "attractLoader": true,
+    "cardExplainMouse_A": true,
+    "cardExplainMouse_B": true,
+    "cardExplainMouse_C": true,
     "cardLeftColumn_A": true,
     "cardLeftColumn_B": true,
     "cardLeftColumn_C": true,
@@ -672,8 +856,24 @@
     "card_B": true,
     "card_C": true,
     "deviceBadgeText": true,
+    "drawerLoader": true,
     "eventCountRow": true,
+    "explainButtonMouse_cpu": true,
+    "explainButtonMouse_gpu": true,
+    "explainButtonMouse_metrics": true,
+    "explainButtonMouse_tracking": true,
+    "explainButtonMouse_utilisation": true,
+    "explainButtonMouse_yolo": true,
+    "explainButtonMouse_zone": true,
+    "explainButton_cpu": true,
+    "explainButton_gpu": true,
+    "explainButton_metrics": true,
+    "explainButton_tracking": true,
+    "explainButton_utilisation": true,
+    "explainButton_yolo": true,
+    "explainButton_zone": true,
     "heroTile": true,
+    "liveScreen": true,
     "stalenessText": true,
     "streamActivityText_A": true,
     "streamActivityText_B": true,

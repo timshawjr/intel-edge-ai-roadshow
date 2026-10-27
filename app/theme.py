@@ -50,7 +50,8 @@ __all__ = [
     "CARD_COLUMN_SPLIT", "CARD_REASON_CHARS",
     "CARD_REASON_LINES", "CARD_REASON_MARKER", "CARD_STALENESS_LINES",
     "COLOR_BAD", "COLOR_GOOD", "COLOR_NEUTRAL",
-    "COLOR_WARN", "FONT_FAMILY", "GAP", "GRID", "MARGIN", "OVERLAY_BOX",
+    "COLOR_WARN", "DRAWER_WIDTH_FRACTION", "FONT_FAMILY", "GAP", "GRID", "MARGIN",
+    "OVERLAY_BOX",
     "OVERLAY_LABEL", "OVERLAY_TRACK", "OVERLAY_ZONE", "RADIUS", "SPACING",
     "TEXT_ON_ACCENT", "TEXT_ON_PANEL",
     "TYPE_DETAIL", "TYPE_HEADLINE", "TYPE_LABEL", "TYPE_NUMERAL", "TYPE_NUMERAL_SMALL",
@@ -110,6 +111,15 @@ TYPE_NUMERAL: Final[int] = 56          # 48-64 px main numerals
 TYPE_NUMERAL_SMALL: Final[int] = 34
 TYPE_LABEL: Final[int] = 26            # 24-28 px main labels
 TYPE_DETAIL: Final[int] = 18           # >= 18 px detail
+
+#: The presenter drawer's width, as a fraction of the canvas. **M3 Task 5.**
+#:
+#: The drawer is an **overlay**, not a member of the layout `Column`: it is anchored to the
+#: window's right edge and spans the full height, so opening it cannot reflow the hero, the
+#: tiles, the badges or the staleness line. 0.32 keeps its left edge at x = 1306 on the
+#: 1920 px canvas, which is to the right of the hero column (x 24..1297) - so a long
+#: explanation can never obscure the picture, which is the design's requirement.
+DRAWER_WIDTH_FRACTION: Final[float] = 0.32
 
 # -- spacing ---------------------------------------------------------------------
 MARGIN: Final[int] = 24

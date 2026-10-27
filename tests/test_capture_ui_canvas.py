@@ -363,6 +363,37 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
 
     # -- the failure reason ------------------------------------------------------------
 
+    def test_the_font_census_is_the_one_on_record(self):
+        """**The number the M3 report quotes, recomputed from the committed capture.**
+
+        `{18: 29, 26: 1, 34: 3}` - the size of every `Text` **whose text is not empty**, so
+        a font that draws nothing is not counted and the number does not depend on which
+        optional lines happened to be blank. Two claims, both measured: the committed
+        capture is that census, and a live render of the same seed still is. A change that
+        makes something fit by shrinking a font fails here rather than passing quietly.
+        """
+        committed_path = (REPO_ROOT / "docs" / "qualification" / "m3-capture" / "100pct.json")
+        self.assertTrue(committed_path.exists(), f"no committed capture at {committed_path}")
+        committed = json.loads(committed_path.read_text(encoding="utf-8"))
+
+        def census(strings, fonts):
+            counts = {}
+            for name, size in fonts.items():
+                if strings.get(name):
+                    counts[int(size)] = counts.get(int(size), 0) + 1
+            return counts
+
+        want = census(committed["strings"], committed["font_pixels"])
+        self.assertEqual(want, {theme.TYPE_DETAIL: 29, theme.TYPE_LABEL: 1,
+                                theme.TYPE_NUMERAL_SMALL: 3},
+                         f"the committed capture's census is {want}, not the one the report "
+                         f"states; re-derive the report's number or fix the layout")
+        got = census(self.result(100).strings, self.result(100).font_pixels)
+        self.assertEqual(got, want,
+                         f"a live render of the same seed now censuses {got}, and the "
+                         f"committed capture says {want}: something changed a font size or "
+                         f"made a line draw text it did not draw before")
+
     def test_the_failed_cameras_reason_says_how_much_it_is_not_showing(self):
         from tools.capture_ui import load_measured_seed
 

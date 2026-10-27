@@ -434,7 +434,12 @@ Rectangle {
 
     // Hover opens the explanation; a click pins it. The design wants both, because a
     // booth machine is often touch-only and hover alone is then unreachable.
+    //
+    // **Named, M3 Task 5.** A card's click is one of the explanation affordances the M1
+    // `?`-panel defect showed can be silently dead; a test reaches this `MouseArea` by
+    // name and clicks it, so "the card explains itself" is proved rather than assumed.
     MouseArea {
+        objectName: "cardExplainMouse_" + card.streamId
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
