@@ -299,7 +299,11 @@ STARTED = time.perf_counter()
 lateness = []
 state = {"due": 0.0, "tick": None, "supervisor": None, "bridge": None, "procs": [],
          "gate": None, "phase": "warmup", "warm_started": 0.0, "repeat": 0,
-         "window": None, "warmed": 0}
+         "window": None, "warmed": 0,
+         #: Whether the **run-level** things - saturators, timers, warm-up clock - have been
+         #: armed. `run_windowed` starts one feeder per camera, so `spy_feeders` is entered once
+         #: per stream and must arm only on the first. See `spy_feeders`.
+         "armed": False}
 _real_feeders = main_module._start_feeders
 
 
@@ -331,11 +335,25 @@ def spawn_saturators():
     With `SATURATORS == 0` this returns `([], None)` and nothing is spawned, which is not a
     special case bolted on: "the application's own load, no synthetic saturators" is
     **condition 1 of the experiment** and it is the one the verdict turns on.
+
+    ## They are daemon processes, and that is a measurement decision
+
+    `multiprocessing`'s exit finaliser **joins every non-daemon child**, so a saturator that is
+    still waiting on its gate keeps the whole probe alive after the last window has been
+    reported. Measured on `three-cpu-saturated`: twelve saturators outlived
+    `terminate_saturators()`, the probe printed both `ACKLD` lines normally, and then **sat
+    there until the parent's 1800 s timeout killed it** - so a complete measurement was thrown
+    away by a teardown fault. A saturator exists to make load; it must never be able to keep a
+    measurement process alive.
+
+    `terminate_saturators()` is still the normal path. This only removes the failure mode where
+    it is not reached, or does not reach them all - which is what `spy_feeders`'s arming guard
+    now also prevents, deliberately, twice.
     """
     if SATURATORS <= 0:
         return [], None
     gate = multiprocessing.Event()
-    procs = [multiprocessing.Process(target=burn, args=(None, i, gate))
+    procs = [multiprocessing.Process(target=burn, args=(None, i, gate), daemon=True)
              for i in range(SATURATORS)]
     for proc in procs:
         proc.start()
@@ -534,9 +552,43 @@ def spy_feeders(bridge, supervisor, clip):
     `application.exec()`, so the thread doing the measuring is the thread that renders the booth.
     The wrapper then calls the real thing, so the feeder, the reader threads and the result fold
     are `app/main.py`'s and not this probe's.
+
+    ## This is entered **once per camera**, so it arms the run once and then only delegates
+
+    `run_windowed` starts a feeder per stream - `for clip in clips: _start_feeders(bridge,
+    supervisor, clip)` - so with `--streams 3` this wrapper runs **three times**. The first
+    version armed everything on every entry, which is three defects in one run:
+
+    - **three sets of saturators**: 6 + 6 + 6 = **18** for the calibrated six. `state["procs"]`
+      is overwritten by each call, so it holds only the last set: the instrumented copy printed
+      `DIAG terminating 6 of 20 alive`, so **twelve of the eighteen it had spawned** outlived
+      the only termination call there is;
+    - the **twelve survivors never exit**: `burn` resets its own deadline while its gate is
+      clear, and only `state["gate"]` - the *last* set's - is ever set and cleared, so the other
+      two sets wait forever. `multiprocessing`'s exit finaliser joins every non-daemon child, so
+      the probe could not exit at all, which is why `spawn_saturators` now marks them daemon;
+    - three tick timers, three window timers and three warm-up pollers were constructed, each
+      replacing a reference to the last. Measured in an instrumented copy: three entries,
+      `spawned=6` three times, `alive=21` child processes, and every surviving stack dump in
+      `burn`.
+
+    Measured cost, and the reason this docstring is long: on `three-cpu-saturated` at
+    `--seconds 30 --repeats 2` **both windows reported normally** - frame age p50 36012.5 ms,
+    backlog 794-855 - and then the child hung until the parent's **1800 s** timeout killed it.
+    (Twelve of those eighteen saturators were idle-waiting on gates nobody set, so the load in
+    that window was the intended six; the count in that payload says 6, and 6 is what was
+    burning.) The whole run's four conditions were lost, because a teardown fault turned a
+    complete matrix into no JSON at all.
+
+    So the saturators, the timers and the warm-up clock belong to the **run**, not to a camera.
+    They are armed on the first entry; every later entry starts the application's feeder and
+    nothing else, so the three feeders are still the application's own.
     """
     state["supervisor"] = supervisor
     state["bridge"] = bridge
+    if state["armed"]:
+        return _real_feeders(bridge, supervisor, clip)
+    state["armed"] = True
     state["warm_started"] = time.perf_counter()
     # Spawned before the tick timer starts and from the warm-up path, so no process-creation
     # cost ever lands inside a measured window.
@@ -1064,8 +1116,10 @@ def _layout_for(label: str) -> str:
 #: `docs/qualification/` in this project holds records a later reader will treat as cited
 #: evidence, and a figure nobody can open is not evidence. So the sequence is: the CLI writes to
 #: `logs/`, a human reads the conditions in it, and only then does a copy go beside
-#: `m3-capture/` as `docs/qualification/m3-input-ack.json`. The brief asks for the `logs/` path and
-#: this is that path; the committed copy is the reviewed one and it carries the same bytes.
+#: `m3-capture/`. **The committed M4 copy is `docs/qualification/m4-input-ack.json`**, written by
+#: `--out` and copied there after its conditions were read; `docs/qualification/m3-input-ack.json`
+#: does not exist, so the name in `DOCS_JSON` is a leftover from the milestone before it and a
+#: re-run of this experiment must pass `--out` explicitly.
 DEFAULT_JSON = REPO_ROOT / "logs" / "qualification" / "m3-input-ack.json"
 
 #: The reviewed copy, written only on request with `--also-write-docs`. **Not the default**, and

@@ -1,0 +1,721 @@
+{
+  "backlog_warmup_note": "The three-stream conditions warm up for 130 s because frame age is a consequence of accumulated queue depth: at 15 fps offered and 13.44-13.56 fps analysed a CPU stream gains 1.50 frames of backlog per second, so the 173-187 frames M2 measured is 115-125 s of accumulation. A six-second window cannot show the booth's real state.",
+  "calibrated_saturators": 6,
+  "conditions_failed": [],
+  "gate_thresholds_quoted_not_tuned": {
+    "note": "These are the existing gate's own numbers, quoted from the gate and deliberately not tuned. Nothing in this tool can change them; a threshold adjusted until the answer came out the way somebody wanted would not be a measurement.",
+    "p95_ms": 200.0,
+    "source": "tests/test_main.py::InputAcknowledgement",
+    "worst_tick_ms": 2000.0
+  },
+  "machine_clean_note": "The census taken before the run. `competing_pids` must be empty for the timing figures to be a measurement of this application and nothing else; a run taken with ACKLD_ALLOW_DIRTY=1 carries `overridden: true` and is deliberately dirty.",
+  "machine_state": {
+    "clean": true,
+    "competing_pids": [],
+    "detail": "no Python process outside this run's process tree",
+    "our_pids": [
+      8552,
+      8572,
+      10024,
+      11336,
+      13648,
+      14820,
+      16912
+    ],
+    "python_pids": [
+      10024,
+      14820
+    ]
+  },
+  "per_condition_ranges": [
+    {
+      "backlog": {
+        "max": 752,
+        "median": 752,
+        "min": 639,
+        "samples": [
+          639,
+          752
+        ]
+      },
+      "condition": "three-cpu-no-saturators",
+      "device_layout": "allcpu",
+      "frame_age_p50_ms": {
+        "max": 44030.7,
+        "median": 44030.7,
+        "min": 36429.2,
+        "samples": [
+          36429.2,
+          44030.7
+        ]
+      },
+      "frame_age_p95_ms": {
+        "max": 46862.2,
+        "median": 46862.2,
+        "min": 39044.7,
+        "samples": [
+          39044.7,
+          46862.2
+        ]
+      },
+      "load_applied_s": 163.1,
+      "repeats_seen": 2,
+      "saturators": 0,
+      "streams": 3,
+      "tick_max_ms": {
+        "max": 28.3,
+        "median": 28.3,
+        "min": 24.6,
+        "samples": [
+          24.6,
+          28.3
+        ]
+      },
+      "tick_p50_ms": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "samples": [
+          0.0,
+          0.0
+        ]
+      },
+      "tick_p95_ms": {
+        "max": 12.6,
+        "median": 12.6,
+        "min": 12.1,
+        "samples": [
+          12.1,
+          12.6
+        ]
+      },
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "backlog": {
+        "max": 1,
+        "median": 1,
+        "min": 1,
+        "samples": [
+          1,
+          1
+        ]
+      },
+      "condition": "three-own-devices-no-saturators",
+      "device_layout": "own-devices",
+      "frame_age_p50_ms": {
+        "max": 65.1,
+        "median": 65.1,
+        "min": 65.1,
+        "samples": [
+          65.1,
+          65.1
+        ]
+      },
+      "frame_age_p95_ms": {
+        "max": 68.7,
+        "median": 68.7,
+        "min": 68.2,
+        "samples": [
+          68.2,
+          68.7
+        ]
+      },
+      "load_applied_s": 163.2,
+      "repeats_seen": 2,
+      "saturators": 0,
+      "streams": 3,
+      "tick_max_ms": {
+        "max": 27.4,
+        "median": 27.4,
+        "min": 20.7,
+        "samples": [
+          27.4,
+          20.7
+        ]
+      },
+      "tick_p50_ms": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "samples": [
+          0.0,
+          0.0
+        ]
+      },
+      "tick_p95_ms": {
+        "max": 7.2,
+        "median": 7.2,
+        "min": 5.6,
+        "samples": [
+          7.2,
+          5.6
+        ]
+      },
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "backlog": {
+        "max": 174,
+        "median": 174,
+        "min": 83,
+        "samples": [
+          83,
+          174
+        ]
+      },
+      "condition": "one-cpu-saturated",
+      "device_layout": "cpu",
+      "frame_age_p50_ms": {
+        "max": 9196.0,
+        "median": 9196.0,
+        "min": 3476.2,
+        "samples": [
+          3476.2,
+          9196.0
+        ]
+      },
+      "frame_age_p95_ms": {
+        "max": 11348.5,
+        "median": 11348.5,
+        "min": 5295.7,
+        "samples": [
+          5295.7,
+          11348.5
+        ]
+      },
+      "load_applied_s": 45.1,
+      "repeats_seen": 2,
+      "saturators": 6,
+      "streams": 1,
+      "tick_max_ms": {
+        "max": 13.9,
+        "median": 13.9,
+        "min": 12.3,
+        "samples": [
+          12.3,
+          13.9
+        ]
+      },
+      "tick_p50_ms": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "samples": [
+          0.0,
+          0.0
+        ]
+      },
+      "tick_p95_ms": {
+        "max": 6.6,
+        "median": 6.6,
+        "min": 5.6,
+        "samples": [
+          6.6,
+          5.6
+        ]
+      },
+      "warmup_s": 12.0,
+      "window_s": 30.0
+    },
+    {
+      "backlog": {
+        "max": 1143,
+        "median": 1143,
+        "min": 839,
+        "samples": [
+          839,
+          1143
+        ]
+      },
+      "condition": "three-cpu-saturated",
+      "device_layout": "allcpu",
+      "frame_age_p50_ms": {
+        "max": 55150.2,
+        "median": 55150.2,
+        "min": 34523.0,
+        "samples": [
+          34523.0,
+          55150.2
+        ]
+      },
+      "frame_age_p95_ms": {
+        "max": 72135.2,
+        "median": 72135.2,
+        "min": 51205.2,
+        "samples": [
+          51205.2,
+          72135.2
+        ]
+      },
+      "load_applied_s": 163.0,
+      "repeats_seen": 2,
+      "saturators": 6,
+      "streams": 3,
+      "tick_max_ms": {
+        "max": 91.9,
+        "median": 91.9,
+        "min": 89.1,
+        "samples": [
+          89.1,
+          91.9
+        ]
+      },
+      "tick_p50_ms": {
+        "max": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "samples": [
+          0.0,
+          0.0
+        ]
+      },
+      "tick_p95_ms": {
+        "max": 11.6,
+        "median": 11.6,
+        "min": 9.4,
+        "samples": [
+          9.4,
+          11.6
+        ]
+      },
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    }
+  ],
+  "repeats_per_condition": 2,
+  "saturator_note": "cpu_count()-2 = 6 here, the existing gate's calibration. It is a FLOOR, not a bound, and not comparable across machines: at cpu_count() of 8 the same probe measured p95 195.6 ms and max 1105.5 ms while still reporting green.",
+  "summary": {
+    "disagreeing_conditions": [
+      "one-cpu-saturated",
+      "three-cpu-no-saturators",
+      "three-cpu-saturated"
+    ],
+    "frame_age_stale": 6,
+    "gate_pass": 8,
+    "gate_passes_while_frame_age_stale": 6,
+    "windows_measured": 8
+  },
+  "the_table": [
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 587,
+        "B": 590,
+        "C": 639
+      },
+      "condition": "three-cpu-no-saturators",
+      "conditions_documented": "3 stream(s), layout allcpu, 0 saturator process(es), warm-up budget 130 s, load applied for 163.1 s, 30 s window, 5358 frames analysed, 29 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "device_layout": "allcpu",
+      "drops": 29,
+      "frame_age_p50_by_stream": {
+        "A": 36168.902600002184,
+        "B": 36429.16700000205,
+        "C": 36275.03240000078
+      },
+      "frame_age_p50_ms": 36429.16700000205,
+      "frame_age_p95_by_stream": {
+        "A": 38866.31959999795,
+        "B": 39044.689800000924,
+        "C": 38959.39150000049
+      },
+      "frame_age_p95_ms": 39044.689800000924,
+      "frames_analysed": 5358,
+      "gate_verdict": "pass",
+      "load_applied_s": 163.1,
+      "repeat": 0,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "saturators": 0,
+      "staleness_verdict": "stale",
+      "streams": 3,
+      "tick_max_ms": 24.565,
+      "tick_p50_ms": 0.0,
+      "tick_p95_ms": 12.052,
+      "ticks": 1487,
+      "verdicts_agree": false,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 706,
+        "B": 707,
+        "C": 752
+      },
+      "condition": "three-cpu-no-saturators",
+      "conditions_documented": "3 stream(s), layout allcpu, 0 saturator process(es), warm-up budget 130 s, load applied for 193.1 s, 30 s window, 6364 frames analysed, 29 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "device_layout": "allcpu",
+      "drops": 29,
+      "frame_age_p50_by_stream": {
+        "A": 44030.715599998075,
+        "B": 44016.689700001734,
+        "C": 43958.38010000443
+      },
+      "frame_age_p50_ms": 44030.715599998075,
+      "frame_age_p95_by_stream": {
+        "A": 46751.29280000692,
+        "B": 46862.19630000414,
+        "C": 46437.03179999284
+      },
+      "frame_age_p95_ms": 46862.19630000414,
+      "frames_analysed": 6364,
+      "gate_verdict": "pass",
+      "load_applied_s": 193.1,
+      "repeat": 1,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "saturators": 0,
+      "staleness_verdict": "stale",
+      "streams": 3,
+      "tick_max_ms": 28.302,
+      "tick_p50_ms": 0.0,
+      "tick_p95_ms": 12.583,
+      "ticks": 1481,
+      "verdicts_agree": false,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 1,
+        "B": 1,
+        "C": 1
+      },
+      "condition": "three-own-devices-no-saturators",
+      "conditions_documented": "3 stream(s), layout own-devices, 0 saturator process(es), warm-up budget 130 s, load applied for 163.2 s, 30 s window, 7203 frames analysed, 0 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "device_layout": "own-devices",
+      "drops": 0,
+      "frame_age_p50_by_stream": {
+        "A": 65.12520000251243,
+        "B": 38.58849999960512,
+        "C": 39.47319999861065
+      },
+      "frame_age_p50_ms": 65.12520000251243,
+      "frame_age_p95_by_stream": {
+        "A": 68.19700000050943,
+        "B": 40.25260000344133,
+        "C": 41.26620000170078
+      },
+      "frame_age_p95_ms": 68.19700000050943,
+      "frames_analysed": 7203,
+      "gate_verdict": "pass",
+      "load_applied_s": 163.2,
+      "repeat": 0,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "saturators": 0,
+      "staleness_verdict": "fresh",
+      "streams": 3,
+      "tick_max_ms": 27.433,
+      "tick_p50_ms": 0.0,
+      "tick_p95_ms": 7.163,
+      "ticks": 1499,
+      "verdicts_agree": true,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 1,
+        "B": 1,
+        "C": 1
+      },
+      "condition": "three-own-devices-no-saturators",
+      "conditions_documented": "3 stream(s), layout own-devices, 0 saturator process(es), warm-up budget 130 s, load applied for 193.2 s, 30 s window, 8556 frames analysed, 0 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "GPU.0"
+        ],
+        "C": [
+          "NPU"
+        ]
+      },
+      "device_layout": "own-devices",
+      "drops": 0,
+      "frame_age_p50_by_stream": {
+        "A": 65.05879999895114,
+        "B": 38.50320000492502,
+        "C": 39.414300001226366
+      },
+      "frame_age_p50_ms": 65.05879999895114,
+      "frame_age_p95_by_stream": {
+        "A": 68.68179999582935,
+        "B": 40.479199997207616,
+        "C": 41.156899998895824
+      },
+      "frame_age_p95_ms": 68.68179999582935,
+      "frames_analysed": 8556,
+      "gate_verdict": "pass",
+      "load_applied_s": 193.2,
+      "repeat": 1,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "GPU",
+        "C": "NPU"
+      },
+      "saturators": 0,
+      "staleness_verdict": "fresh",
+      "streams": 3,
+      "tick_max_ms": 20.683,
+      "tick_p50_ms": 0.011,
+      "tick_p95_ms": 5.562,
+      "ticks": 1498,
+      "verdicts_agree": true,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 83
+      },
+      "condition": "one-cpu-saturated",
+      "conditions_documented": "1 stream(s), layout cpu, 6 saturator process(es), warm-up budget 12 s, load applied for 45.1 s, 30 s window, 548 frames analysed, 0 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ]
+      },
+      "device_layout": "cpu",
+      "drops": 0,
+      "frame_age_p50_by_stream": {
+        "A": 3476.186300002155
+      },
+      "frame_age_p50_ms": 3476.186300002155,
+      "frame_age_p95_by_stream": {
+        "A": 5295.687400001043
+      },
+      "frame_age_p95_ms": 5295.687400001043,
+      "frames_analysed": 548,
+      "gate_verdict": "pass",
+      "load_applied_s": 45.1,
+      "repeat": 0,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU"
+      },
+      "saturators": 6,
+      "staleness_verdict": "stale",
+      "streams": 1,
+      "tick_max_ms": 12.321,
+      "tick_p50_ms": 0.008,
+      "tick_p95_ms": 6.576,
+      "ticks": 1500,
+      "verdicts_agree": false,
+      "warmup_s": 12.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 174
+      },
+      "condition": "one-cpu-saturated",
+      "conditions_documented": "1 stream(s), layout cpu, 6 saturator process(es), warm-up budget 12 s, load applied for 75.2 s, 30 s window, 908 frames analysed, 0 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ]
+      },
+      "device_layout": "cpu",
+      "drops": 0,
+      "frame_age_p50_by_stream": {
+        "A": 9195.972800000163
+      },
+      "frame_age_p50_ms": 9195.972800000163,
+      "frame_age_p95_by_stream": {
+        "A": 11348.545699998795
+      },
+      "frame_age_p95_ms": 11348.545699998795,
+      "frames_analysed": 908,
+      "gate_verdict": "pass",
+      "load_applied_s": 75.2,
+      "repeat": 1,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU"
+      },
+      "saturators": 6,
+      "staleness_verdict": "stale",
+      "streams": 1,
+      "tick_max_ms": 13.905,
+      "tick_p50_ms": 0.01,
+      "tick_p95_ms": 5.568,
+      "ticks": 1500,
+      "verdicts_agree": false,
+      "warmup_s": 12.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 764,
+        "B": 794,
+        "C": 839
+      },
+      "condition": "three-cpu-saturated",
+      "conditions_documented": "3 stream(s), layout allcpu, 6 saturator process(es), warm-up budget 130 s, load applied for 163.0 s, 30 s window, 4763 frames analysed, 32 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "device_layout": "allcpu",
+      "drops": 32,
+      "frame_age_p50_by_stream": {
+        "A": 34482.46719999588,
+        "B": 34522.96500000375,
+        "C": 34109.49339999934
+      },
+      "frame_age_p50_ms": 34522.96500000375,
+      "frame_age_p95_by_stream": {
+        "A": 49398.791500003426,
+        "B": 51205.173299997114,
+        "C": 50875.15650000569
+      },
+      "frame_age_p95_ms": 51205.173299997114,
+      "frames_analysed": 4763,
+      "gate_verdict": "pass",
+      "load_applied_s": 163.0,
+      "repeat": 0,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "saturators": 6,
+      "staleness_verdict": "stale",
+      "streams": 3,
+      "tick_max_ms": 89.081,
+      "tick_p50_ms": 0.018,
+      "tick_p95_ms": 9.385,
+      "ticks": 1473,
+      "verdicts_agree": false,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    },
+    {
+      "application_path": true,
+      "backlog_per_stream": {
+        "A": 1068,
+        "B": 1099,
+        "C": 1143
+      },
+      "condition": "three-cpu-saturated",
+      "conditions_documented": "3 stream(s), layout allcpu, 6 saturator process(es), warm-up budget 130 s, load applied for 193.1 s, 30 s window, 5192 frames analysed, 32 drops, live through app.main.run_windowed",
+      "confirmed": {
+        "A": [
+          "CPU"
+        ],
+        "B": [
+          "CPU"
+        ],
+        "C": [
+          "CPU"
+        ]
+      },
+      "device_layout": "allcpu",
+      "drops": 32,
+      "frame_age_p50_by_stream": {
+        "A": 52859.0428000025,
+        "B": 55150.236000001314,
+        "C": 54004.112700000405
+      },
+      "frame_age_p50_ms": 55150.236000001314,
+      "frame_age_p95_by_stream": {
+        "A": 69839.11449999869,
+        "B": 72135.16009999876,
+        "C": 71105.55860000022
+      },
+      "frame_age_p95_ms": 72135.16009999876,
+      "frames_analysed": 5192,
+      "gate_verdict": "pass",
+      "load_applied_s": 193.1,
+      "repeat": 1,
+      "repeats": 2,
+      "requested": {
+        "A": "CPU",
+        "B": "CPU",
+        "C": "CPU"
+      },
+      "saturators": 6,
+      "staleness_verdict": "stale",
+      "streams": 3,
+      "tick_max_ms": 91.897,
+      "tick_p50_ms": 0.005,
+      "tick_p95_ms": 11.624,
+      "ticks": 1465,
+      "verdicts_agree": false,
+      "warmup_s": 130.0,
+      "window_s": 30.0
+    }
+  ],
+  "the_two_numbers_are_separate_claims": "Frame age is not inference cost. On the NPU the measured p95 frame age is seconds while the inference itself costs about 5.9 ms; the gap is queue wait. They are never added, averaged, or presented as one figure.",
+  "tick_period_ms": 20,
+  "tool": "tools/input_ack_under_load.py",
+  "warmup_override_s": null,
+  "what_this_measures": "UI-thread tick lateness (what the input-acknowledgement gate measures) and per-stream inference backlog (what it does not), measured in the SAME window of the SAME application process.",
+  "window_s": 30.0
+}

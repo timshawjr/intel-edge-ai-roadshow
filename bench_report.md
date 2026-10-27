@@ -1350,7 +1350,7 @@ labelled **[quoted]**.
 
 ## M4 — sustained trials and legibility
 
-Date: 2026-10-27 (Task 1, legibility at 3 m)
+Date: 2026-10-27 (Task 1, legibility at 3 m; Task 2, the input-ack matrix — M4.7)
 Milestone: M4
 
 **Verdict, Task 1 — corrected. On the monitor actually attached to this machine the screen
@@ -1578,3 +1578,75 @@ OK                                                               exit 0   wall 5
 **1393 tests, no skips, no failures, wall clock 543.58 s.** The five extra tests over the
 pre-correction 1388 are the attached-monitor assertions. `tools/probe_telemetry.py` was not
 re-run by this correction, so `config/telemetry_map.json` was not rewritten.
+
+### M4.7 The input-acknowledgement matrix, measured on an idle machine (Task 2)
+
+The four conditions M3 recorded as an unmet exit criterion, obtained at last. Record:
+`docs/qualification/m4-input-ack.json` (committed, byte-identical to
+`logs/qualification/m4-input-ack.json`). Command, the tool's own defaults:
+
+```powershell
+.venv\Scripts\python.exe -m tools.input_ack_under_load --seconds 30 --repeats 2 `
+    --out logs/qualification/m4-input-ack.json
+```
+
+Census `Get-Process python` **0 before, 0 after**; the tool's own census in the record is
+`"clean": true, "competing_pids": []`. Exit 0, wall **699.7 s**. Warm-ups were **not**
+shortened: 130 s budget for the three-stream conditions (`load_applied_s` 163 → 193 s), 12 s for
+`one-cpu-saturated`. Every row is live through `app.main.run_windowed`, `application_path: true`,
+and `conditions_failed: []`.
+
+```
+condition                        rep  ticks  tick p50  tick p95  tick max   age p50   age p95  backlog  drops  frames  gate/age
+three-cpu-no-saturators            0   1487       0.0      12.1      24.6   36429.2   39044.7      639     29    5358  pass/stale
+three-cpu-no-saturators            1   1481       0.0      12.6      28.3   44030.7   46862.2      752     29    6364  pass/stale
+three-own-devices-no-saturators    0   1499       0.0       7.2      27.4      65.1      68.2        1      0    7203  pass/fresh
+three-own-devices-no-saturators    1   1498       0.0       5.6      20.7      65.1      68.7        1      0    8556  pass/fresh
+one-cpu-saturated                  0   1500       0.0       6.6      12.3    3476.2    5295.7       83      0     548  pass/stale
+one-cpu-saturated                  1   1500       0.0       5.6      13.9    9196.0   11348.5      174      0     908  pass/stale
+three-cpu-saturated                0   1473       0.0       9.4      89.1   34523.0   51205.2      839     32    4763  pass/stale
+three-cpu-saturated                1   1465       0.0      11.6      91.9   55150.2   72135.2     1143     32    5192  pass/stale
+```
+
+**The verdict.** The gate is **not merely insensitive to inference backlog but a green light on a
+system that is failing**: 8 of 8 windows pass (p95 5.6–12.6 ms against 200 ms, worst tick 91.9 ms
+against 2 000 ms) while 6 of 8 are stale on the application's own 2 s rule, and in spec §5 row 4
+the picture on screen is **34.5–55.2 s** old at p50 with **639–1143** frames queued. M2's claim
+survives. One qualification: the gate does see *load* (`tick max` 20.7 → 91.9 ms), it cannot see
+*queue wait*; and `three-own-devices` is **fresh** (p50 65.1 / 38.5 / 39.4 ms, backlog 1, zero
+drops), so the failure is CPU capacity, not the screenshot.
+
+**The tool had to be fixed to obtain it.** `spy_feeders` is installed as `main_module.
+_start_feeders`, and `run_windowed` starts one feeder per camera, so with `--streams 3` it was
+entered three times and armed everything three times: 18 saturators spawned, `state["procs"]`
+holding only the last six, twelve survivors waiting on gates nobody sets — and
+`multiprocessing`'s exit finaliser joins non-daemon children, so the probe could not exit. The
+first full attempt **reported both `three-cpu-saturated` windows and was then killed at the
+parent's 1800 s timeout** (2288.5 s wall), losing all four conditions to a temp-dir
+`PermissionError`. Fixed with an arm-once guard (`state["armed"]`) and `daemon=True` on the
+saturators; both are mutation-checked (removing either makes a test fail). Thresholds and the
+clean-machine census are untouched; `ACKLD_ALLOW_DIRTY` was never set.
+
+**Gates, re-run after the change:**
+
+```
+$ .venv\Scripts\python.exe -m tools.verify_sources
+Source verification: 6 PASS, 0 FAIL                              exit 0
+
+$ .venv\Scripts\python.exe -m tools.preflight
+Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                  exit 0
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1395 tests in 524.300s
+OK                                                               exit 0   wall 525.2 s
+```
+
+**1395 tests, no skips, no failures, wall 525.2 s.** The two over 1393 are the arm-once guard and
+the daemon assertion. The full report is
+`.superpowers/sdd/2026-10-01-m4-sustained-trials-and-legibility/task-2-report.md`; it records the
+process census, everything killed, the mutation tally and the numeric-claims audit.
+

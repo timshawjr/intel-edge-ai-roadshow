@@ -663,6 +663,131 @@ class TheProbeUsesTheApplicationsThreadingPath(unittest.TestCase):
         self.assertIn("from app.main import _percentile", source)
 
 
+class TheFeederWrapperIsEnteredOncePerCamera(unittest.TestCase):
+    """`run_windowed` starts **one feeder per camera**, so anything installed as `_start_feeders`
+    is entered once per stream - three times for the three-camera layout.
+
+    This is the defect that cost the M4 Task 2 matrix a complete run: with `--streams 3` and six
+    saturators the wrapper spawned **18** saturators in three sets of six, `state["procs"]` kept
+    only the last six, and the twelve survivors held the probe alive until the parent's 1800 s
+    timeout - **after** both windows had already reported. Measured, and reproduced in an
+    instrumented copy of the child: three entries, `spawned=6` three times, 21 live children after
+    the third, and every surviving stack dump in `burn`.
+
+    So these tests drive the wrapper the way `run_windowed` does - three times, with three
+    different clips - against a **substituted** `QTimer` and a **substituted** spawn, and assert
+    that the run-level things happen once and the application's feeders still all start.
+    """
+
+    #: The environment the child program reads at import: one second of window, one of warm-up,
+    #: six saturators. Small numbers, because nothing here starts a timer or a process.
+    _ENV = {"ACKLD_SECONDS": "1.0", "ACKLD_WARMUP": "1.0", "ACKLD_SATURATORS": "6",
+            "ACKLD_REPEATS": "2", "ACKLD_TICK_MS": "20", "ACKLD_CONDITION": "unit"}
+
+    def _child_module(self) -> dict:
+        """The child program, executed as a module so its own `spy_feeders` can be called.
+
+        **The application's seams are restored immediately.** The child patches
+        `app.main._start_feeders` and `app.main._gui_application` at import time - that is the
+        whole point of it - and leaving those patches in place would make every later test in this
+        process run against a probe. Saved and restored around the `exec`, in a `finally`.
+        """
+        import app.main as main_module
+
+        source = ack._CHILD.replace("@REPO@", repr(str(REPO_ROOT)))
+        namespace: dict = {"__name__": "ackld_child_under_test",
+                           "__file__": str(REPO_ROOT / "tools" / "ackld_child_under_test.py")}
+        saved = (main_module._start_feeders, main_module._gui_application)
+        try:
+            with mock.patch.dict(os.environ, self._ENV):
+                exec(compile(source, "<ackld_child_under_test>", "exec"), namespace)
+        finally:
+            main_module._start_feeders, main_module._gui_application = saved
+        self.assertIsNotNone(namespace.get("spy_feeders"),
+                             "the child program must define the wrapper this test drives")
+        return namespace
+
+    def test_three_cameras_spawn_one_set_of_saturators_and_one_set_of_timers(self):
+        namespace = self._child_module()
+        calls = {"spawn": 0, "feeder": [], "timers": []}
+
+        class _Signal:
+            def connect(self, _slot):  # noqa: D401 - the real `timeout.connect(...)`
+                pass
+
+        class _Timer:
+            """Just enough of `QTimer` to be constructed, connected, started and stopped."""
+
+            def __init__(self):
+                calls["timers"].append(self)
+                self.timeout = _Signal()
+                self.intervals: list[int] = []
+                self.single_shot = None
+
+            def start(self, interval):  # noqa: D401 - as QTimer
+                self.intervals.append(interval)
+
+            def stop(self):  # noqa: D401 - as QTimer
+                pass
+
+            def setSingleShot(self, flag):  # noqa: N802 - as QTimer
+                self.single_shot = flag
+
+        def fake_spawn():
+            calls["spawn"] += 1
+            return ["saturator"], None
+
+        def fake_real_feeders(bridge, supervisor, clip):
+            calls["feeder"].append(clip)
+
+        namespace["QTimer"] = _Timer
+        namespace["spawn_saturators"] = fake_spawn
+        namespace["_real_feeders"] = fake_real_feeders
+
+        for clip in ("clip-A", "clip-B", "clip-C"):
+            namespace["spy_feeders"]("bridge", "supervisor", clip)
+
+        self.assertEqual(calls["spawn"], 1,
+                         f"the saturators are a property of the run, not of a camera: six of them "
+                         f"were spawned {calls['spawn']} time(s), so "
+                         f"{6 * calls['spawn']} processes exist and `state['procs']` can "
+                         f"terminate at most the last six - the twelve survivors are what kept "
+                         f"the probe alive to the 1800 s timeout")
+        self.assertEqual(len(calls["timers"]), 3,
+                         f"one tick timer, one window timer and one warm-up poller: a second set "
+                         f"would replace the references to the first and leave two timers "
+                         f"recording into the same list; {len(calls['timers'])} were constructed")
+        self.assertEqual(calls["feeder"], ["clip-A", "clip-B", "clip-C"],
+                         "**every camera's feeder must still start** - the guard is on the probe's "
+                         "own arming, not on the application's feeders: three cameras that each "
+                         "get a feeder is the layout the measurement is about")
+        self.assertTrue(namespace["state"]["armed"])
+        self.assertIs(namespace["state"]["supervisor"], "supervisor")
+        # The window timer must still be single-shot: a repeating one never elapses.
+        window = [timer for timer in calls["timers"] if timer.single_shot]
+        self.assertEqual(len(window), 1)
+
+    def test_a_saturator_cannot_keep_the_probe_alive(self):
+        """`multiprocessing`'s exit finaliser **joins every non-daemon child**.
+
+        A saturator whose gate is clear never returns - it resets its own deadline and waits - so
+        a leaked one is not a process that finishes late, it is a process that keeps the probe
+        alive **for ever**. Measured: twelve of them held a finished run for the parent's full
+        1800 s timeout. That is why they are daemon processes as well as being terminated.
+
+        Asserted on the source, which is the instrument this file already uses for the shape of
+        the child program (see `setSingleShot(True)`): the flag has to be set **before**
+        `start()`, because `daemon` is read when the process is started.
+        """
+        source = ack._CHILD
+        body = source[source.index("def spawn_saturators"): source.index("def tick():")]
+        self.assertIn("daemon=True", body,
+                      "a non-daemon saturator is joined at interpreter exit and can wedge a "
+                      "finished measurement")
+        self.assertLess(body.index("daemon=True"), body.index("proc.start()"),
+                        "`daemon` must be set before the process is started, or it does nothing")
+
+
 class AMeasurementRefusesADirtyMachine(unittest.TestCase):
     """**The standing rule, made mechanical.** A tick, leak or latency figure taken while another
     Python process is running is a figure about that other process as much as about this
