@@ -1353,42 +1353,75 @@ labelled **[quoted]**.
 Date: 2026-10-27 (Task 1, legibility at 3 m)
 Milestone: M4
 
-**Verdict, Task 1: the always-visible screen now reads at three metres — on a 55-inch 1080p
-panel, which is stated as a requirement because it is a choice and not a measurement.** Every
-visible element clears 16 arcmin on **cap height and x-height**: the three frame ages are at
-**29.1′**, the staleness verdict at **22.9′ / 16.6′**, and the smallest element on the screen is
-at 16.6′ of x-height — against M3's 4.6′. The screen cost six figures per camera, the event row,
-the pipeline strip, the control bar and the footer `?` row, all of which are in the presenter
-drawer (or, for `PipelineStrip.qml`, deleted and replaced by a sentence). Nothing on the screen
-was shrunk.
+**Verdict, Task 1 — corrected. On the monitor actually attached to this machine the screen
+passes 16 arcmin of cap height at 2 m and fails at 3 m.** The monitor is measured, not assumed:
+**DELL S3422DWG, 80 x 33 cm, 3440x1440 native, 2293x960 desktop, 0.310 mm per logical pixel**
+(WMI; M4.5). At that scale 44 px is **16.8′** of cap at 2 m and **11.2′** at 3 m, the frame age
+(56 px) is **21.4′ / 14.2′**, and **no element clears 16′ of x-height at either distance**
+(12.2′ / 8.1′ at 44 px) — so "passes at 2 m" is a **cap-height** statement, not a full pass.
+A **55-inch 1080p panel would pass at 3 m** (22.9′ / 16.6′); that is a **booth procurement
+requirement, not an achieved measurement**. The first version of this section judged the render
+against that panel and led with the pass; it was the wrong monitor, and M4.5 records the
+correction. **The redesign itself is unchanged and is not reverted**: it removed six figures per
+camera, the event row, the pipeline strip, the control bar and the footer `?` row (all in the
+presenter drawer, or, for `PipelineStrip.qml`, deleted and replaced by a sentence), and nothing
+on the screen was shrunk. What changed is the geometry the result is judged against.
 
 `tools/preflight.py` is **16 PASS / 2 WARN / 0 FAIL (Limited)**, exit 0; `verify_sources` is 6 PASS /
-0 FAIL; `--selftest` PASS; the suite is **1388 tests, OK, 543.8 s** (wall 544.7 s).
+0 FAIL; `--selftest` PASS; the suite is **1393 tests, OK, 542.7 s** (wall 543.6 s) after the
+correction (M4.6; the pre-correction run was 1388 tests, and the five extra are the
+attached-monitor tests).
 
-### M4.1 The angular table, at 3 m on the stated panel
+### M4.1 The angular table, at both geometries
 
 Measured from `docs/qualification/m3-capture/100pct.json` — the rendered scene graph, the font
 engine's own metrics at the size the scene reports, and the ink in the saved PNG. Full table and
 method in [docs/qualification/M4-legibility-review.md](docs/qualification/M4-legibility-review.md).
+Every visible element is one of these three sizes, so this table covers all 24 of them.
 
-| element | px | cap | x-height | verdict |
-|---|---:|---:|---:|---|
-| `recordedFootageText`, `appTitle`, `deviceBadgeText`, `explainOpenButtonText` | 44 | 22.9′ | 16.6′ | **PASS** |
-| `cameraName_A/B/C` | 48 | 25.0′ | 18.1′ | **PASS** |
-| `cameraState_A/B/C`, `streamBadgeText_A/B/C`, `tileCaptionText_B/C`, `tileNoFrameText_A/B/C` | 44 | 22.9′ | 16.6′ | **PASS** |
-| **`streamStaleText_A/B`** — the staleness verdict | 44 | **22.9′** | **16.6′** | **PASS** |
-| `streamReasonText_C` — the failed camera's reason | 44 | 22.9′ | 16.6′ | **PASS** |
-| **`streamAgeText_A/B/C`** — the frame age | **56** | **29.1′** | **21.1′** | **PASS** |
+**On the attached monitor — the achieved result** (`mm/px = 0.310`):
 
-`mm/px = 0.63416` (1217.59 mm / 1920 px), distance 3.0 m, threshold 16′. **24 visible elements,
-nothing below 16′ on either measure.**
+| element | px | 2 m cap | 3 m cap | 2 m x-height | 3 m x-height |
+|---|---:|---:|---:|---:|---:|
+| body — label, title, badge, verdicts, captions | 44 | **16.8′** | **11.2′** | 12.2′ (marginal) | 8.1′ |
+| camera names | 48 | **18.3′** | **12.2′** | 13.3′ (marginal) | 8.8′ |
+| **frame age** | **56** | **21.4′** | **14.2′** | 15.5′ (just short) | 10.3′ |
 
-**The stated target, and what it changes:** a **55-inch 16:9 1080p panel at 3 m** — a choice, not
-a measurement (`app/theme.py` records it, and M3's 27-inch assumption is recorded as the thing it
-replaces). At 44 px on this panel the cap height is 22.9′ and the x-height 16.6′. On the same
-render at other panel sizes: 40 in → 16.7′ / 12.1′ (**lowercase marginal**), 32 in → 13.3′ / 9.6′,
-27 in → 11.2′ / 8.1′. **A booth that installs anything under 55 inches has a regression, and no
-tool in this repository can gate a panel size.**
+**Passes at 2 m on cap height; fails at 3 m on both measures; x-height fails at 2 m too.**
+
+**On the 55-inch panel the booth is required to provide — a requirement, not the result**
+(`mm/px = 0.63416`, 3 m): 44 px **22.9′ / 16.6′**, 48 px **25.0′ / 18.1′**, 56 px
+**29.1′ / 21.1′**. All clear 16′. A booth that installs that panel gets a screen that reads at
+3 m; a booth that installs anything under 55 inches does not, and this machine's monitor is the
+latter case. At 40 in the same render is 16.7′ / 12.1′ (lowercase marginal), at 32 in 13.3′ /
+9.6′, and the attached monitor 11.2′ / 8.1′. **No tool in this repository can gate a panel
+size.**
+
+### M4.1a The correction: the measured monitor, and the 55-inch requirement
+
+The first version of this section judged the render against the 55-inch panel and reported the
+pass as the result. The specification says key content must be readable at 2–3 m "on the actual
+monitor" (lines 17 and 326 of the operator's copy; the specification file is not committed in
+this repository), and the actual monitor was measured on 2026-10-27:
+
+```
+PS> WmiMonitorBasicDisplayParams  ->  MaxHorizontalImageSize 80, MaxVerticalImageSize 33
+PS> WmiMonitorID                  ->  DEL | DELL S3422DWG | 809587030
+PS> Win32_VideoController         ->  3440 x 1440 native, 150 % scaling -> 2293 x 960 desktop
+```
+
+The 1920x1080 canvas is height-limited: 1706.7x960 logical = 2560x1440 physical, and
+`(2560/3440) x 800/1920 = 0.3101 mm/logical px` (0.3056 from the rounded 33 cm height; 0.310 is
+the upper bound and is used). This is **0.310 — exactly M3's anchor** — so M3 was measuring the
+actual monitor and the 55-inch assumption was about twice its scale. The full derivation, WMI
+source and sensitivity table are in the review, §1.
+
+The verdict is therefore stated in two parts, and the second is a requirement:
+
+1. **On the actual monitor: passes at 2 m on cap height, fails at 3 m; x-height does not clear
+   16′ at either distance.** 44 px is 16.8′ at 2 m, 11.2′ at 3 m.
+2. **A 55-inch panel would pass at 3 m** (22.9′ / 16.6′ at 44 px). That is a **booth
+   procurement requirement**, never the delivered result.
 
 ### M4.2 What was removed, and where it went
 
@@ -1405,7 +1438,10 @@ Kept and enlarged: the mandatory label, the title, the device badge, three capti
 each camera's name/state/age/device badge, and **one verdict line per camera** (the staleness
 sentence, or that camera's stated failure reason).
 
-### M4.3 The gate set, run in the M4 Task 1 session
+### M4.3 The gate set, run in the M4 Task 1 session, before the panel correction
+
+The figures in this subsection are the **pre-correction** run and are kept as the session
+record. M4.6 is the gate set on the corrected tree.
 
 On branch `main`, machine asserted clean before the timing run (`Get-Process python` → 0).
 
@@ -1478,9 +1514,67 @@ something a later reader needs to know before trusting `git status`.
 
 ### M4.4 What Task 1 does not claim
 
-- **The panel is a requirement, not a gate** (M4.1). This is the largest open risk.
+- **The 55-inch panel is a procurement requirement, not a gate** (M4.1a). The delivered screen
+  was measured on the attached monitor and **fails at 3 m**; the requirement is the largest open
+  risk, and no tool in this repository can check it.
 - The four captures still contain **no video frame** — they prove layout, strings, pixels and
   census, not the video path (M3 §5.4 stands).
 - The drawer is 18 px: it is the presenter's arm's-length surface and is not part of the
   passenger legibility contract.
 - M4 Tasks 2–6 (the timeout leak, paired trials, utilisation, the soak) are **not** started.
+
+### M4.5 The panel correction, in full
+
+**What was wrong.** The first version of M4.1 adopted 55 inches and reported "reads at three
+metres" as the result. The specification says "on the actual monitor" (lines 17 and 326), and the
+actual monitor is the DELL S3422DWG measured above. **The redesign is unchanged**; the geometry
+the result is judged against changed.
+
+**What the tests now do** (`tests/test_capture_ui_canvas.py::TheBoothScreenReadsAtThreeMetres`,
+**16 tests** — 11 original, 5 added): the attached monitor (0.310) is the **default and gating**
+geometry; each of its angles is **pinned per font size** so a shrunk token or a changed geometry
+fails rather than silently changing the record; the test asserts that **no element clears 16′ of
+x-height at 2 m** (the qualification on "passes at 2 m"); and the 55-inch requirement is a
+separate, labelled conditional whose test also asserts it is a requirement. The existing
+Slot guard, `Repeater`/`NaN`/unsized-window guards and ink assertions are untouched.
+
+**Mutation-checked — six faults, six kills** (class run after each, file restored):
+
+| mutant | killed by |
+|---|---|
+| panel width 800 → 1600 mm (wrong mm/px) | 5 tests: geometry, 2 m cap, 3 m pin, x-height, requirement |
+| cap ratio 0.7164 → 0.6500 | `test_the_font_ratios_this_test_divides_by_are_the_fonts_real_ones` |
+| x-height ratio 0.5184 → 0.5500 | `test_the_font_ratios_this_test_divides_by_are_the_fonts_real_ones` |
+| distance set (2.0, 3.0) → (3.0,) | geometry test |
+| `TYPE_BOOTH_DETAIL` 44 → 40 px (shrunk token) | 6 failures + 1 error (census, 2 m cap, 3 m pin, x-height, ink/ink-adjacent, discrimination) |
+| `angle()` default switched to the 55-inch conversion | 5 tests, including the geometry and pinned 3 m tests |
+
+The last mutant is the one that matters for the correction: **a legibility test that defaults to
+the 55-inch panel cannot pass this suite.**
+
+**The suite, re-run after the correction** — see §M4.6 for the real summary and wall time.
+
+### M4.6 Gates re-run after the correction
+
+On branch `main`, machine asserted clean before the run (`Get-Process python` → 0). Output
+verbatim, timings measured around the process.
+
+```
+$ .venv\Scripts\python.exe -m tools.verify_sources
+Source verification: 6 PASS, 0 FAIL                              exit 0
+
+$ .venv\Scripts\python.exe -m tools.preflight
+Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                 exit 0
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1393 tests in 542.650s
+OK                                                               exit 0   wall 543.58 s
+```
+
+**1393 tests, no skips, no failures, wall clock 543.58 s.** The five extra tests over the
+pre-correction 1388 are the attached-monitor assertions. `tools/probe_telemetry.py` was not
+re-run by this correction, so `config/telemetry_map.json` was not rewritten.

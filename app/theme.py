@@ -46,7 +46,12 @@ import math
 from typing import Final
 
 __all__ = [
-    "ACCENT", "BG", "BG_PANEL", "BG_PANEL_DEEP", "BG_VIDEO", "BORDER",
+    "ACCENT", "ACTUAL_MONITOR_CANVAS_SCALE", "ACTUAL_MONITOR_DESKTOP_HEIGHT_PX",
+    "ACTUAL_MONITOR_DESKTOP_SCALE", "ACTUAL_MONITOR_DESKTOP_WIDTH_PX",
+    "ACTUAL_MONITOR_HEIGHT_MM", "ACTUAL_MONITOR_MM_PER_LOGICAL_PX",
+    "ACTUAL_MONITOR_NAME", "ACTUAL_MONITOR_NATIVE_HEIGHT_PX",
+    "ACTUAL_MONITOR_NATIVE_WIDTH_PX", "ACTUAL_MONITOR_VIEWING_DISTANCES_M",
+    "ACTUAL_MONITOR_WIDTH_MM", "BG", "BG_PANEL", "BG_PANEL_DEEP", "BG_VIDEO", "BORDER",
     "ARIAL_CAP_HEIGHT_EM", "ARIAL_X_HEIGHT_EM", "BOOTH_PANEL_DIAGONAL_IN",
     "BOOTH_PANEL_WIDTH_MM", "BOOTH_VIEWING_DISTANCE_M", "CARD_BADGE_INSET",
     "CANVAS_HEIGHT", "CANVAS_WIDTH", "CARD_ACTIVITY_LINES",
@@ -199,14 +204,20 @@ OVERLAY_LABEL: Final[int] = 22
 # that follow from those two by trigonometry. Everything here is either a **choice** (the
 # panel and the distance) or **arithmetic on that choice** (the sizes).
 #
-# **The panel is a choice, not a measurement, and it is stated as a requirement on the
-# booth.** M3 could not establish a booth display: it measured this machine's *desktop*
-# (2293 x 960 logical on a DELL S3422DWG) and assumed 0.310 mm per logical pixel from a
-# 27-inch monitor, while saying in the same paragraph that it was "an assumption about the
-# booth, not a measurement of it". A 27-inch desk monitor is not a booth display, and at
-# 3 m it is arithmetically impossible to satisfy at three cameras: 16 arcmin needs 45 px
-# of cap height there, i.e. a 63 px Arial, and three cameras' worth of that does not fit
-# 1920 x 1080 next to the pictures. So the requirement is stated instead of assumed:
+# **The 55-inch panel is a choice, not a measurement, and it is stated as a requirement on
+# the booth — not as the panel this screen was measured on.** Those are two different
+# claims and M4 originally ran them together: it judged the delivered screen against the
+# 55-inch requirement and reported the pass as the result. The monitor actually attached to
+# this machine is measured in the section at the end of this file (DELL S3422DWG, 80 x 33 cm,
+# 0.310 mm per logical pixel) and it is roughly **half** the scale of the 55-inch panel. On
+# the attached monitor the screen passes 16 arcmin of cap height at 2 m (16.8 arcmin at
+# 44 px) and fails at 3 m (11.2 arcmin); its x-height fails the 16 arcmin band at both
+# distances. That is the achieved result. The 55-inch panel is what would make 3 m work.
+#
+# A 27-inch desk monitor is not a booth display, and at 3 m it is arithmetically impossible
+# to satisfy at three cameras: 16 arcmin needs 45 px of cap height there, i.e. a 63 px
+# Arial, and three cameras' worth of that does not fit 1920 x 1080 next to the pictures. So
+# the requirement is stated instead of assumed:
 #
 #   **a 55-inch 16:9 1080p panel, viewed from 3 m.**
 #
@@ -214,10 +225,9 @@ OVERLAY_LABEL: Final[int] = 22
 #
 #   - it is the most common trade-show booth display size, and 3 m is a booth aisle;
 #   - it is **not measured**, and this module does not claim it is. It is a hardware
-#     requirement the operator has to meet for the screen to read. The M4 legibility
+#     requirement the operator has to meet for the screen to read at 3 m. The M4 legibility
 #     review carries the sensitivity table: on a 40-inch panel the same screen's body text
-#     is 12.1 arcmin (FAIL) and on M3's 27-inch anchor it is 9.4 arcmin (FAIL, below the
-#     x-height of the acuity floor for sentences);
+#     is 12.1 arcmin (FAIL) and on the attached monitor it is 11.2 arcmin (FAIL) at 3 m;
 #   - the alternative - shrinking the canvas so the same content is drawn larger - is the
 #     route this task explicitly rejects. The canvas is unchanged at 1920 x 1080.
 #
@@ -253,7 +263,9 @@ BOOTH_PANEL_WIDTH_MM: Final[float] = (
     BOOTH_PANEL_DIAGONAL_IN * 25.4 * 16.0 / math.hypot(16.0, 9.0)
 )
 
-#: Millimetres per logical pixel. **The one conversion every angular size uses.**
+#: Millimetres per logical pixel **on the 55-inch panel the booth is required to provide**.
+#: This is the requirement's conversion, NOT the attached monitor's: for anything that
+#: claims what the delivered screen achieves, use `ACTUAL_MONITOR_MM_PER_LOGICAL_PX` below.
 MM_PER_LOGICAL_PX: Final[float] = BOOTH_PANEL_WIDTH_MM / CANVAS_WIDTH
 
 #: The reading bands, from ISO 9241-3 (16 arcmin for comfortable sustained reading) and
@@ -307,3 +319,81 @@ THUMB_ROW_FRACTION: Final[float] = 0.22
 #: measuring the render. `CARD_AGE_ROW` is one `TYPE_BOOTH_NUMERAL` line plus the padding a
 #: `Text` adds; the other two are their own type sizes plus the badge box's padding.
 CARD_BADGE_INSET: Final[int] = 4
+
+# ================================================================================
+# The monitor actually attached to this machine — measured, and not the booth panel
+# ================================================================================
+#
+# **This block is a measurement, and it is the geometry the delivered screen is judged
+# against.** It exists because M4's first pass judged the same render against the 55-inch
+# requirement above and presented that pass as the result; the booth does not have a
+# 55-inch panel, and the screen's achieved angular size is set by the monitor that is
+# attached. The claim the screen must lead with is this block's, not the requirement's.
+#
+# Source, read on this machine on 2026-10-27 with WMI:
+#
+#   Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams
+#     InstanceName             MaxHorizontalImageSize  MaxVerticalImageSize  Active
+#     DISPLAY\DELD129\..._0    80                      33                    True
+#   Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID
+#     InstanceName             Manufacturer  UserFriendlyName  SerialNumber
+#     DISPLAY\DELD129\..._0    DEL           DELL S3422DWG     ...
+#
+# `MaxHorizontalImageSize` / `MaxVerticalImageSize` are in **whole centimetres** (WMI's
+# documented unit), so 80 cm x 33 cm carry +/- 5 mm each. The native mode is 3440 x 1440;
+# Windows runs it at 150 %, so the desktop the app sees is 2293 x 960 logical pixels.
+#
+# The 1920 x 1080 canvas cannot be shown one-to-one in a 960-logical-pixel-tall desktop, so
+# it is **height-limited** (letterboxed to its height):
+#
+#   960 / 1080                    = 0.8889        canvas scale in the desktop
+#   1920 x 0.8889                 = 1706.7        canvas width, logical px
+#   2560 x 1440 physical px on a 3440 x 1440 panel (the 150 % scale cancels)
+#
+# and then:
+#
+#   mm/px = (1706.7 / 2293) x (800 / 1920) = 0.3101   (the desktop's own width)
+#   mm/px = (2560 / 3440) x 800 / 1920     = 0.3101   (native physical pixels)
+#   mm/px = 330 / 1440 x 2560 / 1920       = 0.3056   (from the rounded 33 cm height)
+#
+# **0.310 mm per logical pixel** is the figure used, and it is the upper end of that
+# bracket. Using the smaller height-derived value would flatter every verdict below, so it
+# is not used. M3's rounded 0.310 is the same number, which is the useful cross-check: M3's
+# anchor *was* the attached monitor, and the 55-inch panel is roughly twice its scale
+# (0.634 / 0.310 = 2.05).
+#
+# The angular consequences, on the shipped ladder (cap 0.7164 em, x-height 0.5184 em):
+#
+#   44 px  cap 9.77 mm  2 m 16.8' PASS   3 m 11.2' FAIL   x 12.2' / 8.1'
+#   48 px  cap 10.66 mm 2 m 18.3' PASS   3 m 12.2' FAIL   x 13.3' / 8.8'
+#   56 px  cap 12.43 mm 2 m 21.4' PASS   3 m 14.2' FAIL   x 15.5' / 10.3'
+#
+# So on the attached monitor the screen **passes 16 arcmin of cap height at 2 m and fails
+# at 3 m**, and its mixed-case sentences (x-height) do not reach 16 arcmin at either
+# distance. `tests/test_capture_ui_canvas.py` asserts both geometries: the attached monitor
+# is the gating case and its numbers are pinned; the 55-inch panel is a separate,
+# clearly-labelled requirement.
+ACTUAL_MONITOR_NAME: Final[str] = "DELL S3422DWG"
+ACTUAL_MONITOR_WIDTH_MM: Final[float] = 800.0
+ACTUAL_MONITOR_HEIGHT_MM: Final[float] = 330.0
+ACTUAL_MONITOR_NATIVE_WIDTH_PX: Final[int] = 3440
+ACTUAL_MONITOR_NATIVE_HEIGHT_PX: Final[int] = 1440
+ACTUAL_MONITOR_DESKTOP_WIDTH_PX: Final[int] = 2293
+ACTUAL_MONITOR_DESKTOP_HEIGHT_PX: Final[int] = 960
+ACTUAL_MONITOR_DESKTOP_SCALE: Final[float] = 1.5
+
+#: The 1920x1080 canvas's scale when it is fitted to the measured desktop's height.
+ACTUAL_MONITOR_CANVAS_SCALE: Final[float] = (
+    ACTUAL_MONITOR_DESKTOP_HEIGHT_PX / CANVAS_HEIGHT
+)
+
+#: Millimetres per logical pixel on the attached monitor. **The measured conversion**, and
+#: the one any claim about the delivered screen must use.
+ACTUAL_MONITOR_MM_PER_LOGICAL_PX: Final[float] = (
+    ACTUAL_MONITOR_WIDTH_MM
+    * (CANVAS_WIDTH * ACTUAL_MONITOR_CANVAS_SCALE / ACTUAL_MONITOR_DESKTOP_WIDTH_PX)
+    / CANVAS_WIDTH
+)
+
+#: The distances the specification names: "readable at 2-3 m on the actual monitor".
+ACTUAL_MONITOR_VIEWING_DISTANCES_M: Final[tuple[float, ...]] = (2.0, 3.0)

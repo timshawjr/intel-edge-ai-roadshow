@@ -1,4 +1,4 @@
-# M4 — the legibility review: what the booth screen reads at three metres
+# M4 — the legibility review: what the booth screen reads on the monitor it is measured on
 
 **What this document is.** The measurement M4 Task 1 exists to make: for every element a
 passer-by has to read on the always-visible booth screen, **the rendered cap height in
@@ -7,82 +7,150 @@ the **rendered scene graph and the saved PNG**, not from a token multiplied by a
 M3's review answered the same question and found the answer was no; this one says what was
 removed to change it, what the screen costs, and what it still cannot do.
 
-**Read §1 first.** The result is conditional on a **stated booth panel** — a 55-inch 1080p
-display viewed from 3 m — and that panel is a **choice, recorded as a requirement on the
-booth, not a measurement of it**. M3 could not establish a booth display either. On a 40-inch
-panel the same screen passes on cap height and its lowercase is marginal; on M3's 27-inch
-anchor nothing on the screen passes, and no layout at 1920×1080 could make it pass at three
-cameras.
+**Read §1 first, because the verdict changed.** The screen is judged against the monitor
+**actually attached to this machine** — a **DELL S3422DWG, 80 x 33 cm, 3440x1440 native, a
+2293x960 desktop, 0.310 mm per logical pixel** — not against a 55-inch hypothetical. On that
+monitor the screen **passes 16 arcmin of cap height at 2 m and fails at 3 m**; its mixed-case
+sentences (x-height) do not clear 16 arcmin at **either** distance. A 55-inch 1080p panel
+would pass at 3 m, and that is a **booth procurement requirement**, not an achieved
+measurement. The first version of this document judged the render against that panel and led
+with the pass; §6 records the correction.
 
 ---
 
-## 1. The stated target, and what kind of claim it is
+## 1. Two geometries: the measured monitor, and the panel the booth must procure
 
-`app/theme.py` now carries the target as named constants, and this is the whole of the
-assumption:
+There is exactly one geometry that is a **measurement of the delivered screen** and one that
+is a **requirement on the booth**. They are a factor of two apart, and confusing them changes
+the verdict, so they are kept apart everywhere below.
+
+### 1.1 The monitor actually attached — measured, not assumed
+
+Read from WMI on this machine on 2026-10-27:
+
+```
+PS> Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams |
+      Select InstanceName, MaxHorizontalImageSize, MaxVerticalImageSize, Active
+InstanceName                            MaxHorizontalImageSize MaxVerticalImageSize Active
+DISPLAY\DELD129\4&16626495&0&UID24631_0                     80                   33   True
+
+PS> Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID   (decoded)
+DISPLAY\DELD129\4&16626495&0&UID24631_0 | DEL | DELL S3422DWG | 809587030
+```
+
+`MaxHorizontalImageSize` / `MaxVerticalImageSize` are WMI's **whole-centimetre** fields, so
+80 x 33 cm carries **±5 mm** on each dimension; `WmiMonitorID`'s `UserFriendlyName` names the
+panel. `Win32_VideoController` reports the native mode **3440x1440**, and Windows runs it at
+**150 %** scaling, so the desktop the app sees is **2293x960 logical**.
+
+| quantity | value | kind |
+|---|---|---|
+| panel | **DELL S3422DWG** | measured (`WmiMonitorID`) |
+| physical size | **80 cm x 33 cm** | measured (`WmiMonitorBasicDisplayParams`), ±5 mm |
+| native mode | 3440 x 1440 | measured |
+| desktop | 2293 x 960 logical (150 %) | measured |
+| canvas | 1920 x 1080 logical | spec section 3 |
+| **mm per logical px** | **0.310** | arithmetic, below |
+
+The 1920x1080 canvas cannot be shown one-to-one in a 960-logical-pixel-tall desktop, so it is
+**height-limited**: 960/1080 = 0.8889, i.e. a **1706.7 x 960** logical canvas, which is
+**2560 x 1440** physical pixels on the 3440-pixel-wide panel. Three independent forms of the
+same conversion:
+
+```
+(1706.7 / 2293) x (800 / 1920) = 0.3101   the desktop's own width
+(2560 / 3440) x 800 / 1920     = 0.3101   native physical pixels
+(330 / 1440) x 2560 / 1920     = 0.3056   from the rounded 33 cm height
+```
+
+**0.310 mm per logical pixel** is the figure used — the upper end of the bracket. Using the
+smaller height-derived value would flatter every verdict, so it is not used. This is the same
+0.310 M3 recorded, and that agreement is the useful cross-check: **M3's anchor was the
+attached monitor.** The panel's 16:9 canvas is about **595 mm** wide (593 mm from its native
+pixel pitch) — the width of a 27-inch 16:9 monitor (598 mm) — because a 21:9 panel pillarboxes
+it. In angular terms the attached monitor is a 27-inch screen, not a 34-inch one.
+
+### 1.2 The angles on the attached monitor — the achieved result
+
+Cap height is the digits' height; x-height is the height a mixed-case sentence is actually
+drawn at. Both are required to clear 16′. `cap mm` and `x mm` use Arial's **measured**
+ratios, 0.7164 em and 0.5184 em (`QFontMetricsF` on this machine's registered Arial, re-read
+by the test on every run).
+
+| element | px | cap mm | 2 m cap | 3 m cap | 2 m x | 3 m x | verdict at 2 m | verdict at 3 m |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| body — mandatory label, title, device badge, verdict sentences, captions | 44 | 9.77 | **16.8′** | **11.2′** | 12.2′ | 8.1′ | cap **PASS**, lowercase marginal | **FAIL** |
+| camera names | 48 | 10.66 | **18.3′** | **12.2′** | 13.3′ | 8.8′ | cap **PASS**, lowercase marginal | **FAIL** |
+| frame age | 56 | 12.43 | **21.4′** | **14.2′** | 15.5′ | 10.3′ | cap **PASS**, lowercase marginal | **FAIL** |
+
+**The verdict on the actual monitor, in two parts.**
+
+- **It passes at 2 m on cap height and fails at 3 m.** At 2 m every element clears 16′ of
+  cap height (the smallest is 16.8′); at 3 m none does (the largest is 14.2′).
+- **The mixed-case sentences do not clear 16′ at either distance.** At 2 m the 44 px
+  x-height is **12.2′** — inside the 10–16′ marginal band, not the comfort band — and at 3 m
+  it is 8.1′. The frame age's 15.5′ at 2 m is just short as well. So "passes at 2 m" is a
+  **cap-height** statement and nothing broader; the report says so in the same sentence.
+  `tests/test_capture_ui_canvas.py` pins each of these numbers and asserts that no element
+  clears 16′ of x-height at 2 m, so the qualification cannot be dropped without a test
+  failing.
+
+### 1.3 The 55-inch panel is a procurement requirement, not the delivered result
+
+`app/theme.py` carries the requirement as named constants, because a booth screen needs a
+stated target even when the development machine is smaller:
 
 | token | value | what kind of number it is |
 |---|---|---|
 | `BOOTH_PANEL_DIAGONAL_IN` | **55.0 in** | **a choice.** A trade-show booth display default. **Not measured.** |
 | `BOOTH_VIEWING_DISTANCE_M` | **3.0 m** | **a choice.** The distance M3's brief and M4's brief name as the booth aisle. **Not measured.** |
 | `BOOTH_PANEL_WIDTH_MM` | 1217.59 mm | arithmetic: `55 × 25.4 × 16 / hypot(16, 9)` |
-| `MM_PER_LOGICAL_PX` | **0.63416** | arithmetic: panel width / 1920 logical px |
+| `MM_PER_LOGICAL_PX` | **0.63416** | arithmetic: requirement panel width / 1920 logical px |
 | `READING_MIN_ARCMIN` | 16′ | ISO 9241-3's minimum character height for comfortable sustained reading |
 | `ARIAL_CAP_HEIGHT_EM` | 0.7164 | **measured on this machine's Arial**: `QFontMetricsF.capHeight()` is 31.52 px at 44 px |
 | `ARIAL_X_HEIGHT_EM` | 0.5184 | **measured on this machine's Arial**: `xHeight()` is 22.81 px at 44 px |
 | `READING_MIN_HEIGHT_MM` | 13.963 mm | arithmetic: `2 · 3000 · tan(16′/2)` |
 | `TYPE_BOOTH_DETAIL` | **44 px** | arithmetic, from the **x-height** requirement below |
 
-### Why 55 inches, and why x-height decides the size
-
-**M3 assumed a 27-inch desk monitor** (0.310 mm/logical px) and said in the same paragraph that
-it was "an assumption about the booth, not a measurement of it". It was right to say so, and
-the assumption was the wrong shape for a booth: a 27-inch monitor is what sits on a desk. A
-55-inch 1080p display is a common trade-show panel, and it is the **smallest** panel on which
-this screen clears the threshold on *both* the height of its digits and the height of its
-lowercase — which matters because most of what a passer-by must read is a sentence.
-
-**A digit's height is the cap height. A sentence's is not.** Arial's lowercase is 0.5184 em
-against a 0.7164 em cap — **28 % shorter** — so a threshold expressed in cap height flatters
-every mixed-case sentence on the screen by about a quarter. M3 measured that gap and disclosed
-it; M4 has to act on it, because the two lines the screen exists for ("STALE - this picture is
-11.7 s old; the limit is 2 s", "no device is running") are sentences. So the ladder is derived
-from the **x-height**:
+**Why 55 inches, and why x-height decides the size.** A 55-inch 1080p panel is the smallest
+common trade-show panel on which this screen clears the threshold on *both* the height of its
+digits and the height of its lowercase — which matters because most of what a passer-by must
+read is a sentence. A digit's height is the cap height; a sentence's is not. Arial's lowercase
+is 0.5184 em against a 0.7164 em cap — **28 % shorter** — so a threshold expressed in cap
+height flatters every mixed-case sentence by about a quarter. M3 measured that gap and
+disclosed it; M4 acts on it, because the two lines the screen exists for ("STALE — this
+picture is 11.7 s old; the limit is 2 s", "no device is running") are sentences. So the
+ladder is derived from the **x-height** on the requirement panel:
 
 ```
 font_px = 13.963 mm / 0.63416 mm/px / 0.5184 = 42.4  ->  44  (rounded up to a multiple of 4)
 ```
 
-At 44 px on this panel: **cap 31.52 px = 19.99 mm = 22.9′**, **x-height 22.81 px = 14.47 mm =
-16.6′**. Both clear 16′.
+At 44 px on the **required** panel: **cap 31.52 px = 19.99 mm = 22.9′**, **x-height 22.81 px =
+14.47 mm = 16.6′**. Both clear 16′ at 3 m. That is what the booth must provide for the screen
+to read at 3 m. **It is not what this machine measured.**
 
-The same curve, for the record, is why 44 px is the number M4's brief arrives at from the
-other direction. Its arithmetic quotes "9.2 mm of cap height ≈ 44 px" for 16′ at 3 m. **9.2 mm
-is 16′ at 2 m**, not 3 m — 16′ at 3 m is 13.96 mm of cap height, i.e. a **63 px** Arial at
-M3's 0.310 mm/px. That correction matters and is recorded rather than smoothed over: on M3's
-27-inch assumption the screen would have needed 63 px text, not 44 px, and three cameras of
-that do not fit 1920×1080 beside three pictures. The 44 px the brief names is right; the
-justification it gives is a factor of 1.5 out.
+**What the requirement costs, stated as a requirement.** A booth that installs a 55-inch
+panel gets 22.9′ / 16.6′ at 3 m and the screen reads. A booth that installs the monitor this
+machine has gets 11.2′ / 8.1′ and it does not read at 3 m. Because `tools/preflight.py` cannot
+measure a panel, this is a **hardware requirement in a document, not a gate**; it is the
+largest open risk in the deliverable and §6 records it as such.
 
-### What changes if the panel is not 55 inches
+### 1.4 Sensitivity: the same render on other panels, at 3 m
 
-**Nothing about the render; everything about the claim.** The screen is a fixed 1920×1080
-logical layout, so the arcminute figures scale linearly with the panel's width:
-
-| panel | width (mm) | mm/px | 44 px cap | 44 px x-height | both clear 16′? |
+| panel | canvas width (mm) | mm/px | 44 px cap | 44 px x-height | both clear 16′? |
 |---|---:|---:|---:|---:|---|
-| 27 in (M3's assumption) | 598 | 0.3113 | 11.2′ | 8.1′ | **no** |
-| 32 in | 708 | 0.3690 | 13.3′ | 9.6′ | **no** |
-| 40 in | 886 | 0.4612 | 16.7′ | 12.1′ | **no** (cap passes, lowercase marginal) |
-| **55 in (stated)** | **1218** | **0.6342** | **22.9′** | **16.6′** | **yes** |
-| 65 in | 1439 | 0.7495 | 27.1′ | 19.6′ | yes |
+| 24 in 16:9 | 531 | 0.2766 | 10.0′ | 7.2′ | **no** |
+| 27 in 16:9 | 598 | 0.3113 | 11.2′ | 8.1′ | **no** |
+| **attached: S3422DWG, pillarboxed (measured)** | **595** | **0.310** | **11.2′** | **8.1′** | **no** |
+| 32 in 16:9 | 708 | 0.3690 | 13.3′ | 9.6′ | **no** |
+| 40 in 16:9 | 886 | 0.4612 | 16.7′ | 12.1′ | **no** (cap passes, lowercase marginal) |
+| **55 in 16:9 (requirement)** | **1218** | **0.6342** | **22.9′** | **16.6′** | **yes** |
+| 65 in 16:9 | 1439 | 0.7495 | 27.1′ | 19.6′ | yes |
 
-So the honest statement of the result is: **this screen reads at three metres on a 55-inch
-1080p panel or larger.** It does not read at three metres on the 27-inch monitor M3 assumed,
-and it is not close — every element would be at 8.1′ of x-height, half the threshold. A booth
-that installs a 27-inch or 40-inch panel has an M4 regression, not a working screen, and the
-preflight does not measure panel size, so this is a **requirement in a document, not a gate**.
-That is recorded as a finding in §6.
+The attached monitor and a 27-inch 16:9 panel are the same case to within a rounding error,
+which is the point: the panel is 34 inches diagonally but its 16:9 canvas is about 595 mm wide.
+The 55-inch row is a requirement, and no tool in this repository can check that a booth meets it.
 
 ---
 
@@ -102,27 +170,42 @@ Three independent things, and the measurement is only as good as the weakest of 
    item whose colour matches its surface, or whose box is clipped away, or that is drawn
    smaller than its declared size, has no ink band of the right height.
 
-The angle is `2·atan(h / 2d)` at `BOOTH_VIEWING_DISTANCE_M`. The element set is **every
-visible named `Text` on the live screen** — 24 of them — with the exclusion list asserted
-empty, so nothing on the always-visible surface is exempt from the threshold. That is a direct
-answer to M3 §3's finding that the title, the mandatory label and every caption were outside
-its census: they are all named now, and all measured.
+The angle is `2·atan(h / 2d)`, evaluated at **both** geometries. The **gating** case is the
+monitor attached to this machine (`ACTUAL_MONITOR_MM_PER_LOGICAL_PX`, 0.310 mm/logical px) at
+**2 m and 3 m**. The **55-inch requirement** (`MM_PER_LOGICAL_PX`, 0.63416 mm/logical px) at
+3 m is asserted separately and labelled: it is what the booth must procure, not what was
+delivered. A test that defaulted to the requirement's panel would pass at 3 m while the
+delivered screen fails there, so the default is the attached monitor and a test asserts that
+default.
 
-The tests are `tests/test_capture_ui_canvas.py::TheBoothScreenReadsAtThreeMetres` (11 tests,
-green) and the non-vacuity guards are in that class's docstring: presence, visibility,
-non-empty text and a non-degenerate extent come **before** any angle; a `Repeater` delegate is
-asserted to be reached by the walk; a `NaN` extent fails; a zero-height ink band fails (the
-1×1-window shape); and the threshold is shown to **discriminate** — the same formula applied to
-M3's 18 px and 34 px sizes comes out below 16′, so the assertion is measuring the type and not
-the panel.
+The element set is **every visible named `Text` on the live screen** — 24 of them — with the
+exclusion list asserted empty, so nothing on the always-visible surface is exempt from the
+threshold. That is a direct answer to M3 §3's finding that the title, the mandatory label and
+every caption were outside its census: they are all named now, and all measured.
+
+The tests are `tests/test_capture_ui_canvas.py::TheBoothScreenReadsAtThreeMetres` — **16
+tests, green** (11 from the first version, 5 attached-monitor tests added by the correction) —
+and the non-vacuity guards are in that class's docstring: presence, visibility, non-empty text
+and a non-degenerate extent come **before** any angle; a `Repeater` delegate is asserted to be
+reached by the walk; a `NaN` extent fails; a zero-height ink band fails (the 1×1-window shape);
+and the threshold is shown to **discriminate** — the same formula applied to M3's 18 px and
+34 px sizes comes out below 16′, so the assertion is measuring the type and not the panel. The
+attached-monitor angles are pinned per font size, so a shrunk token or a changed geometry
+fails the test rather than silently changing the record.
 
 ---
 
-## 3. The table — every visible element, at 3 m on a 55-inch panel
+## 3. The element census, on the 55-inch panel the booth is required to provide
+
+**This section is the requirement's geometry, not the delivered result.** Every visible
+element is one of three font sizes, so the delivered verdict for all 24 items is §1.2's:
+**44 px → 16.8′ cap at 2 m / 11.2′ at 3 m; 48 px → 18.3′ / 12.2′; 56 px → 21.4′ / 14.2′**,
+with x-height below 16′ throughout. The table below names each item and gives its size on the
+required panel, so a reader can map any row to the attached monitor's numbers.
 
 Read from `docs/qualification/m3-capture/100pct.json` (the committed render) and computed by
-the same method as the test. `cap` is the cap-height angle, `x` the x-height angle; both are
-asserted.
+the same method as the test. `cap` is the cap-height angle at **3 m on the 55-inch
+requirement**, `x` the x-height angle; both are asserted there.
 
 | element | font px | cap px | cap mm | cap | x px | x mm | x | verdict |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
@@ -139,16 +222,24 @@ asserted.
 | `tileCaptionText_B/C` — each thumbnail's camera and device | 44 | 31.52 | 19.99 | 22.9′ | 22.81 | 14.47 | 16.6′ | **PASS** |
 | `tileNoFrameText_A/B/C` — `no frame from Camera … yet` | 44 | 31.52 | 19.99 | 22.9′ | 22.81 | 14.47 | 16.6′ | **PASS** |
 
-**The whole always-visible screen passes, on both measures, at 3 m and 55 inches.** The
-smallest element on it is 16.6′ of x-height (44 px), and the frame age — the figure spec
+**On the required panel the whole always-visible screen passes, on both measures, at 3 m.**
+The smallest element on it is 16.6′ of x-height (44 px), and the frame age — the figure spec
 section 7 says must be legible at a glance — is **29.1′ of cap height**, 1.8× the threshold.
 M3 measured the same headline at **8.5′** and every 18 px line at **4.6′**, below the acuity
 floor.
 
-**The two elements the screen exists for, named:** `streamStaleText_A`/`_B` at **22.9′ cap /
-16.6′ x** and `streamAgeText_A/B/C` at **29.1′ cap / 21.1′ x**. Both are asserted *by name* in
-`test_the_staleness_line_and_the_per_camera_age_are_among_the_passing`, and both are among the
-passing set rather than merely present.
+**On the attached monitor it does not.** The same 44 px row is 16.8′ of cap at 2 m and 11.2′
+at 3 m; the frame age is 21.4′ / 14.2′. That is the achieved result and it is the one this
+document leads with. The 55-inch column exists so the booth requirement can be read against
+the render, not so the pass can be borrowed from a panel the booth does not have.
+
+**The two elements the screen exists for, named:** `streamStaleText_A`/`_B` and
+`streamAgeText_A/B/C`. On the required panel they are **22.9′ cap / 16.6′ x** and **29.1′ cap
+/ 21.1′ x**; on the attached monitor they are **16.8′ / 12.2′** and **21.4′ / 15.5′** at 2 m,
+falling to **11.2′ / 8.1′** and **14.2′ / 10.3′** at 3 m. They are asserted *by name* against
+both geometries — `test_the_staleness_line_and_the_per_camera_age_are_among_the_passing` (the
+requirement) and the `attached_monitor` tests (the delivered screen) — and both are measured,
+not merely present.
 
 *Measured ink bands, for the record:* the ink check asserts each band spans at least the cap
 height and at most one line box. Two items failed that on the first render — the two thumbnail
@@ -228,49 +319,61 @@ pixels and the census, not the video surface.
 
 ## 6. Findings
 
-1. **The result is conditional on a 55-inch panel, and nothing gates that.** A booth that
-   installs a 40-inch panel gets 16.7′ cap and **12.1′ x-height** — marginal lowercase — and a
-   27-inch panel gets 8.1′, half the threshold. `tools/preflight.py` does not measure panel
-   size and cannot; this is a **hardware requirement recorded in `app/theme.py` and here**, and
-   the presenter guide must state it. This is the most important sentence in this document.
-2. **The M3 arithmetic conflated 2 m and 3 m.** Its brief's "9.2 mm of cap height ≈ 44 px" is
-   16′ at **2 m**; 16′ at 3 m is 13.96 mm. At M3's 0.310 mm/px that is a **63 px** Arial, not
-   44 px. The number M4 shipped is 44 px because the **panel changed** to 55 inches, not
-   because 44 px is 16′ at 3 m on a 27-inch screen. Said plainly because the two routes to
-   "44 px" are not the same argument.
-3. **`PipelineStrip.qml` was deleted, and its claim moved into prose.** Twelve 18 px labels
+1. **The original verdict was judged against a panel the booth does not have.** The first
+   version of this document measured the render against a hypothetical 55-inch 1080p panel
+   (0.63416 mm/logical px) and reported the pass as the result. The monitor attached to this
+   machine is a **DELL S3422DWG at 0.310 mm/logical px** — the 34-inch panel's 16:9 canvas is
+   about 595 mm wide, the same as a 27-inch monitor — so the assumed scale was roughly **twice**
+   the real one. On the actual monitor the screen **passes 16′ of cap height at 2 m (16.8′ at
+   44 px) and fails at 3 m (11.2′)**, and its x-height does not clear 16′ at either distance
+   (12.2′ / 8.1′). **This is the most important paragraph in this document**, and it replaces
+   the first version's claim that the screen "reads at three metres".
+2. **The 55-inch panel is now only a procurement requirement, and nothing gates it.** A booth
+   that installs one clears 22.9′ / 16.6′ at 3 m and reads; a booth that installs anything
+   under 55 inches does not (40 in → 16.7′ / 12.1′; the attached monitor → 11.2′ / 8.1′).
+   `tools/preflight.py` does not measure panel size and cannot; the requirement is recorded in
+   `app/theme.py`, here and in the presenter guide. A 55-inch panel is **not** the delivered
+   result and must never be reported as one.
+3. **The M3 arithmetic conflated 2 m and 3 m, and the first version of this review kept the
+   error alive.** Its brief's "9.2 mm of cap height ≈ 44 px" is 16′ at **2 m**; 16′ at 3 m is
+   13.96 mm, which on the attached monitor is a **63 px** Arial, not 44. The 44 px ladder is
+   right for 2 m (it measures 16.8′), and it is right for 3 m only on the 55-inch requirement.
+   The first version wrote that "the panel changed to 55 inches", which was the mistake: the
+   panel did not change, the claim did. Said plainly because the two routes to "44 px" are not
+   the same argument and only one of them is true here.
+4. **`PipelineStrip.qml` was deleted, and its claim moved into prose.** Twelve 18 px labels
    could not be made legible at 3 m without a footer band the layout does not have, and the
    drawer cannot hold six stage names without eliding them. `drawerPipelineText` states the
    topology and the placement rule in words, and the `gpu` explanation states the measured
    per-device latency. A presenter who wants the diagram has the words.
-4. **The seven footer `?` keys are gone; one button replaces them.** The M1 lesson was that a
+5. **The seven footer `?` keys are gone; one button replaces them.** The M1 lesson was that a
    booth machine may be touch-only and a hover-only affordance is then dead, so the drawer has
    a named 44 px entry point in the header plus a click on any card, and F1 is not the only
    way in. The per-key proof moved to the drawer's own buttons, all seven of which are clicked
    by the test suite.
-5. **The hover hint was dead and was removed.** It was anchored above the card (`parent.top`),
+6. **The hover hint was dead and was removed.** It was anchored above the card (`parent.top`),
    and M3's `clip: true` on the card clipped it away — it could never be seen. Naming it in M4
    made `capture_ui` report it as **overflow**, which is how the dead affordance surfaced. It
    is removed rather than repaired: the drawer is the explanation surface and a hover-only hint
    is unreachable on a touch booth.
-6. **A camera with a stated failure reason shows the reason instead of its staleness
+7. **A camera with a stated failure reason shows the reason instead of its staleness
    sentence.** One verdict line per camera is the budget, and the reason is the more specific
    statement; the age, its warning colour and the card's warning border still carry the
    staleness. In the seeded capture camera C is both stale and failed, and M3 showed both
    sentences. This is a change in what a passer-by can read and it is recorded here because
    trimming a line to make a layout fit without saying so is the failure this project keeps
    finding.
-7. **The attract screen was rebuilt on the same ladder.** M3 Task 4's idle overlay used 40 /
+8. **The attract screen was rebuilt on the same ladder.** M3 Task 4's idle overlay used 40 /
    26 / 18 px, so a booth with nobody at it showed text at 9.4′ — below the acuity floor — on
    the screen a passer-by is most likely to see alone. Its title is now 56 px, its recorded
    label 48 px and its headlines 44 px, and the attract census is asserted to contain no size
    below the ladder.
-8. **The drawer is 18 px, and that is deliberate.** It is the presenter's surface, read at
+9. **The drawer is 18 px, and that is deliberate.** It is the presenter's surface, read at
    arm's length, and its figures are the ones removed from the aisle surface. It is not part
    of the passenger legibility contract, and the M4 legibility test asserts the *live* screen.
    Writing this down because "the drawer is small" would otherwise be indistinguishable from
    "the drawer was forgotten".
-9. **The threshold is a reading standard, not a measurement of this room.** ISO 9241-3's 16′
+10. **The threshold is a reading standard, not a measurement of this room.** ISO 9241-3's 16′
    is a sustained-reading minimum; it says nothing about the ambient light, the contrast ratio
    (not computed here), or how long a visitor actually looks. The palette is high-contrast by
    design (`#e8eef4` on `#141b23`), and no contrast ratio was measured in M3 or here.
@@ -281,8 +384,13 @@ pixels and the census, not the video surface.
 
 | claim in this document | test |
 |---|---|
-| every visible named text clears 16′ on cap **and** x-height | `TheBoothScreenReadsAtThreeMetres::test_every_visible_text_on_the_live_screen_clears_the_threshold` |
-| the staleness line and the ages are among the passing | `…::test_the_staleness_line_and_the_per_camera_age_are_among_the_passing` |
+| the attached monitor's geometry is the measured one (80 x 33 cm, 2293x960, 0.310 mm/px) | `TheBoothScreenReadsAtThreeMetres::test_the_attached_monitor_geometry_is_the_measured_panel_not_the_booth_requirement` |
+| **every element clears 16′ of cap height at 2 m on the attached monitor** | `…::test_every_element_clears_the_band_on_cap_height_at_two_metres_on_the_attached_monitor` |
+| **every element fails at 3 m on the attached monitor**, at the pinned numbers | `…::test_the_attached_monitor_fails_at_three_metres_on_both_measures_and_is_pinned` |
+| **no mixed-case sentence clears 16′ of x-height at 2 m** ("passes at 2 m" is cap-only) | `…::test_the_mixed_case_sentences_do_not_clear_the_band_at_two_metres_on_the_attached_monitor` |
+| the 55-inch panel is a requirement that would pass at 3 m, not the delivered result | `…::test_the_fifty_five_inch_panel_is_a_requirement_not_the_delivered_result` |
+| every visible named text clears 16′ on cap **and** x-height on the required panel | `…::test_every_visible_text_on_the_live_screen_clears_the_threshold` |
+| the staleness line and the ages are among the passing on the required panel | `…::test_the_staleness_line_and_the_per_camera_age_are_among_the_passing` |
 | the element set is the whole screen, not a legend | `…::test_nothing_visible_is_exempt_from_the_threshold` |
 | the angle is measured from the render, not the token | `…::test_every_measured_element_has_an_ink_band_of_at_least_its_cap_height`, `…::test_the_font_ratios_this_test_divides_by_are_the_fonts_real_ones` |
 | the threshold discriminates (M3's sizes fail it) | `…::test_the_threshold_discriminates_between_the_m3_sizes_and_the_shipped_ones` |
@@ -291,6 +399,8 @@ pixels and the census, not the video surface.
 | the drawer holds the removed figures and does not overflow | `PresenterDrawerOnTheScreen` |
 | the layout tokens are in `app/theme.py`, not the QML | `ClippingIsTheDecision::test_the_layout_tokens_are_in_theme_and_not_in_the_qml` |
 
-**Mutation checks.** Each new assertion was shown to fail by constructing its fault; the log is
-in the task report (`task-1-report.md`), not here, because a mutation log is evidence about the
-tests rather than about the screen.
+**Mutation checks.** Each new assertion was shown to fail by constructing its fault
+(a wrong mm/px, a wrong cap ratio, a wrong x-height ratio, a wrong distance set, a shrunk
+token, and a test that defaults to the 55-inch conversion); the log is in the task report
+(`task-1-report.md`), not here, because a mutation log is evidence about the tests rather
+than about the screen.

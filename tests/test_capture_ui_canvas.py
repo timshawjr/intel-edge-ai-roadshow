@@ -821,8 +821,12 @@ class ClippingIsTheDecision(unittest.TestCase):
 # - **The ink is measured in the saved PNG**, inside each item's own reported extent. That
 #   is the step that stops this being a property check: an item whose text is invisible,
 #   blank, or drawn smaller than the property admits has no ink band of the right height.
-# - The angle is `2 atan(h / 2d)` at the **stated** distance and panel
-#   (`theme.BOOTH_VIEWING_DISTANCE_M`, `theme.MM_PER_LOGICAL_PX`).
+# - The angle is `2 atan(h / 2d)` at the **measured** geometry, and there are two of them:
+#   the monitor attached to this machine (`theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX`,
+#   0.310 mm/logical px, at 2 m and 3 m) is the **gating** case; the 55-inch panel
+#   (`theme.MM_PER_LOGICAL_PX`, 0.634 mm/logical px, at 3 m) is the **procurement
+#   requirement** the booth must meet, and is asserted separately and labelled as such.
+#   A run that only asserts the 55-inch case is not a statement about the delivered screen.
 #
 # The non-vacuity guards, because each of these has already happened in this repository:
 # an absent item reads `""`; a `Repeater` delegate is invisible to `findChild`; `Math.max`
@@ -870,7 +874,30 @@ def _verdict(angle: float) -> str:
 
 
 class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
-    """Every visible text on the live screen, at 3 m on the stated panel."""
+    """Every visible text on the live screen, at **two** geometries.
+
+    The class keeps its original name because the requirement it was written for is still
+    "read at three metres", but the delivered screen is judged against the monitor this
+    machine is **actually attached to** (0.310 mm/logical px, measured), not the 55-inch
+    panel the booth is required to provide (0.634 mm/logical px). On the attached monitor:
+
+    - **2 m:** every element clears 16 arcmin of cap height (44 px = 16.8'); every
+      element's **x-height is below** 16 arcmin (44 px = 12.2'), so mixed-case sentences
+      do not clear the same band.
+    - **3 m:** every element fails on both measures (44 px = 11.2' / 8.1').
+
+    The 55-inch requirement is asserted separately: at 3 m it clears both measures, and
+    that is a **booth procurement requirement**, never the achieved result.
+    """
+
+    #: The attached monitor's numbers, pinned per font size. Any change to a token, the
+    #: geometry or the font moves these and fails, so the record cannot drift silently:
+    #: `(2 m cap, 3 m cap, 2 m x-height, 3 m x-height)` in arcmin.
+    ATTACHED_MONITOR_ANGLES = {
+        44: (16.80, 11.20, 12.16, 8.11),
+        48: (18.32, 12.22, 13.27, 8.85),
+        56: (21.38, 14.25, 15.48, 10.32),
+    }
 
     @classmethod
     def setUpClass(cls):
@@ -940,8 +967,14 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
         return rows, (0 if first < 0 else last - first + 1)
 
     @classmethod
-    def angle(cls, name: str, *, metric: str) -> float:
-        """Angle subtended by `name`'s cap height or x-height, in arcmin."""
+    def angle(cls, name: str, *, metric: str, mm_per_px: float | None = None,
+              distance_m: float | None = None) -> float:
+        """Angle subtended by `name`'s cap height or x-height, in arcmin.
+
+        Defaults to the **attached monitor's** measured geometry, because that is the
+        delivered result. Pass `mm_per_px=theme.MM_PER_LOGICAL_PX` and
+        `distance_m=theme.BOOTH_VIEWING_DISTANCE_M` for the 55-inch requirement.
+        """
         from app import theme
 
         metrics = cls.metrics(name)
@@ -949,7 +982,9 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
         # Logical px -> device px -> mm. At 100 % `glyph_scale` is 1.0 and this is the
         # identity; it is applied anyway so the measurement is explicitly in device pixels.
         device = height * cls.result.glyph_scale[1]
-        return _arcmin(device * theme.MM_PER_LOGICAL_PX, theme.BOOTH_VIEWING_DISTANCE_M)
+        mm = (theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX if mm_per_px is None else mm_per_px)
+        distance = 2.0 if distance_m is None else distance_m
+        return _arcmin(device * mm, distance)
 
     def element_set(self) -> tuple[str, ...]:
         """Every **visible, non-empty, named** text item on the live screen."""
@@ -1030,14 +1065,22 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
     # -- 2. the measurement ------------------------------------------------------------
 
     def test_every_visible_text_on_the_live_screen_clears_the_threshold(self):
-        """**The whole screen, not a selection of it.** Cap height and x-height both."""
+        """**The whole screen, not a selection of it.** Cap height and x-height both.
+
+        **Conditional on the 55-inch panel the booth is required to provide** - this is
+        the requirement's geometry, not the attached monitor's. The attached monitor's
+        verdict is asserted by the four `attached_monitor` tests below, and it is the
+        result the report leads with.
+        """
         from app import theme
 
         failures = []
         table = []
         for name in self.element_set():
-            cap = self.angle(name, metric="cap")
-            xheight = self.angle(name, metric="x")
+            cap = self.angle(name, metric="cap", mm_per_px=theme.MM_PER_LOGICAL_PX,
+                             distance_m=theme.BOOTH_VIEWING_DISTANCE_M)
+            xheight = self.angle(name, metric="x", mm_per_px=theme.MM_PER_LOGICAL_PX,
+                                 distance_m=theme.BOOTH_VIEWING_DISTANCE_M)
             table.append((name, self.result.font_pixels[name], cap, xheight,
                           _verdict(cap), _verdict(xheight)))
             if cap < theme.READING_MIN_ARCMIN or xheight < theme.READING_MIN_ARCMIN:
@@ -1049,16 +1092,23 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
         self.assertEqual(failures, [],
                          f"{len(failures)} of {len(table)} visible elements do not clear "
                          f"{theme.READING_MIN_ARCMIN:.0f}' at "
-                         f"{theme.BOOTH_VIEWING_DISTANCE_M:.0f} m on the stated panel:\n"
+                         f"{theme.BOOTH_VIEWING_DISTANCE_M:.0f} m on the 55-inch panel the "
+                         f"booth is required to provide (NOT the attached monitor):\n"
                          + "\n".join(failures)
                          + "\n\nthe rendered table was:\n" + rendered)
 
     def test_the_staleness_line_and_the_per_camera_age_are_among_the_passing(self):
         """**They are the reason the screen exists.** Spec section 7 says the frame age must
         be legible at a glance; M3 measured 8.5' at 3 m, i.e. not legible at all.
+
+        This is the **55-inch requirement's** geometry. The attached monitor's verdict for
+        the same two elements is in `test_every_element_clears_the_band_on_cap_height_at_
+        two_metres_on_the_attached_monitor`; at 3 m on that monitor they fail.
         """
         from app import theme
 
+        booth = dict(mm_per_px=theme.MM_PER_LOGICAL_PX,
+                     distance_m=theme.BOOTH_VIEWING_DISTANCE_M)
         measured = set(self.element_set())
         for name in ("streamStaleText_A", "streamStaleText_B",
                      "streamAgeText_A", "streamAgeText_B", "streamAgeText_C"):
@@ -1067,14 +1117,14 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
                      "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
                      "deviceBadgeText", "recordedFootageText"):
             self.assertGreaterEqual(
-                self.angle(name, metric="cap"), theme.READING_MIN_ARCMIN,
-                f"{name} subtends {self.angle(name, metric='cap'):.1f}' of cap height at "
-                f"{theme.BOOTH_VIEWING_DISTANCE_M} m; the threshold is "
-                f"{theme.READING_MIN_ARCMIN}")
+                self.angle(name, metric="cap", **booth), theme.READING_MIN_ARCMIN,
+                f"{name} subtends {self.angle(name, metric='cap', **booth):.1f}' of cap "
+                f"height at {theme.BOOTH_VIEWING_DISTANCE_M} m on the 55-inch requirement; "
+                f"the threshold is {theme.READING_MIN_ARCMIN}")
             self.assertGreaterEqual(
-                self.angle(name, metric="x"), theme.READING_MIN_ARCMIN,
-                f"{name}'s lowercase subtends {self.angle(name, metric='x'):.1f}' - a "
-                f"mixed-case sentence measured by its capitals only is the M3 mistake")
+                self.angle(name, metric="x", **booth), theme.READING_MIN_ARCMIN,
+                f"{name}'s lowercase subtends {self.angle(name, metric='x', **booth):.1f}' - "
+                f"a mixed-case sentence measured by its capitals only is the M3 mistake")
 
     # -- 3. the ink, so this is not a property check -----------------------------------
 
@@ -1158,6 +1208,219 @@ class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
                            "the age really was the largest thing on the M3 screen; the "
                            f"ordering must be preserved for this control to mean anything "
                            f"(34 px {m3_age[0]:.1f}' vs 18 px {m3_detail[0]:.1f}')")
+
+    # -- 5. the measured monitor: the gating case, and the requirement it is not --------
+
+    def test_the_attached_monitor_geometry_is_the_measured_panel_not_the_booth_requirement(
+            self):
+        """**The correction this class exists to make.**
+
+        The delivered screen is judged on the monitor actually attached (`WmiMonitorBasic
+        DisplayParams` 80 x 33 cm, `WmiMonitorID` DELL S3422DWG, 3440x1440 native, Windows
+        at 150 % so a 2293x960 desktop). It is **not** judged on the 55-inch panel the booth
+        is required to provide, which is roughly twice its scale. The default geometry of
+        `angle()` must be the attached monitor, or a legibility test would pass on a panel
+        this machine does not have.
+        """
+        from app import theme
+
+        self.assertEqual(theme.ACTUAL_MONITOR_NAME, "DELL S3422DWG")
+        self.assertEqual((theme.ACTUAL_MONITOR_WIDTH_MM,
+                          theme.ACTUAL_MONITOR_HEIGHT_MM), (800.0, 330.0),
+                         "WmiMonitorBasicDisplayParams reports MaxHorizontalImageSize=80, "
+                         "MaxVerticalImageSize=33 (whole centimetres)")
+        self.assertEqual((theme.ACTUAL_MONITOR_NATIVE_WIDTH_PX,
+                          theme.ACTUAL_MONITOR_NATIVE_HEIGHT_PX), (3440, 1440))
+        self.assertEqual((theme.ACTUAL_MONITOR_DESKTOP_WIDTH_PX,
+                          theme.ACTUAL_MONITOR_DESKTOP_HEIGHT_PX), (2293, 960),
+                         "3440x1440 at 150 % desktop scaling is 2293x960 logical; the app "
+                         "sees the logical desktop")
+        self.assertEqual(theme.ACTUAL_MONITOR_VIEWING_DISTANCES_M, (2.0, 3.0),
+                         "the specification's 2-3 m, both asserted")
+
+        # The 1080-px canvas is height-limited in a 960-px-tall desktop.
+        self.assertAlmostEqual(theme.ACTUAL_MONITOR_CANVAS_SCALE, 960.0 / 1080.0, places=9)
+        self.assertLess(theme.ACTUAL_MONITOR_CANVAS_SCALE, 1.0,
+                        "if this were 1.0 the canvas would fit the desktop and the "
+                        "letterbox derivation below would be wrong")
+
+        # The derivation, from the measured inputs, independently of the constant's value.
+        derived = (
+            theme.ACTUAL_MONITOR_WIDTH_MM
+            * (theme.CANVAS_WIDTH * theme.ACTUAL_MONITOR_CANVAS_SCALE
+               / theme.ACTUAL_MONITOR_DESKTOP_WIDTH_PX)
+            / theme.CANVAS_WIDTH
+        )
+        self.assertAlmostEqual(theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX, derived, places=9)
+        self.assertEqual(round(theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX, 3), 0.310,
+                         f"the attached monitor is "
+                         f"{theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX:.4f} mm/logical px; "
+                         f"0.310 is the figure M3 measured and this review records")
+
+        # And the same number from the native physical pixels, where the 150 % scale
+        # cancels: (1440/1080) x 800/3440.
+        native = (theme.ACTUAL_MONITOR_NATIVE_HEIGHT_PX / theme.CANVAS_HEIGHT
+                  * theme.ACTUAL_MONITOR_WIDTH_MM / theme.ACTUAL_MONITOR_NATIVE_WIDTH_PX)
+        self.assertAlmostEqual(theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX, native, places=3,
+                               msg="the logical-desktop and native-pixel derivations "
+                                   "disagree; one of the measured inputs is wrong")
+
+        # It is about half the 55-inch requirement - the whole point of the correction.
+        self.assertLess(theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX,
+                        0.55 * theme.MM_PER_LOGICAL_PX,
+                        "the attached monitor must be materially smaller than the booth "
+                        "requirement, or this correction is measuring nothing")
+
+        # **The default geometry is the attached monitor, not the requirement.** A test
+        # that defaults to the 55-inch panel would pass at 3 m while the delivered screen
+        # fails there.
+        default = self.angle("streamStaleText_A", metric="cap")
+        explicit = self.angle("streamStaleText_A", metric="cap",
+                              mm_per_px=theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX,
+                              distance_m=2.0)
+        self.assertAlmostEqual(default, explicit, places=9,
+                               msg="the default angle must use the attached monitor's "
+                                   "geometry at 2 m")
+        self.assertAlmostEqual(default, 16.80, delta=0.15,
+                               msg=f"the default is {default:.2f}', and 16.8' is the "
+                                   f"attached monitor's 44 px cap height at 2 m - 34.4' "
+                                   f"would be the 55-inch requirement at the same distance")
+
+    def test_every_element_clears_the_band_on_cap_height_at_two_metres_on_the_attached_monitor(
+            self):
+        """**The achieved pass: cap height at 2 m on the attached monitor.**
+
+        Every visible element, not a selection. The frame age and the staleness verdict are
+        named with their numbers because they are the reason the screen exists.
+        """
+        from app import theme
+
+        failures = []
+        table = []
+        for name in self.element_set():
+            cap = self.angle(name, metric="cap", distance_m=2.0)
+            table.append((name, self.result.font_pixels[name], cap))
+            if cap < theme.READING_MIN_ARCMIN:
+                failures.append(f"{name}: {self.result.font_pixels[name]} px, cap {cap:.1f}'")
+        rendered = "\n".join(f"  {n:30s} {px:3d} px  cap {cap:5.1f}'"
+                             for n, px, cap in table)
+        self.assertEqual(failures, [],
+                         f"{len(failures)} of {len(table)} visible elements do not clear "
+                         f"{theme.READING_MIN_ARCMIN:.0f}' of cap height at 2 m on the "
+                         f"attached monitor ({theme.ACTUAL_MONITOR_NAME}, "
+                         f"{theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX:.3f} mm/logical px):\n"
+                         + "\n".join(failures) + "\n\n" + rendered)
+        # Named, with the pinned numbers. 44 px is 16.80' of cap at 2 m; 56 px is 21.38'.
+        self.assertAlmostEqual(self.angle("streamStaleText_A", metric="cap"),
+                               16.80, delta=0.15,
+                               msg="the staleness verdict is the sentence a passer-by must "
+                                   "read; its 44 px cap must measure 16.8' at 2 m")
+        self.assertAlmostEqual(self.angle("streamAgeText_A", metric="cap"),
+                               21.38, delta=0.15,
+                               msg="the frame age is the largest figure on the screen; its "
+                                   "56 px cap must measure 21.4' at 2 m")
+
+    def test_the_attached_monitor_fails_at_three_metres_on_both_measures_and_is_pinned(self):
+        """**The other half of the achieved result, and the numbers are pinned.**
+
+        On the attached monitor every visible element is below 16' of cap height **and**
+        x-height at 3 m. This is asserted rather than omitted because a report that leads
+        with "passes at 2 m" must say where it stops passing, and a test that silently
+        asserted nothing at 3 m would let the failure disappear.
+
+        The per-size angles are pinned, so **shrinking a token fails this test** - not
+        because the shrunken text would pass, but because the recorded measurement would
+        no longer be the measurement, and the review and this test would disagree.
+        """
+        from app import theme
+
+        seen_sizes = set()
+        for name in self.element_set():
+            px = self.result.font_pixels[name]
+            cap = self.angle(name, metric="cap", distance_m=3.0)
+            xheight = self.angle(name, metric="x", distance_m=3.0)
+            self.assertLess(cap, theme.READING_MIN_ARCMIN,
+                            f"{name} is {px} px and subtends {cap:.1f}' of cap height at "
+                            f"3 m on the attached monitor; the attached monitor was "
+                            f"measured to FAIL at 3 m, so a pass here means the geometry, "
+                            f"the font or the token moved without the record being updated")
+            self.assertLess(xheight, theme.READING_MIN_ARCMIN,
+                            f"{name}'s lowercase subtends {xheight:.1f}' at 3 m on the "
+                            f"attached monitor; it must be below the 16' band")
+            expected = self.ATTACHED_MONITOR_ANGLES[px]
+            self.assertAlmostEqual(cap, expected[1], delta=0.15,
+                                   msg=f"{name}: {px} px measures {cap:.2f}' of cap at 3 m "
+                                       f"on the attached monitor; the record says "
+                                       f"{expected[1]:.2f}'")
+            self.assertAlmostEqual(xheight, expected[3], delta=0.15,
+                                   msg=f"{name}: {px} px measures {xheight:.2f}' of "
+                                       f"x-height at 3 m; the record says {expected[3]:.2f}'")
+            seen_sizes.add(px)
+        self.assertEqual(seen_sizes, {44, 48, 56},
+                         f"the screen no longer carries the whole ladder: {seen_sizes}")
+
+    def test_the_mixed_case_sentences_do_not_clear_the_band_at_two_metres_on_the_attached_monitor(
+            self):
+        """**"Passes at 2 m" is a cap-height statement, and this says so.**
+
+        Arial's lowercase is 0.5184 em against a 0.7164 em cap. At 0.310 mm/logical px a
+        44 px sentence has a 12.2' x-height at 2 m - above the 10' marginal band, below the
+        16' comfort band. So the 2 m verdict for the mixed-case sentences is **marginal**,
+        not a pass, and the frame age's 15.5' is just short as well. Asserting this keeps
+        the report's two-part verdict honest: the screen was not measured to clear 16' on
+        both measures at either distance on the attached monitor.
+        """
+        from app import theme
+
+        clearing = []
+        for name in self.element_set():
+            xheight = self.angle(name, metric="x", distance_m=2.0)
+            if xheight >= theme.READING_MIN_ARCMIN:
+                clearing.append(f"{name}: {self.result.font_pixels[name]} px, "
+                                f"x-height {xheight:.1f}'")
+        self.assertEqual(clearing, [],
+                         "these elements clear 16' of x-height at 2 m on the attached "
+                         "monitor; the review says none do, so the record and the render "
+                         "disagree:\n" + "\n".join(clearing))
+        # Not invisible: the sentences are in the marginal band, not below the acuity floor.
+        for name in ("recordedFootageText", "deviceBadgeText", "streamStaleText_A"):
+            xheight = self.angle(name, metric="x", distance_m=2.0)
+            self.assertGreaterEqual(
+                xheight, theme.READING_MARGINAL_ARCMIN,
+                f"{name}'s 44 px lowercase is {xheight:.1f}' at 2 m - that is below the "
+                f"{theme.READING_MARGINAL_ARCMIN}' marginal band, so calling it 'marginal' "
+                f"would be flattering it")
+        self.assertAlmostEqual(self.angle("streamStaleText_A", metric="x", distance_m=2.0),
+                               12.16, delta=0.15)
+        self.assertAlmostEqual(self.angle("streamAgeText_A", metric="x", distance_m=2.0),
+                               15.48, delta=0.15)
+
+    def test_the_fifty_five_inch_panel_is_a_requirement_not_the_delivered_result(self):
+        """**The requirement is kept, and it is never read as the achievement.**
+
+        At 3 m on a 55-inch panel the same 44 px element is 22.9' of cap height; on the
+        attached monitor it is 11.2'. The 55-inch panel is what the booth must procure for
+        the screen to read at 3 m. It is not what this machine measured.
+        """
+        from app import theme
+
+        self.assertGreaterEqual(theme.BOOTH_PANEL_DIAGONAL_IN, 55.0,
+                                "the booth requirement must not be deleted by the "
+                                "correction that separated it from the delivered panel")
+        self.assertAlmostEqual(theme.BOOTH_PANEL_WIDTH_MM, 1217.59, delta=0.01)
+        self.assertAlmostEqual(theme.MM_PER_LOGICAL_PX, 0.63416, places=4)
+
+        booth = self.angle("streamStaleText_A", metric="cap",
+                           mm_per_px=theme.MM_PER_LOGICAL_PX, distance_m=3.0)
+        attached = self.angle("streamStaleText_A", metric="cap", distance_m=3.0)
+        self.assertGreaterEqual(booth, theme.READING_MIN_ARCMIN,
+                                f"on the required 55-inch panel 44 px is {booth:.1f}' at "
+                                f"3 m; the requirement would be pointless if it failed")
+        self.assertLess(attached, theme.READING_MIN_ARCMIN,
+                        f"on the attached monitor 44 px is {attached:.1f}' at 3 m")
+        self.assertGreater(booth - attached, 10.0,
+                           "the two geometries must be far enough apart that confusing "
+                           "them changes the verdict; that separation is the correction")
 
 
 if __name__ == "__main__":

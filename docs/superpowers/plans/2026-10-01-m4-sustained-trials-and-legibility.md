@@ -188,7 +188,7 @@ Legibility — pass or documented failure, with the angular table. Leak — boun
 
 ## M4 exit criteria
 
-1. Every element a passer-by must read clears **16′ at 3 m** on the stated target, or the failure is documented.
+1. Every element a passer-by must read is measured on **the monitor actually attached to the booth machine** (DELL S3422DWG, 0.310 mm/logical px): it clears **16′ of cap height at 2 m**, and its **failure at 3 m is documented** (11.2′ at 44 px). A 55-inch 1080p panel is the **procurement requirement** that would clear 16′ at 3 m; it is never reported as the delivered result.
 2. The four-condition input-ack matrix exists, with tick lateness and frame age in the same rows.
 3. The 182 MiB leak at the real 2 s timeout is **bounded and explained**, or its cause is stated.
 4. Sustained paired trials exist per device, with conditions stated and no unsupported generalisation.
