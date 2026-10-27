@@ -28,6 +28,7 @@ equal the frame's aspect ratio, and the **swapped** division must not.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import sys
@@ -133,15 +134,32 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
         for scale in capture_ui.SCALES:
             result = self.result(scale)
             for sid in self.STREAMS:
-                for name in (f"card_{sid}", f"streamAgeText_{sid}",
-                             f"streamStaleText_{sid}", f"streamWindowText_{sid}",
-                             f"streamBacklogText_{sid}", f"streamRateText_{sid}"):
+                # **M4: the card's three rows and the footer's verdict line.** The four
+                # rows that moved into the presenter drawer (`streamWindowText_*`,
+                # `streamBacklogText_*`, `streamRateText_*`, `streamActivityText_*`) are
+                # asserted on the drawer surface, in
+                # `tests/test_ui_contract.py::PresenterDrawerOnTheScreen`, because they do
+                # not exist on the always-visible screen any more.
+                for name in (f"card_{sid}", f"cameraName_{sid}", f"cameraState_{sid}",
+                             f"streamAgeText_{sid}", f"streamBadgeBox_{sid}",
+                             f"streamBadgeText_{sid}", f"verdictRow_{sid}",
+                             f"streamStaleText_{sid}", f"streamReasonText_{sid}"):
                     self.assertIn(name, result.extents,
                                   f"{scale}%: {name} must be reached **and measured**. The "
                                   f"cards are `Repeater` delegates, invisible to `findChild`, "
                                   f"so this is the assertion a `findChild`-based reader could "
                                   f"not make.")
                     x, y, w, h = result.extents[name]
+                    # **The verdict pair are alternatives**: a camera states its staleness
+                    # sentence or its failure reason, and the other item is present and
+                    # zero-width. A zero width is degenerate *for a visible item*, so the
+                    # width check applies to the one that is visible.
+                    if name.startswith(("streamStaleText_", "streamReasonText_")):
+                        if not result.visible.get(name):
+                            self.assertEqual(w, 0.0,
+                                             f"{scale}%: {name} is hidden and still occupies "
+                                             f"{w} px, so the two verdicts are not exclusive")
+                            continue
                     self.assertGreater(w, 1.0,
                                        f"{scale}%: {name} is {w} px wide - present but "
                                        f"degenerate, which is the shape M2's empty column took")
@@ -276,119 +294,120 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
 
     # -- the staleness line ------------------------------------------------------------
 
-    def test_the_staleness_line_is_present_and_visible_at_every_scale(self):
+    def test_every_camera_states_its_verdict_at_every_scale(self):
         """**It is the number a passer-by has to be able to read.**
 
-        Present, visible, non-degenerate, and in the warning colour's weight - at every scale.
-        Its font size is asserted separately, below, because *presence* and *size* are different
-        claims and a task that shrank the font to fit would pass this one.
+        Present, visible, non-degenerate - at every scale. **M4 moved the sentence out of the
+        card and into the footer**, because at `TYPE_BOOTH_DETAIL` it is 918 px wide and the
+        card's inner width is 567: on the card it wrapped to two lines and pushed the card past
+        its band. So the sentence now names its camera and carries the same age the numeral
+        shows, and a camera with a **stated failure reason** shows that reason instead - one
+        verdict line per camera is the budget, and the reason is the more specific statement.
         """
         for scale in capture_ui.SCALES:
             result = self.result(scale)
             for sid in self.STREAMS:
-                name = f"streamStaleText_{sid}"
-                self.assertIn(name, result.strings, f"{scale}%: {name}")
-                self.assertTrue(result.visible.get(name),
-                                f"{scale}%: {name} exists but is hidden, which is the same "
-                                f"defect as it not existing")
-                sentence = result.strings[name]
-                self.assertTrue(sentence.startswith("STALE - "),
-                                f"{scale}%: camera {sid} must say it in words, not only as a "
-                                f"number: {sentence!r}")
-                # **The sentence names the same age the headline shows.** If they could
-                # disagree, one of them is lying and a reader cannot tell which.
-                self.assertIn(result.strings[f"streamAgeText_{sid}"], sentence,
-                              f"{scale}%: camera {sid} headline says "
-                              f"{result.strings[f'streamAgeText_{sid}']!r} and the sentence says "
-                              f"{sentence!r}")
-                x, y, w, h = result.extents[name]
-                self.assertGreater(h, theme.TYPE_DETAIL,
-                                   f"{scale}%: {name} is {h} px tall, which is one line at "
-                                   f"{theme.TYPE_DETAIL} px - the staleness sentence is meant "
-                                   f"to have {theme.CARD_STALENESS_LINES} lines' worth of room")
+                stale = f"streamStaleText_{sid}"
+                reason = f"streamReasonText_{sid}"
+                self.assertIn(stale, result.strings, f"{scale}%: {stale}")
+                self.assertIn(reason, result.strings, f"{scale}%: {reason}")
+                # **Exactly one of the two is visible**, so a camera cannot show two verdicts
+                # in a one-line budget, and cannot show none.
+                self.assertNotEqual(result.visible.get(stale), result.visible.get(reason),
+                                    f"{scale}%: camera {sid} has both verdicts "
+                                    f"{'visible' if result.visible.get(stale) else 'hidden'} - "
+                                    f"the footer budget is one line per camera")
+                if result.visible.get(stale):
+                    sentence = result.strings[stale]
+                    self.assertTrue(sentence.startswith(f"Camera {sid}: STALE - "),
+                                    f"{scale}%: camera {sid} must say it in words, and say "
+                                    f"which camera: {sentence!r}")
+                    # **The sentence names the same age the headline shows.** If they could
+                    # disagree, one of them is lying and a reader cannot tell which.
+                    self.assertIn(result.strings[f"streamAgeText_{sid}"], sentence,
+                                  f"{scale}%: camera {sid} headline says "
+                                  f"{result.strings[f'streamAgeText_{sid}']!r} and the "
+                                  f"sentence says {sentence!r}")
+                else:
+                    self.assertTrue(result.strings[reason].startswith(f"Camera {sid}: "),
+                                    f"{scale}%: camera {sid}'s reason line must say which "
+                                    f"camera it is about: {result.strings[reason]!r}")
+                x, y, w, h = result.extents[stale if result.visible.get(stale) else reason]
+                self.assertGreater(w, 1.0, f"{scale}%: the verdict line has no width")
+                self.assertGreaterEqual(h, theme.TYPE_BOOTH_DETAIL,
+                                        f"{scale}%: the verdict line is {h} px tall, less than "
+                                        f"one line at {theme.TYPE_BOOTH_DETAIL} px")
 
-    def test_no_font_size_on_the_screen_changed(self):
-        """**The claim Task 6 needs, checked rather than asserted.**
+    def test_no_font_size_on_the_screen_is_below_the_legibility_ladder(self):
+        """**The claim M4 makes, checked rather than asserted.**
 
-        The layout gained room by changing **margins** and by fixing the card height's division.
-        No font size was touched, and this reads every named item's `font.pixelSize` out of the
-        live scene and compares it with `app/theme.py`'s ramp. If a future change shrinks a
-        font to make a layout fit, this fails.
+        M3's version of this test asserted that no size had changed, because that task changed
+        nothing but margins. This task changes the type on purpose, so the claim is the one that
+        matters instead: **every visible text on the always-visible screen is at or above the
+        ladder**, the age is the numeral size, the camera names are the label size, and nothing
+        outside those three sizes is drawn. A future change that shrinks a font to make a layout
+        fit fails here rather than passing quietly - which is exactly how M3's screen ended up
+        unreadable while every geometry assertion was green.
         """
-        from tools.capture_ui import load_measured_seed
-
-        seed = load_measured_seed()
-        by_id = {entry["stream_id"]: entry for entry in seed["streams"]}
         result = self.result(100)
-        # The staleness sentence: unchanged, and the ramp value it must be.
-        for sid in self.STREAMS:
-            self.assertEqual(result.font_pixels[f"streamStaleText_{sid}"], theme.TYPE_DETAIL,
-                             f"the staleness sentence is {result.font_pixels[f'streamStaleText_{sid}']}"
-                             f" px; TYPE_DETAIL is {theme.TYPE_DETAIL} and this task changed no "
-                             f"font size")
-        # The age headline: unchanged.
-        for sid in self.STREAMS:
-            self.assertEqual(result.font_pixels[f"streamAgeText_{sid}"],
-                             theme.TYPE_NUMERAL_SMALL,
-                             f"the age headline must stay {theme.TYPE_NUMERAL_SMALL} px")
-        # **The whole set of sizes present, and which item holds each.** Not "everything is the
-        # detail size" - that was the first version of this test and it was **wrong**: the
-        # device badge is `TYPE_LABEL` and the age headlines are `TYPE_NUMERAL_SMALL`, both
-        # legitimately. Asserting the *set* and the *holders* is the claim that is actually
-        # true, and it still fails if a size or a role changes.
         sizes = {}
         for name, size in result.font_pixels.items():
-            sizes.setdefault(size, []).append(name)
-        self.assertEqual(sorted(sizes), sorted({theme.TYPE_DETAIL, theme.TYPE_LABEL,
-                                                theme.TYPE_NUMERAL_SMALL}),
-                         f"the sizes on screen are {sorted(sizes)}; the ramp has "
-                         f"{sorted({theme.TYPE_DETAIL, theme.TYPE_LABEL, theme.TYPE_NUMERAL_SMALL})}"
-                         f" and this task changed no font size")
-        self.assertEqual(sorted(sizes[theme.TYPE_NUMERAL_SMALL]),
+            # **Visible only.** A hidden item draws nothing, and counting it would put the
+            # reply to "what is on the screen" in the hands of an item that is not.
+            if result.visible.get(name) and result.strings.get(name, ""):
+                sizes.setdefault(int(size), []).append(name)
+        self.assertEqual(sorted(sizes),
+                         sorted({theme.TYPE_BOOTH_DETAIL, theme.TYPE_BOOTH_LABEL,
+                                 theme.TYPE_BOOTH_NUMERAL}),
+                         f"the sizes drawn on the screen are {sorted(sizes)}; the booth ladder "
+                         f"is {sorted({theme.TYPE_BOOTH_DETAIL, theme.TYPE_BOOTH_LABEL, theme.TYPE_BOOTH_NUMERAL})}")
+        self.assertEqual(sorted(sizes[theme.TYPE_BOOTH_NUMERAL]),
                          ["streamAgeText_A", "streamAgeText_B", "streamAgeText_C"],
-                         f"the only items at {theme.TYPE_NUMERAL_SMALL} px are the three age "
-                         f"headlines: {sorted(sizes[theme.TYPE_NUMERAL_SMALL])}")
-        self.assertEqual(sorted(sizes[theme.TYPE_LABEL]), ["deviceBadgeText"],
-                         f"the only item at {theme.TYPE_LABEL} px is the device badge: "
-                         f"{sorted(sizes[theme.TYPE_LABEL])}")
-        # The reason line, which Task 2 re-bound: unchanged at the detail size.
-        self.assertEqual(result.font_pixels["streamReasonText_C"], theme.TYPE_DETAIL)
-        # And the items Task 2 did not touch but which sit in the same columns.
-        for name in ("streamWindowText_A", "streamBacklogText_A", "streamRateText_A",
-                     "streamBadgeText_A", "cardText_system_cpu_percent",
-                     "cardWindowNote_system_cpu_percent", "tileNoFrameText_A"):
-            self.assertEqual(result.font_pixels.get(name), theme.TYPE_DETAIL,
-                             f"{name} is {result.font_pixels.get(name)} px, expected "
-                             f"{theme.TYPE_DETAIL}")
+                         f"the only items at {theme.TYPE_BOOTH_NUMERAL} px are the three age "
+                         f"headlines: {sorted(sizes[theme.TYPE_BOOTH_NUMERAL])}")
+        self.assertEqual(sorted(sizes[theme.TYPE_BOOTH_LABEL]),
+                         ["cameraName_A", "cameraName_B", "cameraName_C"],
+                         f"the only items at {theme.TYPE_BOOTH_LABEL} px are the three camera "
+                         f"names: {sorted(sizes[theme.TYPE_BOOTH_LABEL])}")
+        # **The floor, stated as a floor**: no visible text anywhere on the always-visible
+        # screen is smaller than `TYPE_BOOTH_DETAIL`.
+        below = {name: size for name, size in result.font_pixels.items()
+                 if result.visible.get(name) and result.strings.get(name, "")
+                 and int(size) < theme.TYPE_BOOTH_DETAIL}
+        self.assertEqual(below, {},
+                         f"these visible items are below the ladder: {below}")
 
     # -- the failure reason ------------------------------------------------------------
 
     def test_the_font_census_is_the_one_on_record(self):
-        """**The number the M3 report quotes, recomputed from the committed capture.**
+        """**The number the M4 report quotes, recomputed from the committed capture.**
 
-        `{18: 29, 26: 1, 34: 3}` - the size of every `Text` **whose text is not empty**, so
-        a font that draws nothing is not counted and the number does not depend on which
-        optional lines happened to be blank. Two claims, both measured: the committed
-        capture is that census, and a live render of the same seed still is. A change that
-        makes something fit by shrinking a font fails here rather than passing quietly.
+        `{44: 18, 48: 3, 56: 3}` at the time of writing - the size of every `Text` **whose
+        text is not empty and which is visible**, so a font that draws nothing is not counted
+        and the number does not depend on which optional lines happened to be blank or hidden.
+        Two claims, both measured: the committed capture is that census, and a live render of
+        the same seed still is. A change that makes something fit by shrinking a font fails
+        here rather than passing quietly.
         """
         committed_path = (REPO_ROOT / "docs" / "qualification" / "m3-capture" / "100pct.json")
         self.assertTrue(committed_path.exists(), f"no committed capture at {committed_path}")
         committed = json.loads(committed_path.read_text(encoding="utf-8"))
 
-        def census(strings, fonts):
+        def census(strings, fonts, visible):
             counts = {}
             for name, size in fonts.items():
-                if strings.get(name):
+                if strings.get(name) and visible.get(name):
                     counts[int(size)] = counts.get(int(size), 0) + 1
             return counts
 
-        want = census(committed["strings"], committed["font_pixels"])
-        self.assertEqual(want, {theme.TYPE_DETAIL: 29, theme.TYPE_LABEL: 1,
-                                theme.TYPE_NUMERAL_SMALL: 3},
+        want = census(committed["strings"], committed["font_pixels"], committed["visible"])
+        self.assertEqual(want, {theme.TYPE_BOOTH_DETAIL: 18,
+                                theme.TYPE_BOOTH_LABEL: 3,
+                                theme.TYPE_BOOTH_NUMERAL: 3},
                          f"the committed capture's census is {want}, not the one the report "
                          f"states; re-derive the report's number or fix the layout")
-        got = census(self.result(100).strings, self.result(100).font_pixels)
+        got = census(self.result(100).strings, self.result(100).font_pixels,
+                     self.result(100).visible)
         self.assertEqual(got, want,
                          f"a live render of the same seed now censuses {got}, and the "
                          f"committed capture says {want}: something changed a font size or "
@@ -420,20 +439,21 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
                                  f"{scale}%: camera {sid} is healthy and must have no reason: "
                                  f"{result.strings[f'streamReasonText_{sid}']!r}")
 
-    def test_a_camera_with_a_device_and_a_long_reason_still_fits_its_card(self):
+    def test_a_camera_with_a_device_and_a_long_reason_still_fits_the_screen(self):
         """**The worst case, which the four committed captures do not contain.**
 
-        In the captures, the failed camera has **no confirmed device**, so its right column
-        shows **four** rows and has **67.3 px** of slack (measured: the reason ends at 744.67 and
-        the column's inner bottom is 812.0). The case that actually stresses the layout is a
-        camera that **fell back successfully**: it has a confirmed device, so `cardText_` and
-        `cardWindowNote_` appear, *and* it has a reason from the transition - **six** rows in the
-        column where the reason is the last of them.
+        A camera that **fell back successfully** has a confirmed device *and* a reason from the
+        transition, and its metrics make it stale as well. M3 stressed the card with six rows
+        for this shape. M4's card has three rows and the sentences are in the footer, so what
+        this shape can now break is different, and it is what this test asserts:
 
-        This seeds that shape explicitly rather than hoping the booth produces it. It is the
-        ruling's "three streams with 11-14 s frame ages and a 2331-character failure reason at
-        once", with the extra device rows the ruling does not mention and that the booth will
-        still show whenever a route settles on a fallback.
+        - the card's three rows still fit a 209.33 px card (the fallback badge is the longest
+          badge string there is: `GPU.0 (fell back from CPU)`);
+        - the footer's one-line budget still holds, because the camera shows its **reason**
+          rather than its staleness sentence;
+        - nothing overflows and nothing is elided, at every scale.
+
+        It seeds the shape explicitly rather than hoping the booth produces it.
         """
         seed = capture_ui.load_measured_seed()
         streams = [dict(entry) for entry in seed["streams"]]
@@ -448,57 +468,47 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix="capture-worst-") as tmp:
                 result = capture_ui.capture(scale_percent=scale, seconds=10.0,
                                             seed_frames=seeded, out_dir=pathlib.Path(tmp))
-                # **The six rows are what this test is for.** Asserted first, because a test
-                # that passes over four rows is a test that never reached the hard case - and
-                # that is the M2 failure mode exactly: a passing assertion over a result that
-                # was not the one intended.
-                #
-                # The metric key is the bridge's, not the device's: a GPU has
-                # `gpu.utilisation.percent` and no `gpu_0_percent`, so these are the two rows
-                # a confirmed non-CPU device adds. **Measured with all six present**: the
-                # reason ends at 543.33 and the column's inner bottom is 586.67, so the six-row
-                # case has **43.3 px** of slack - against **67.3 px** for the four-row case the
-                # committed captures show. Fits, but by half.
-                self.assertEqual(result.strings.get("cardText_gpu_utilisation_percent"),
-                                 "Utilization unavailable",
-                                 f"{scale}%: the device's own rows must be on the card for "
-                                 f"this to be the six-row case. Got "
-                                 f"{result.strings.get('cardText_gpu_utilisation_percent')!r}")
-                self.assertIn("cardWindowNote_gpu_utilisation_percent", result.extents,
-                              f"{scale}%: and the window note too: "
-                              f"{sorted(n for n in result.extents if n.startswith('cardWindow'))}")
+                # **The shape is asserted first**, because a test that passes over the
+                # ordinary state is a test that never reached the hard case.
+                self.assertEqual(result.strings.get("cameraName_B"), "Camera B",
+                                 f"{scale}%: camera B must be on screen for this to be the "
+                                 f"case at all: {result.strings.get('cameraName_B')!r}")
+                self.assertIn("fell back from",
+                              result.strings.get("streamBadgeText_B", ""),
+                              f"{scale}%: the fallback badge is the longest badge and it must "
+                              f"be the one under test: "
+                              f"{result.strings.get('streamBadgeText_B')!r}")
+                # **The reason wins the one verdict line**, and it says which camera it is.
+                self.assertTrue(result.visible.get("streamReasonText_B"),
+                                f"{scale}%: camera B has a stated reason, so its verdict line "
+                                f"is the reason - the staleness sentence is the other branch")
+                self.assertFalse(result.visible.get("streamStaleText_B"),
+                                 f"{scale}%: both verdicts are visible, which the one-line "
+                                 f"budget cannot hold")
+                self.assertTrue(result.strings["streamReasonText_B"].startswith("Camera B: "),
+                                f"{scale}%: and it names the camera: "
+                                f"{result.strings['streamReasonText_B']!r}")
                 self.assertTrue(result.strings["streamReasonText_B"].endswith("more"),
                                 f"{scale}%: camera B must be carrying a cut reason: "
                                 f"{result.strings['streamReasonText_B']!r}")
-                # **The reason is the LAST row, so if it fits, the column fits.** Recomputed
-                # from the measured extents rather than trusted from the overflow list alone.
-                #
-                # **The bound is the column's own measured extent, not `SPACING["sm"]`.** The
-                # first version built `column_bottom` from the token the card's margins bind to,
-                # which is the same pattern T2.11 fixed: an expectation derived from the thing
-                # under test moves with it, so a margin change would move the bound and the
-                # assertion would keep passing. `cardRightColumn_B` is a **named, clipping** item
-                # on the live scene, so its extent *is* the measured inner box - measured by Qt,
-                # not by this test.
-                column = result.extents["cardRightColumn_B"]
-                self.assertEqual(
-                    result.clip_sources["streamReasonText_B"], "ancestor:cardRightColumn_B",
-                    f"{scale}%: the reason's clip must be the right column for its extent to "
-                    f"be the bound; it is {result.clip_sources.get('streamReasonText_B')!r}")
+                # **The card's own inner box is the bound**, measured by Qt rather than
+                # recomputed from the token the margin binds to - an expectation derived from
+                # the thing under test moves with it.
+                column = result.extents["cardColumn_B"]
+                self.assertEqual(result.clip_sources["streamBadgeBox_B"],
+                                 "ancestor:cardColumn_B",
+                                 f"{scale}%: the badge's clip must be the card's column for its "
+                                 f"extent to be the bound; it is "
+                                 f"{result.clip_sources.get('streamBadgeBox_B')!r}")
                 column_bottom = column[1] + column[3]
-                reason_bottom = (result.extents["streamReasonText_B"][1]
-                                 + result.extents["streamReasonText_B"][3])
-                self.assertLessEqual(reason_bottom, column_bottom + 0.5,
-                                     f"{scale}%: the six-row reason ends at {reason_bottom:.2f} "
-                                     f"and the measured right column ends at "
-                                     f"{column_bottom:.2f}")
-                # **And the slack is reported, because "fits" and "fits with room" are different
-                # claims.** 43.3 px at three cameras is what Task 2 measured for this shape; the
-                # card is 209.33 px tall and a third row of reason would not fit in that.
-                slack = column_bottom - reason_bottom
-                self.assertGreater(slack, 0.0,
-                                   f"{scale}%: the six-row case has {slack:.2f} px of slack in "
-                                   f"the right column")
+                badge_bottom = (result.extents["streamBadgeBox_B"][1]
+                                + result.extents["streamBadgeBox_B"][3])
+                self.assertLessEqual(badge_bottom, column_bottom + 0.5,
+                                     f"{scale}%: the fallback badge ends at {badge_bottom:.2f} "
+                                     f"and the measured card column ends at {column_bottom:.2f}")
+                self.assertGreater(column_bottom - badge_bottom, 0.0,
+                                   f"{scale}%: a card whose last row ends exactly on its "
+                                   f"column's bottom has no margin left for a taller badge")
                 self.assertEqual(result.overflow, (),
                                  f"{scale}%: a camera with a device AND a long reason "
                                  f"overflows: {list(result.overflow)}")
@@ -507,18 +517,12 @@ class CanvasLayoutAtFourScales(unittest.TestCase):
                                  f"{list(result.truncated)}")
                 # **And the card is what is being measured against.** Without this,
                 # `overflow == ()` also passes when the card has stopped clipping - which was
-                # a surviving mutant, and a serious one: the measure would silently go back
-                # to being window-only while the assertion kept passing.
+                # a surviving mutant: the measure would silently go back to window-only while
+                # the assertion kept passing.
                 self.assertIn(
-                    f"ancestor:card_B", result.clip_sources.values(),
+                    "ancestor:card_B", result.clip_sources.values(),
                     f"{scale}%: camera B's card was not used as a clip, so the empty "
                     f"overflow list means nothing: {sorted(set(result.clip_sources.values()))}")
-                card = result.extents["card_B"]
-                right = result.extents["streamReasonText_B"]
-                self.assertLessEqual(right[1] + right[3], card[1] + card[3] + 0.5,
-                                     f"{scale}%: camera B's reason ends at "
-                                     f"{right[1] + right[3]:.1f} and its card at "
-                                     f"{card[1] + card[3]:.1f}")
 
 
 class TheCutIsMadeInPythonNotByQt(unittest.TestCase):
@@ -673,7 +677,7 @@ class TheSeedToRouteRule(unittest.TestCase):
 class ClippingIsTheDecision(unittest.TestCase):
     """The `clip: true` decision, pinned so it cannot be quietly undone."""
 
-    def test_the_card_the_two_columns_and_the_tiles_all_clip(self):
+    def test_the_card_its_column_and_the_tiles_all_clip(self):
         sources = {
             "app/ui/ComputeCard.qml": ["clip: true"],
             "app/ui/VideoTile.qml": ["clip: true"],
@@ -685,18 +689,21 @@ class ClippingIsTheDecision(unittest.TestCase):
                               f"{relative} must keep {needle!r}: it is the decision that makes "
                               f"`capture_ui`'s overflow a per-card measure instead of a "
                               f"window-only one")
-        # **And the columns are named**, because an unnamed clipping ancestor makes the overflow
-        # report say `ancestor:` and a reader cannot tell which box overflowed.
+        # **And the column is named**, because an unnamed clipping ancestor makes the overflow
+        # report say `ancestor:` and a reader cannot tell which box overflowed. **M4: one card
+        # column, not two** - at the legibility ladder the card is name/state, age, device, and
+        # a 42/58 split put `no device is running` in a 245 px box where it elided.
         card = (REPO_ROOT / "app/ui/ComputeCard.qml").read_text(encoding="utf-8")
-        self.assertIn('objectName: "cardLeftColumn_" + card.streamId', card)
-        self.assertIn('objectName: "cardRightColumn_" + card.streamId', card)
+        self.assertIn('objectName: "cardColumn_" + card.streamId', card)
+        self.assertNotIn("cardLeftColumn_", card,
+                         "the two-column card is gone: at 44 px the right column could not hold "
+                         "`no device is running` (387 px) in 245 px")
         # **Counting the line, not the substring.** The first version counted `card.count(
         # "clip: true")` and got **6**, because three of those are inside the comment that
         # explains the decision. A count that includes prose is a count of prose.
         code_lines = [line.strip() for line in card.split("\n")]
-        self.assertEqual(sum(1 for line in code_lines if line == "clip: true"), 3,
-                         "the card, the left column and the right column: three lines of "
-                         "`clip: true`, and no more")
+        self.assertEqual(sum(1 for line in code_lines if line == "clip: true"), 2,
+                         "the card and its column: two lines of `clip: true`, and no more")
 
     def test_the_card_height_divides_out_the_gaps_rather_than_the_plain_band(self):
         text = (REPO_ROOT / "app/ui/Main.qml").read_text(encoding="utf-8")
@@ -758,6 +765,11 @@ class ClippingIsTheDecision(unittest.TestCase):
     def test_the_layout_tokens_are_in_theme_and_not_in_the_qml(self):
         """**Code, not comments.** See `_code_only`: the first version of this test searched the
         whole file and found `0.42` in the comment explaining where `0.42` went.
+
+        **M4: the card's tokens changed with the card.** It no longer splits into two columns,
+        no longer wraps a sentence into two lines on the card, and its rows are the legibility
+        ladder - so the tokens it must bind to are the ladder and the badge padding, and the
+        four M3 card tokens are gone from `app/theme.py` because nothing binds to them.
         """
         card = _code_only(REPO_ROOT / "app/ui/ComputeCard.qml")
         for literal in ("0.42", "0.58", "maximumLineCount: 2", "maximumLineCount: 3",
@@ -765,16 +777,387 @@ class ClippingIsTheDecision(unittest.TestCase):
             self.assertNotIn(literal, card,
                              f"{literal!r} is a layout number and must live in "
                              f"app/theme.py, not in a QML binding")
-        for token in ("CARD_COLUMN_SPLIT", "CARD_STALENESS_LINES", "CARD_REASON_LINES",
-                      "CARD_ACTIVITY_LINES", "CARD_COLUMN_MIN_EM"):
+        for token in ("TYPE_BOOTH_DETAIL", "TYPE_BOOTH_LABEL", "TYPE_BOOTH_NUMERAL",
+                      "CARD_BADGE_INSET"):
             self.assertIn(f"Theme.{token}", card,
                           f"Theme.{token} must be what the card binds to")
             self.assertTrue(hasattr(theme, token),
                             f"app/theme.py must define {token}, or the binding reads undefined")
-        tile = (REPO_ROOT / "app/ui/VideoTile.qml").read_text(encoding="utf-8")
+        # **And the tokens M3 pinned are gone, not orphaned.** A token nothing binds to is a
+        # description of a layout that no longer exists.
+        for gone in ("CARD_COLUMN_SPLIT", "CARD_COLUMN_MIN_EM", "CARD_STALENESS_LINES",
+                     "CARD_REASON_LINES"):
+            self.assertFalse(hasattr(theme, gone),
+                             f"app/theme.py still defines {gone}, which nothing binds to "
+                             f"since M4's card is one column of three rows")
+        tile = _code_only(REPO_ROOT / "app/ui/VideoTile.qml")
         self.assertNotIn("0.16", tile,
                          "the thumbnail row's height fraction is a layout number and belongs in "
-                         "app/theme.py; it is still inline and that is recorded, not fixed here")
+                         "app/theme.py; M4 moved it there as THUMB_ROW_FRACTION")
+        self.assertIn("Theme.THUMB_ROW_FRACTION",
+                      _code_only(REPO_ROOT / "app/ui/Main.qml"),
+                      "and Main.qml must be what binds to it")
+
+
+# ======================================================================================
+# M4 Task 1: the booth screen at three metres
+# ======================================================================================
+#
+# `CanvasLayoutAtFourScales` answers "is the layout inside the canvas and where the tokens
+# say". It says nothing about whether a person standing three metres away can read the
+# numbers, and M3's readability review showed why the distinction matters: **the layout was
+# perfect and the screen was unreadable.** The four committed captures passed every geometry
+# assertion while every element at `TYPE_DETAIL` subtended under 10 arcmin at 3 m.
+#
+# What "measured" means here, and what it deliberately does not mean:
+#
+# - **The font size is read out of the running scene graph** (`font_pixels`), not from
+#   `app/theme.py`. A token check proves the token was applied; it does not prove the text
+#   was drawn at that size, on that background, in that box.
+# - **The cap height and x-height come from the font engine, at the size the scene
+#   reports.** `QFontMetricsF.capHeight()` on this machine's registered Arial is 0.7164 em
+#   and `xHeight()` is 0.5184 em; both are re-measured here and asserted against
+#   `app/theme.py`, so the constants cannot drift away from the font that is rasterised.
+# - **The ink is measured in the saved PNG**, inside each item's own reported extent. That
+#   is the step that stops this being a property check: an item whose text is invisible,
+#   blank, or drawn smaller than the property admits has no ink band of the right height.
+# - The angle is `2 atan(h / 2d)` at the **stated** distance and panel
+#   (`theme.BOOTH_VIEWING_DISTANCE_M`, `theme.MM_PER_LOGICAL_PX`).
+#
+# The non-vacuity guards, because each of these has already happened in this repository:
+# an absent item reads `""`; a `Repeater` delegate is invisible to `findChild`; `Math.max`
+# passes `NaN` through; and a `1x1` window makes every click land on nothing while the tests
+# pass. And **the element set is not a list this test keeps** - it is *every visible named
+# `Text` in the scene*, with the exclusion list asserted empty. A legend that names only the
+# elements it wants to check is how the 40 px title and every thumbnail caption stayed out
+# of M3's font census.
+
+#: The four things the booth screen exists to say, by item name. **This is a floor, not the
+#: element set**: the set is every visible named text, and this list is asserted to be a
+#: subset of it so the screen cannot pass by having removed them.
+REQUIRED_ELEMENTS = (
+    "recordedFootageText",          # the mandatory label
+    "deviceBadgeText",              # the confirmed placement
+    "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
+    "streamBadgeText_A", "streamBadgeText_B", "streamBadgeText_C",
+)
+
+#: Per camera, at least one verdict sentence must be on screen and passing: the staleness
+#: line for a stale camera, the stated reason for a failed one. "At least one" is the claim,
+#: because a healthy camera is neither stale nor failed and correctly says neither.
+REQUIRED_VERDICT_PREFIXES = ("streamStaleText_", "streamReasonText_")
+
+#: **The exclusion list, and it must stay empty.** An empty list is the assertion that
+#: nothing visible on the always-visible screen is exempt from the legibility threshold.
+EXCLUDED_FROM_LEGIBILITY: tuple[str, ...] = ()
+
+
+def _arcmin(height_mm: float, distance_m: float) -> float:
+    """A height in millimetres, as an angle at a distance in metres."""
+    return math.degrees(2.0 * math.atan(height_mm / (2.0 * distance_m * 1000.0))) * 60.0
+
+
+def _verdict(angle: float) -> str:
+    from app import theme
+
+    if angle >= theme.READING_MIN_ARCMIN:
+        return "PASS"
+    if angle >= theme.READING_MARGINAL_ARCMIN:
+        return "marginal"
+    if angle >= theme.READING_ACUITY_ARCMIN:
+        return "FAIL"
+    return "FAIL (below acuity)"
+
+
+class TheBoothScreenReadsAtThreeMetres(unittest.TestCase):
+    """Every visible text on the live screen, at 3 m on the stated panel."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtGui import QFontDatabase, QGuiApplication
+
+        cls._tmp = tempfile.TemporaryDirectory(prefix="legible-")
+        cls.result = capture_ui.capture(scale_percent=100, seconds=10.0,
+                                        out_dir=pathlib.Path(cls._tmp.name))
+        # **The font the render used, in the parent process.** The child registers
+        # `C:/Windows/Fonts/arial.ttf` before the scene loads; without the same registration
+        # here, `QFontMetricsF` would measure a substituted font and the cap-height ratio
+        # would be a fact about this process rather than about the screen.
+        cls._app = QGuiApplication.instance() or QGuiApplication([])
+        QFontDatabase.addApplicationFont("C:/Windows/Fonts/arial.ttf")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    @classmethod
+    def metrics(cls, name: str):
+        """`QFontMetricsF` for the font **the scene reports** for `name`."""
+        from PySide6.QtGui import QFont, QFontMetricsF
+
+        font = QFont("Arial")
+        font.setPixelSize(int(cls.result.font_pixels[name]))
+        return QFontMetricsF(font)
+
+    @classmethod
+    def ink_span(cls, name: str) -> tuple[int, int]:
+        """`(rows_with_ink, row_span)` inside `name`'s extent, in **device** pixels.
+
+        The background test is "brightest channel above 70" because every text colour in
+        the palette is above that and every surface is below it: `TEXT_ON_PANEL` 232,
+        `COLOR_WARN` 240, `COLOR_GOOD` 208, `COLOR_NEUTRAL` 165, `COLOR_BAD` 255, against
+        `BG` 20, `BG_PANEL` 35, `BG_PANEL_DEEP` 26 and `BG_VIDEO` 11. That is a property of
+        the palette, so it is stated here rather than tuned per item.
+        """
+        from PySide6.QtGui import QImage
+
+        box = cls.result.extents[name]
+        scale_x, scale_y = cls.result.glyph_scale
+        image = QImage(str(cls.result.png_path))
+        rgb = image.convertToFormat(QImage.Format_RGB888)
+        width, height, stride = rgb.width(), rgb.height(), rgb.bytesPerLine()
+        raw = bytes(rgb.constBits())
+        x0 = max(0, int(box[0] * scale_x))
+        y0 = max(0, int(box[1] * scale_y))
+        x1 = min(width - 1, int((box[0] + box[2]) * scale_x))
+        y1 = min(height - 1, int((box[1] + box[3]) * scale_y))
+        rows = 0
+        first = last = -1
+        for yy in range(y0, y1):
+            base = yy * stride
+            inked = False
+            for xx in range(x0, x1):
+                off = base + xx * 3
+                pixel = raw[off:off + 3]
+                if max(pixel[0], pixel[1], pixel[2]) > 70:
+                    inked = True
+                    break
+            if inked:
+                rows += 1
+                if first < 0:
+                    first = yy
+                last = yy
+        return rows, (0 if first < 0 else last - first + 1)
+
+    @classmethod
+    def angle(cls, name: str, *, metric: str) -> float:
+        """Angle subtended by `name`'s cap height or x-height, in arcmin."""
+        from app import theme
+
+        metrics = cls.metrics(name)
+        height = metrics.capHeight() if metric == "cap" else metrics.xHeight()
+        # Logical px -> device px -> mm. At 100 % `glyph_scale` is 1.0 and this is the
+        # identity; it is applied anyway so the measurement is explicitly in device pixels.
+        device = height * cls.result.glyph_scale[1]
+        return _arcmin(device * theme.MM_PER_LOGICAL_PX, theme.BOOTH_VIEWING_DISTANCE_M)
+
+    def element_set(self) -> tuple[str, ...]:
+        """Every **visible, non-empty, named** text item on the live screen."""
+        scene = self.result
+        return tuple(sorted(
+            name for name in scene.font_pixels
+            if scene.strings.get(name, "") and scene.visible.get(name)
+            and name not in EXCLUDED_FROM_LEGIBILITY
+        ))
+
+    # -- 1. the measurement has inputs, and they are the screen's own ------------------
+
+    def test_the_capture_rendered_the_logical_canvas_at_one_to_one(self):
+        self.assertEqual((self.result.pixel_width, self.result.pixel_height), (1920, 1080),
+                         "the capture must be the 1920x1080 render, so logical and device "
+                         "pixels coincide and the mm conversion is unambiguous")
+        self.assertEqual(tuple(self.result.glyph_scale), (1.0, 1.0),
+                         f"glyph_scale is {self.result.glyph_scale}; the ink measurement "
+                         f"scales extents by it and anything but 1.0 at 100 % means the "
+                         f"extent and the image disagree")
+
+    def test_the_font_ratios_this_test_divides_by_are_the_fonts_real_ones(self):
+        from app import theme
+
+        metrics = self.metrics("deviceBadgeText")
+        size = self.result.font_pixels["deviceBadgeText"]
+        self.assertAlmostEqual(metrics.capHeight() / size, theme.ARIAL_CAP_HEIGHT_EM,
+                               places=3,
+                               msg=f"capHeight()/pixelSize is {metrics.capHeight() / size}, "
+                                   f"and app/theme.py says {theme.ARIAL_CAP_HEIGHT_EM}")
+        self.assertAlmostEqual(metrics.xHeight() / size, theme.ARIAL_X_HEIGHT_EM, places=3,
+                               msg=f"xHeight()/pixelSize is {metrics.xHeight() / size}, and "
+                                   f"app/theme.py says {theme.ARIAL_X_HEIGHT_EM}")
+
+    def test_the_required_elements_are_on_screen_and_not_degenerate(self):
+        """Presence, visibility, text and size - **before** any angle is computed."""
+        scene = self.result
+        self.assertTrue(scene.walk_complete, f"the walk failed: {scene.walk_failures}")
+        for name in REQUIRED_ELEMENTS:
+            self.assertIn(name, scene.extents,
+                          f"{name} was not reached. A `Repeater` delegate is invisible to "
+                          f"findChild, so this asserts the walk - the reader that can see "
+                          f"one - reached it. Items seen: {sorted(scene.extents)}")
+            self.assertTrue(scene.visible.get(name), f"{name} is on screen but hidden")
+            self.assertTrue(scene.strings.get(name, "").strip(),
+                            f"{name} is on screen, visible and empty: "
+                            f"{scene.strings.get(name)!r}")
+            x, y, w, h = scene.extents[name]
+            self.assertTrue(all(v == v for v in (x, y, w, h)),
+                            f"{name} has a NaN extent {scene.extents[name]}; `Math.max` "
+                            f"passes NaN through and nothing warns")
+            self.assertGreater(w, 1.0, f"{name} is {w} px wide - degenerate")
+            self.assertGreater(h, 1.0, f"{name} is {h} px tall - degenerate")
+
+    def test_every_camera_states_a_verdict_on_the_always_visible_screen(self):
+        scene = self.result
+        for sid in ("A", "B", "C"):
+            verdicts = [name for name in scene.strings
+                        if name.endswith(sid) and name.startswith(REQUIRED_VERDICT_PREFIXES)
+                        and scene.visible.get(name) and scene.strings.get(name, "").strip()]
+            self.assertTrue(verdicts,
+                            f"camera {sid} has neither a staleness sentence nor a stated "
+                            f"reason on the always-visible screen, so its age has nothing "
+                            f"beside it saying whether it is a problem")
+
+    def test_nothing_visible_is_exempt_from_the_threshold(self):
+        """A legend of exemptions is how the title and the captions escaped M3's census."""
+        self.assertEqual(EXCLUDED_FROM_LEGIBILITY, (),
+                         "every visible named text must be measured; an exclusion list is "
+                         "a list of elements nobody is checking")
+        scene = self.result
+        unnamed = [name for name in scene.text_property
+                   if scene.text_property[name] and name not in scene.font_pixels]
+        self.assertEqual(unnamed, [],
+                         f"these items have a `text` property but no readable font size, so "
+                         f"they would be measured as nothing: {unnamed}")
+
+    # -- 2. the measurement ------------------------------------------------------------
+
+    def test_every_visible_text_on_the_live_screen_clears_the_threshold(self):
+        """**The whole screen, not a selection of it.** Cap height and x-height both."""
+        from app import theme
+
+        failures = []
+        table = []
+        for name in self.element_set():
+            cap = self.angle(name, metric="cap")
+            xheight = self.angle(name, metric="x")
+            table.append((name, self.result.font_pixels[name], cap, xheight,
+                          _verdict(cap), _verdict(xheight)))
+            if cap < theme.READING_MIN_ARCMIN or xheight < theme.READING_MIN_ARCMIN:
+                failures.append(f"{name}: {self.result.font_pixels[name]} px, cap "
+                                f"{cap:.1f}', x-height {xheight:.1f}'")
+        rendered = "\n".join(
+            f"  {n:30s} {px:3d} px  cap {cap:5.1f}' {v1:7s} x {x:5.1f}' {v2}"
+            for n, px, cap, x, v1, v2 in table)
+        self.assertEqual(failures, [],
+                         f"{len(failures)} of {len(table)} visible elements do not clear "
+                         f"{theme.READING_MIN_ARCMIN:.0f}' at "
+                         f"{theme.BOOTH_VIEWING_DISTANCE_M:.0f} m on the stated panel:\n"
+                         + "\n".join(failures)
+                         + "\n\nthe rendered table was:\n" + rendered)
+
+    def test_the_staleness_line_and_the_per_camera_age_are_among_the_passing(self):
+        """**They are the reason the screen exists.** Spec section 7 says the frame age must
+        be legible at a glance; M3 measured 8.5' at 3 m, i.e. not legible at all.
+        """
+        from app import theme
+
+        measured = set(self.element_set())
+        for name in ("streamStaleText_A", "streamStaleText_B",
+                     "streamAgeText_A", "streamAgeText_B", "streamAgeText_C"):
+            self.assertIn(name, measured, f"{name} is not a visible element on the screen")
+        for name in ("streamStaleText_A", "streamStaleText_B",
+                     "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
+                     "deviceBadgeText", "recordedFootageText"):
+            self.assertGreaterEqual(
+                self.angle(name, metric="cap"), theme.READING_MIN_ARCMIN,
+                f"{name} subtends {self.angle(name, metric='cap'):.1f}' of cap height at "
+                f"{theme.BOOTH_VIEWING_DISTANCE_M} m; the threshold is "
+                f"{theme.READING_MIN_ARCMIN}")
+            self.assertGreaterEqual(
+                self.angle(name, metric="x"), theme.READING_MIN_ARCMIN,
+                f"{name}'s lowercase subtends {self.angle(name, metric='x'):.1f}' - a "
+                f"mixed-case sentence measured by its capitals only is the M3 mistake")
+
+    # -- 3. the ink, so this is not a property check -----------------------------------
+
+    def test_every_measured_element_has_an_ink_band_of_at_least_its_cap_height(self):
+        """**The image, not the property.** A `Text` whose colour matches its surface, or
+        whose box is clipped away, has the right `font.pixelSize` and no readable glyph.
+        """
+        problems = []
+        for name in self.element_set():
+            metrics = self.metrics(name)
+            _rows, span = self.ink_span(name)
+            cap = metrics.capHeight() * self.result.glyph_scale[1]
+            line = metrics.lineSpacing() * self.result.glyph_scale[1]
+            if span < cap - 1.0:
+                problems.append(f"{name}: ink spans {span} px, cap height is {cap:.1f} px "
+                                f"- nothing that tall is drawn inside its own extent")
+            if span > line + 2.0:
+                problems.append(f"{name}: ink spans {span} px in a {line:.1f} px line - "
+                                f"that is not one line of text, so the extent is measuring "
+                                f"something else")
+        self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_the_largest_thing_on_the_screen_is_a_frame_age(self):
+        """Spec section 7: the age is the figure the screen is about. If a heading or a
+        caption ever grows past it, the screen has stopped being about the age."""
+        biggest = max(self.element_set(), key=lambda n: self.result.font_pixels[n])
+        self.assertTrue(biggest.startswith("streamAgeText_"),
+                        f"the largest type on the screen is {biggest} at "
+                        f"{self.result.font_pixels[biggest]} px; it must be a frame age")
+
+    # -- 4. controls, so a passing assertion cannot be a passing nothing ----------------
+
+    def test_a_degenerate_element_cannot_pass_the_ink_check(self):
+        """**The 1x1-window shape, as a control on this test's own measurement.**
+
+        A window that never got its size gives every item an extent of `(0, 0, 0, 0)`; the
+        ink loop then reads no rows and `span` is 0, which is `< cap - 1`, so the ink test
+        fails rather than passing over an empty screen. This asserts that arithmetic on the
+        zero box directly, because "it failed for the right reason" is not something a
+        reader can check from a green tick.
+        """
+        metrics = self.metrics("streamAgeText_A")
+        cap = metrics.capHeight() * self.result.glyph_scale[1]
+        self.assertGreater(cap, 1.0, "a zero cap height would make the comparison vacuous")
+        self.assertLess(0.0, cap - 1.0,
+                        "a zero-height ink band must fail the ink assertion; if this were "
+                        "false the check would pass on a screen with no text on it")
+
+    def test_the_threshold_discriminates_between_the_m3_sizes_and_the_shipped_ones(self):
+        """**The negative control, on the actual formula.**
+
+        Recomputed here from the measured font ratios and the stated panel: the sizes M3
+        shipped (18 px detail, 34 px age) are below the threshold at 3 m, and the sizes now
+        on screen are above it. If both came out above, this test would be measuring the
+        panel rather than the type.
+        """
+        from PySide6.QtGui import QFont, QFontMetricsF
+
+        from app import theme
+
+        def at(size: int) -> tuple[float, float]:
+            font = QFont("Arial")
+            font.setPixelSize(size)
+            metrics = QFontMetricsF(font)
+            mm = theme.MM_PER_LOGICAL_PX
+            return (_arcmin(metrics.capHeight() * mm, theme.BOOTH_VIEWING_DISTANCE_M),
+                    _arcmin(metrics.xHeight() * mm, theme.BOOTH_VIEWING_DISTANCE_M))
+
+        m3_detail = at(theme.TYPE_DETAIL)
+        m3_age = at(theme.TYPE_NUMERAL_SMALL)
+        shipped = at(self.result.font_pixels["streamStaleText_A"])
+        self.assertLess(m3_detail[0], theme.READING_MIN_ARCMIN,
+                        f"M3's 18 px detail text is {m3_detail[0]:.1f}' of cap height on the "
+                        f"stated panel - if that passed, the threshold would be a restatement "
+                        f"of the panel size rather than of the type")
+        self.assertLess(m3_detail[1], theme.READING_MARGINAL_ARCMIN,
+                        f"and its lowercase is {m3_detail[1]:.1f}'")
+        self.assertGreaterEqual(shipped[0], theme.READING_MIN_ARCMIN)
+        self.assertGreaterEqual(shipped[1], theme.READING_MIN_ARCMIN)
+        self.assertGreater(m3_age[0], m3_detail[0],
+                           "the age really was the largest thing on the M3 screen; the "
+                           f"ordering must be preserved for this control to mean anything "
+                           f"(34 px {m3_age[0]:.1f}' vs 18 px {m3_detail[0]:.1f}')")
 
 
 if __name__ == "__main__":

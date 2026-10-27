@@ -65,16 +65,16 @@ is M3 Task 6's measurement; this is "the box is not empty".
   rect**, and `clip_sources` records which of the two applied. It is never estimated from a font
   metric and never computed with `Math.max` over a possibly-`NaN` height.
 
-**What clips, and what deliberately does not.** `clip: true` is set on **four** items in the shipped
-QML: the card root and its two `Column`s in `ComputeCard.qml`, and the tile root in `VideoTile.qml`.
-So `overflow` is mostly a **per-card** and **per-tile** measure, and `clip_sources` names which box
-applied - `ancestor:card_A`, `ancestor:cardLeftColumn_A`, `ancestor:thumb_B` - so a report that says
-"something overflowed" says *which box*. **The bands do not clip**, by choice (M3 Task 2's recorded
-decision): the header `Column`, the footer `Item`, the hero column and the pipeline strip own the rest
-of their own space, and clipping them would have swapped a per-card measure for a per-band one without
-adding information. Those items read `window` in `clip_sources`, which is the honest answer for them -
-and it is the answer to read, because for those items `overflow == ()` only says nothing ran off the
-canvas.
+**What clips, and what deliberately does not.** `clip: true` is set on **three** items in the shipped
+QML: the card root and its one `Column` in `ComputeCard.qml`, and the tile root in `VideoTile.qml`
+(M4 reduced the card to one column; M3's two are gone). So `overflow` is mostly a **per-card** and
+**per-tile** measure, and `clip_sources` names which box applied - `ancestor:card_A`,
+`ancestor:cardColumn_A`, `ancestor:thumb_B` - so a report that says "something overflowed" says
+*which box*. **The bands do not clip**, by choice (M3 Task 2's recorded decision): the header
+`Column`, the footer `Item` and the hero column own the rest of their own space, and clipping them
+would have swapped a per-card measure for a per-band one without adding information. Those items
+read `window` in `clip_sources`, which is the honest answer for them - and it is the answer to
+read, because for those items `overflow == ()` only says nothing ran off the canvas.
 
 ## Where the seeded numbers come from
 
@@ -602,19 +602,18 @@ def read_scene(root: Any, *,
 #: `card_A` and `thumb_B` have **no `text` property** and are here precisely so their absence
 #: from `strings` can be asserted: a box must not be reported as a blank label.
 BOOTH_EXPECTED: tuple[str, ...] = (
-    "deviceBadgeText",
+    "recordedFootageText", "appTitle", "deviceBadgeText",
     "card_A", "card_B", "card_C",
+    "cameraName_A", "cameraName_B", "cameraName_C",
+    "cameraState_A", "cameraState_B", "cameraState_C",
     "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
-    "streamStaleText_A", "streamStaleText_C",
-    "streamWindowText_A",
-    "streamBacklogText_A",
-    "streamRateText_A",
-    "streamBadgeText_A",
+    "streamStaleText_A", "streamStaleText_B",
+    "streamBadgeText_A", "streamBadgeText_B", "streamBadgeText_C",
     "streamReasonText_C",
+    "verdictRow_A", "verdictRow_B", "verdictRow_C",
     "heroTile", "thumb_B", "thumb_C",
     "tileCaptionText_B", "tileCaptionText_C",
     "tileNoFrameText_A",
-    "eventCountRow",
 )
 
 #: Names whose `text` must **not** be empty for the capture to count as ready.
@@ -630,13 +629,18 @@ BOOTH_EXPECTED: tuple[str, ...] = (
 #: `cardText_*` / `cardWindowNote_*` are left out too, because they only exist once telemetry has
 #: arrived and their absence is legitimate.
 BOOTH_NONEMPTY: tuple[str, ...] = (
-    "deviceBadgeText",
-    "streamAgeText_A", "streamStaleText_A", "streamWindowText_A",
-    "streamBacklogText_A", "streamRateText_A", "streamBadgeText_A",
+    "recordedFootageText", "appTitle", "deviceBadgeText",
+    "cameraName_A", "cameraName_B", "cameraName_C",
+    # **Camera A only, and not B.** The seeded state has A and B stale with no stated reason;
+    # a *seeded worst case* (`test_a_camera_with_a_device_and_a_long_reason_still_fits_the
+    # _screen`) gives B a reason, and a camera with a reason shows that reason instead of its
+    # staleness sentence. A readiness check that demanded B's sentence would fail on a screen
+    # that is behaving exactly as designed.
+    "streamAgeText_A", "streamStaleText_A",
+    "streamBadgeText_A",
     "streamReasonText_C",
     "tileCaptionText_B", "tileCaptionText_C",
     "tileNoFrameText_A",
-    "eventCountRow",
 )
 
 #: Audit hook flag name, and **the parent's half of the wiring**: the child program has this

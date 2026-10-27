@@ -2112,6 +2112,22 @@ def install_sampler(application):
 
 
 def finish_and_quit():
+    # **M4: the drawer first, then the read.** The figures that left the always-visible
+    # screen - the utilisation wording, its sampling window, the frame-age window, the
+    # activity line, the event row and the telemetry-freshness line - live on the presenter
+    # drawer now. Reading them as rendered strings still requires the surface that renders
+    # them to exist, so the drawer is opened and the read is deferred until its `Loader`
+    # has instantiated it. Reading `""` from a closed drawer would make every "it shows a
+    # figure" assertion pass over nothing.
+    for root in engine_roots():
+        try:
+            root.setProperty("drawerOpen", True)
+        except (AttributeError, RuntimeError):
+            pass
+    QTimer.singleShot(700, read_the_screen)
+
+
+def read_the_screen():
     bridge = holder.get("bridge")
     supervisor = holder.get("supervisor")
     machine = holder.get("machine")
@@ -2162,8 +2178,14 @@ def finish_and_quit():
             for name in ("card_A", "card_CPU", "card_GPU", "card_NPU")}
         report["stream_ids_on_screen"] = [name for name, _item in _named_items()
                                           if name.startswith("card_")
-                                          and not name.startswith("cardText_")]
-        report["activity_cpu"] = find_property("card_A", "activityText")
+                                          and not name.startswith(("cardText_", "cardColumn_",
+                                                                   "cardExplainMouse_",
+                                                                   "cardWindowNote_"))]
+        # **M4: the activity line is rendered in the presenter drawer**, which this report
+        # opened before reading, so it is read as a rendered string rather than as a
+        # property on the card (the card no longer has one - the line left the
+        # always-visible screen with the other five detail figures).
+        report["activity_cpu"] = find_text("streamActivityText_A")
         report["window_text_stream"] = find_text("streamWindowText_A")
         report["age_text_stream"] = find_text("streamAgeText_A")
         # **M2: the per-camera video surfaces, read off the scene graph.** `tileImage_<sid>`

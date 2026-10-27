@@ -980,14 +980,24 @@ class BoothCapture(unittest.TestCase):
                             "assertion would catch a reader that returned one for both")
 
     def test_the_staleness_sentence_is_present_for_every_camera(self):
+        # **M4: the sentence names its camera, and one verdict line per camera is the
+        # budget.** A and B are stale with nothing else to say, so they carry the sentence;
+        # C has a stated failure reason, and the reason is the more specific statement, so
+        # it takes the line. Both halves are asserted, and so is the exclusivity.
         result = self.result(100)
-        for sid in ("A", "B", "C"):
+        for sid in ("A", "B"):
             self.assertEqual(
                 result.strings[f"streamStaleText_{sid}"],
-                f"STALE - this picture is {result.strings[f'streamAgeText_{sid}']} old; "
-                f"the limit is 2 s",
-                f"camera {sid} must say in words that its picture is stale, naming the age "
-                f"and the limit: {result.strings[f'streamStaleText_{sid}']!r}")
+                f"Camera {sid}: STALE - this picture is "
+                f"{result.strings[f'streamAgeText_{sid}']} old; the limit is 2 s",
+                f"camera {sid} must say in words that its picture is stale, naming itself, "
+                f"the age and the limit: {result.strings[f'streamStaleText_{sid}']!r}")
+        self.assertEqual(result.strings["streamStaleText_C"], "",
+                         "camera C's verdict line is its reason, so the staleness sentence "
+                         "must not also be there")
+        self.assertTrue(result.strings["streamReasonText_C"].startswith("Camera C: "),
+                        f"and the reason must name its camera: "
+                        f"{result.strings['streamReasonText_C']!r}")
 
     def test_the_failed_streams_badge_and_reason_are_on_the_screen(self):
         result = self.result(100)
@@ -1000,13 +1010,20 @@ class BoothCapture(unittest.TestCase):
         # complete 2331-character message is still what the supervisor stated; the screen
         # shows the part that fits plus a marker naming what it is not showing. Asserting
         # equality with the whole message here is exactly what this task removed.
+        #
+        # **M4: the line is `Camera C: <reason_display>`.** It sits in the footer band, away
+        # from the card, so it has to say which camera it is about.
         shown = result.strings["streamReasonText_C"]
-        self.assertLess(len(shown), len(reason),
+        prefix = "Camera C: "
+        self.assertTrue(shown.startswith(prefix),
+                        f"the reason line must name its camera: {shown[:60]!r}")
+        body = shown[len(prefix):]
+        self.assertLess(len(body), len(reason),
                         f"the screen must not be claiming to show all {len(reason)} "
-                        f"characters; it shows {len(shown)}")
-        self.assertTrue(shown.startswith(reason[:40].rstrip()),
+                        f"characters; it shows {len(body)}")
+        self.assertTrue(body.startswith(reason[:40].rstrip()),
                         f"the visible reason must begin with the reason itself, unedited: "
-                        f"{shown[:60]!r}")
+                        f"{body[:60]!r}")
         self.assertIn("COMPILE FAILURE", reason,
                       f"the seeded reason is the committed supervisor message: {reason[:120]}")
 
@@ -1027,16 +1044,22 @@ class BoothCapture(unittest.TestCase):
         for scale in capture_ui.SCALES:
             result = self.result(scale)
             shown = result.strings["streamReasonText_C"]
-            self.assertTrue(shown.endswith(marker),
+            prefix = "Camera C: "
+            self.assertTrue(shown.startswith(prefix),
+                            f"at {scale}% the reason line must name its camera: "
+                            f"{shown[:60]!r}")
+            body = shown[len(prefix):]
+            self.assertTrue(body.endswith(marker),
                             f"at {scale}% the reason must end by admitting what it is not "
                             f"showing. Expected the marker {marker!r}; the string ends "
-                            f"{shown[-40:]!r}")
-            self.assertEqual(shown[:CARD_REASON_CHARS].rstrip(), reason[:CARD_REASON_CHARS].rstrip(),
+                            f"{body[-40:]!r}")
+            self.assertEqual(body[:CARD_REASON_CHARS].rstrip(),
+                             reason[:CARD_REASON_CHARS].rstrip(),
                              f"at {scale}% the first {CARD_REASON_CHARS} characters must be "
                              f"the reason itself, verbatim and unedited")
-            self.assertLess(len(shown), len(reason),
+            self.assertLess(len(body), len(reason),
                             f"at {scale}% the screen must be showing less than the whole "
-                            f"reason: {len(shown)} of {len(reason)}")
+                            f"reason: {len(body)} of {len(reason)}")
             # **And Qt elided nothing**, so there is no second, silent cut behind the first.
             self.assertNotIn("streamReasonText_C", result.truncated,
                              f"at {scale}% Qt elided the reason as well, so there are two "
@@ -1293,9 +1316,13 @@ class LiveCaptureOnTheRealApplication(unittest.TestCase):
             cls.result = capture_ui.capture(
                 scale_percent=100, seconds=14.0, device="CPU",
                 out_dir=pathlib.Path(cls._tmp.name),
-                expect=("deviceBadgeText", "heroTile", "card_A",
-                        "streamAgeText_A", "streamBadgeText_A", "tileNoFrameText_A",
-                        "eventCountRow"),
+                # **M4: `eventCountRow` is not here any more.** It moved into the presenter
+                # drawer, which a live capture reads *closed*, so waiting for it would time
+                # the capture out on a correct screen. The always-visible items this capture
+                # waits for are the ones the aisle surface still carries.
+                expect=("deviceBadgeText", "heroTile", "card_A", "cameraName_A",
+                        "cameraState_A", "streamAgeText_A", "streamBadgeText_A",
+                        "verdictRow_A", "tileNoFrameText_A"),
                 # **The two names whose emptiness would be a rendering failure.** `expect` says
                 # "was it built"; these say "does it show something". `expect_nonempty` is what
                 # refuses a capture in which a required binding came out `""`, and it is proved

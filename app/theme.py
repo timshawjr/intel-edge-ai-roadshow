@@ -42,18 +42,24 @@ assertion would then pass on a screen with no text on it.
 
 from __future__ import annotations
 
+import math
 from typing import Final
 
 __all__ = [
     "ACCENT", "BG", "BG_PANEL", "BG_PANEL_DEEP", "BG_VIDEO", "BORDER",
-    "CANVAS_HEIGHT", "CANVAS_WIDTH", "CARD_ACTIVITY_LINES", "CARD_COLUMN_MIN_EM",
-    "CARD_COLUMN_SPLIT", "CARD_REASON_CHARS",
-    "CARD_REASON_LINES", "CARD_REASON_MARKER", "CARD_STALENESS_LINES",
+    "ARIAL_CAP_HEIGHT_EM", "ARIAL_X_HEIGHT_EM", "BOOTH_PANEL_DIAGONAL_IN",
+    "BOOTH_PANEL_WIDTH_MM", "BOOTH_VIEWING_DISTANCE_M", "CARD_BADGE_INSET",
+    "CANVAS_HEIGHT", "CANVAS_WIDTH", "CARD_ACTIVITY_LINES",
+    "CARD_REASON_CHARS",
+    "CARD_REASON_MARKER",
     "COLOR_BAD", "COLOR_GOOD", "COLOR_NEUTRAL",
     "COLOR_WARN", "DRAWER_WIDTH_FRACTION", "FONT_FAMILY", "GAP", "GRID", "MARGIN",
-    "OVERLAY_BOX",
-    "OVERLAY_LABEL", "OVERLAY_TRACK", "OVERLAY_ZONE", "RADIUS", "SPACING",
+    "MM_PER_LOGICAL_PX", "OVERLAY_BOX",
+    "OVERLAY_LABEL", "OVERLAY_ZONE", "RADIUS", "READING_ACUITY_ARCMIN",
+    "READING_MARGINAL_ARCMIN", "READING_MIN_ARCMIN", "READING_MIN_HEIGHT_MM",
+    "READING_MIN_HEIGHT_PX", "SPACING", "THUMB_ROW_FRACTION",
     "TEXT_ON_ACCENT", "TEXT_ON_PANEL",
+    "TYPE_BOOTH_DETAIL", "TYPE_BOOTH_LABEL", "TYPE_BOOTH_NUMERAL",
     "TYPE_DETAIL", "TYPE_HEADLINE", "TYPE_LABEL", "TYPE_NUMERAL", "TYPE_NUMERAL_SMALL",
     "VIDEO_WIDTH_FRACTION",
 ]
@@ -71,10 +77,16 @@ VIDEO_WIDTH_FRACTION: Final[float] = 0.68
 
 #: Vertical bands, design section 9: "12% header+title, 66% video+metrics,
 #: 22% pipeline+controls".
+#:
+#: **M4 Task 1: 13 / 66 / 21.** The main band's 66% and the video column's 68% are the
+#: design's proportions and are unchanged. The footer lost 1% because it no longer carries a
+#: pipeline strip and a control bar - it carries one verdict line per camera, full width, at
+#: the legibility ladder - and the header gained it because the mandatory label is now 44 px
+#: tall and the error line, when there is one, sits under it.
 GRID: Final[dict[str, float]] = {
-    "header": 0.12,
+    "header": 0.13,
     "main": 0.66,
-    "footer": 0.22,
+    "footer": 0.21,
 }
 
 # -- palette ---------------------------------------------------------------------
@@ -129,34 +141,20 @@ SPACING: Final[dict[str, int]] = {"xs": 4, "sm": 8, "md": 16, "lg": 28, "xl": 48
 #: Corner radius for cards and panels.
 RADIUS: Final[int] = 10
 
-# -- M3: the card's internal layout -----------------------------------------------------
+# -- M4: the card's internal layout ------------------------------------------------------
 #
-# Four tokens, and each exists because a number was sitting in a QML file.
+# **M3's four card tokens are gone, and that is the shape of this task.** `CARD_COLUMN_SPLIT`
+# (0.42), `CARD_COLUMN_MIN_EM` (4), `CARD_STALENESS_LINES` (2) and `CARD_REASON_LINES` (2)
+# described a two-column card carrying a wrapped staleness sentence and a two-line reason at
+# 18 px. At the legibility ladder the card is one column of three rows and the sentences are
+# single lines in `Main.qml`'s full-width footer, so those tokens have nothing left to
+# describe - and a token nothing binds to is a token that lies about the layout.
 #
-# **The column split was `0.42`, inline in `ComputeCard.qml`, with its complement `0.58`
-# implicit in `anchors.right: rightColumn.left`.** A ratio whose halves live in two different
-# places cannot be checked: change one and the card silently becomes a different shape.
-CARD_COLUMN_SPLIT: Final[float] = 0.42
+# What survives is the activity line's budget, because the drawer still renders it (at the
+# drawer's own 18 px, where the drawer is read at arm's length by a presenter).
 
-#: Lines the staleness sentence may occupy, and lines the failure reason may occupy.
-#:
-#: **Both were inline** (`maximumLineCount: 2` and `3`). They are the two texts most likely to
-#: grow, so they are the two whose budgets a test must be able to read rather than infer.
-#: **The reason went from 3 lines to 2** - measured, and reported: the card is 209.3 px tall
-#: after the overflow fix below, and three lines of reason plus the five rows above it does not
-#: fit. The marker below is what carries the loss.
-CARD_STALENESS_LINES: Final[int] = 2
-CARD_REASON_LINES: Final[int] = 2
-
-#: Lines the per-camera activity line may occupy. **Was `maximumLineCount: 2`, inline**, and it
-#: belongs with the two above: the three texts on a card that grow are the staleness sentence,
-#: the failure reason and the activity line, and all three budgets should be readable together.
+#: Lines the per-camera activity line may occupy **in the presenter drawer**.
 CARD_ACTIVITY_LINES: Final[int] = 2
-
-#: The right column's minimum width, in `TYPE_NUMERAL_SMALL` units. **Was a bare `* 4` inline**
-#: inside `Math.max(Theme.TYPE_NUMERAL_SMALL * 4, parent.width * Theme.CARD_COLUMN_SPLIT)`. A
-#: bare multiplier sitting next to a token is a token that has lost its name.
-CARD_COLUMN_MIN_EM: Final[int] = 4
 
 #: **Characters of a failure reason shown before it is cut**, and the marker that admits the
 #: rest. M3 Task 2.
@@ -190,4 +188,122 @@ CARD_REASON_MARKER: Final[str] = "... +{hidden} more"
 OVERLAY_BOX: Final[int] = 3
 OVERLAY_ZONE: Final[int] = 2
 OVERLAY_LABEL: Final[int] = 22
-OVERLAY_TRACK: Final[int] = 18
+
+# ================================================================================
+# M4: the booth target, and the legibility ladder derived from it
+# ================================================================================
+#
+# **This block is viewing geometry, not a metric.** It holds no number that was measured
+# from this machine's inference, telemetry or video: what it holds is the *distance a
+# passer-by stands at*, the *panel the booth is required to provide*, and the type sizes
+# that follow from those two by trigonometry. Everything here is either a **choice** (the
+# panel and the distance) or **arithmetic on that choice** (the sizes).
+#
+# **The panel is a choice, not a measurement, and it is stated as a requirement on the
+# booth.** M3 could not establish a booth display: it measured this machine's *desktop*
+# (2293 x 960 logical on a DELL S3422DWG) and assumed 0.310 mm per logical pixel from a
+# 27-inch monitor, while saying in the same paragraph that it was "an assumption about the
+# booth, not a measurement of it". A 27-inch desk monitor is not a booth display, and at
+# 3 m it is arithmetically impossible to satisfy at three cameras: 16 arcmin needs 45 px
+# of cap height there, i.e. a 63 px Arial, and three cameras' worth of that does not fit
+# 1920 x 1080 next to the pictures. So the requirement is stated instead of assumed:
+#
+#   **a 55-inch 16:9 1080p panel, viewed from 3 m.**
+#
+# Why 55 inches, and what it is not:
+#
+#   - it is the most common trade-show booth display size, and 3 m is a booth aisle;
+#   - it is **not measured**, and this module does not claim it is. It is a hardware
+#     requirement the operator has to meet for the screen to read. The M4 legibility
+#     review carries the sensitivity table: on a 40-inch panel the same screen's body text
+#     is 12.1 arcmin (FAIL) and on M3's 27-inch anchor it is 9.4 arcmin (FAIL, below the
+#     x-height of the acuity floor for sentences);
+#   - the alternative - shrinking the canvas so the same content is drawn larger - is the
+#     route this task explicitly rejects. The canvas is unchanged at 1920 x 1080.
+#
+# The arithmetic, in the order it is applied:
+#
+#   width_mm = diagonal_in * 25.4 * 16 / hypot(16, 9)            = 1217.59 mm
+#   mm/px    = width_mm / CANVAS_WIDTH                            = 0.63416 mm
+#   cap_mm   = 2 * distance_m * 1000 * tan( (16 arcmin / 2) in radians )
+#                                                                 = 13.963 mm
+#   cap_px   = cap_mm / mm_per_px                                 = 22.02 px
+#   font_px  = cap_px / (measured x-height of Arial in em)        = 42.47 px -> 44
+#
+# **The last line is the one that decides the number, and it uses x-height, not cap
+# height.** A digit's height is the cap height, so a threshold expressed in cap height
+# flatters every mixed-case sentence on the screen by ~28 %: Arial's lowercase is 0.5184 em
+# against a 0.7164 em cap. M3's review measured that gap and disclosed it; a screen whose
+# *sentences* are the thing a passer-by must read has to clear the threshold on the height
+# the sentences are actually drawn at. So the schedule below is built on the x-height and
+# therefore lands on 44 px, which also happens to be the figure M4's brief arrives at from
+# the 16-arcmin-at-2-m direction.
+#
+# At 44 px on this panel: cap height 31.52 px = 19.99 mm = **22.9 arcmin**, x-height
+# 22.81 px = 14.46 mm = **16.6 arcmin**. Both clear 16.
+#
+# The ratios and the sizes are pinned by `tests/test_capture_ui_canvas.py` against the
+# rendered scene, and the ratios themselves are measured from this machine's Arial below
+# rather than taken from a table.
+BOOTH_PANEL_DIAGONAL_IN: Final[float] = 55.0
+BOOTH_VIEWING_DISTANCE_M: Final[float] = 3.0
+
+#: The panel's width in millimetres, from the diagonal and a 16:9 aspect ratio.
+BOOTH_PANEL_WIDTH_MM: Final[float] = (
+    BOOTH_PANEL_DIAGONAL_IN * 25.4 * 16.0 / math.hypot(16.0, 9.0)
+)
+
+#: Millimetres per logical pixel. **The one conversion every angular size uses.**
+MM_PER_LOGICAL_PX: Final[float] = BOOTH_PANEL_WIDTH_MM / CANVAS_WIDTH
+
+#: The reading bands, from ISO 9241-3 (16 arcmin for comfortable sustained reading) and
+#: Snellen 20/20 (5 arcmin is one arcminute per stroke). These are *reading standards*, not
+#: detector thresholds: nothing in the pipeline reads them.
+READING_MIN_ARCMIN: Final[float] = 16.0
+READING_MARGINAL_ARCMIN: Final[float] = 10.0
+READING_ACUITY_ARCMIN: Final[float] = 5.0
+
+#: **Measured on this machine's Arial**, not copied from a font table: at 44 px,
+#: `QFontMetricsF.capHeight()` is 31.52 px and `xHeight()` is 22.81 px, so the ratios are
+#: 0.7164 and 0.5184. `tests/test_capture_ui_canvas.py` re-measures both from the font the
+#: render actually used and fails if they drift.
+ARIAL_CAP_HEIGHT_EM: Final[float] = 0.7164
+ARIAL_X_HEIGHT_EM: Final[float] = 0.5184
+
+#: The cap height a character must have to clear `READING_MIN_ARCMIN` at the stated
+#: distance, in millimetres. `2 d tan(theta / 2)`, the same formula the review uses.
+READING_MIN_HEIGHT_MM: Final[float] = (
+    2.0 * BOOTH_VIEWING_DISTANCE_M * 1000.0
+    * math.tan(math.radians(READING_MIN_ARCMIN / 60.0 / 2.0))
+)
+
+#: The same, in logical pixels on the stated panel.
+READING_MIN_HEIGHT_PX: Final[float] = READING_MIN_HEIGHT_MM / MM_PER_LOGICAL_PX
+
+#: **The derived minimum body size**: the smallest Arial pixel size whose *x-height* clears
+#: the reading minimum, rounded up to a whole multiple of 4. On the stated panel this is
+#: 44. A card that needs a smaller size for detail text is a card whose design has not been
+#: decided - not a licence to shrink the type.
+TYPE_BOOTH_DETAIL: Final[int] = (
+    int(math.ceil(
+        READING_MIN_HEIGHT_MM / MM_PER_LOGICAL_PX / ARIAL_X_HEIGHT_EM / 4.0)) * 4
+)
+
+#: Headings: a step above the body so a camera's name reads as a heading rather than as one
+#: more line of prose. **Not** derived; it is a step, and the step is the design decision.
+TYPE_BOOTH_LABEL: Final[int] = 48
+
+#: The frame age. The largest live figure on the screen, as spec section 7 requires, and
+#: the one number a passer-by is entitled to read from the aisle.
+TYPE_BOOTH_NUMERAL: Final[int] = 56
+
+#: The thumbnail row's share of the video column's height. **Was `0.16` inline in
+#: `Main.qml`.** It has to hold a `TYPE_BOOTH_DETAIL` caption bar, so it is a token now: at
+#: 16 % a 660 px band gives a 105 px thumbnail and the 44 px caption alone would be more
+#: than half of it.
+THUMB_ROW_FRACTION: Final[float] = 0.22
+
+#: The card's internal row heights, so the three cards' geometry can be recomputed without
+#: measuring the render. `CARD_AGE_ROW` is one `TYPE_BOOTH_NUMERAL` line plus the padding a
+#: `Text` adds; the other two are their own type sizes plus the badge box's padding.
+CARD_BADGE_INSET: Final[int] = 4

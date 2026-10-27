@@ -1345,3 +1345,142 @@ captures (seed mode; no inference worker needed). The readability table is gener
 M3.1. Everything under `docs/qualification/m3-capture/` is committed; nothing in this section rests
 on `logs/` or on the gitignored milestone directory except the four figures in M3.9, which are
 labelled **[quoted]**.
+
+---
+
+## M4 — sustained trials and legibility
+
+Date: 2026-10-27 (Task 1, legibility at 3 m)
+Milestone: M4
+
+**Verdict, Task 1: the always-visible screen now reads at three metres — on a 55-inch 1080p
+panel, which is stated as a requirement because it is a choice and not a measurement.** Every
+visible element clears 16 arcmin on **cap height and x-height**: the three frame ages are at
+**29.1′**, the staleness verdict at **22.9′ / 16.6′**, and the smallest element on the screen is
+at 16.6′ of x-height — against M3's 4.6′. The screen cost six figures per camera, the event row,
+the pipeline strip, the control bar and the footer `?` row, all of which are in the presenter
+drawer (or, for `PipelineStrip.qml`, deleted and replaced by a sentence). Nothing on the screen
+was shrunk.
+
+`tools/preflight.py` is **16 PASS / 2 WARN / 0 FAIL (Limited)**, exit 0; `verify_sources` is 6 PASS /
+0 FAIL; `--selftest` PASS; the suite is **1388 tests, OK, 543.8 s** (wall 544.7 s).
+
+### M4.1 The angular table, at 3 m on the stated panel
+
+Measured from `docs/qualification/m3-capture/100pct.json` — the rendered scene graph, the font
+engine's own metrics at the size the scene reports, and the ink in the saved PNG. Full table and
+method in [docs/qualification/M4-legibility-review.md](docs/qualification/M4-legibility-review.md).
+
+| element | px | cap | x-height | verdict |
+|---|---:|---:|---:|---|
+| `recordedFootageText`, `appTitle`, `deviceBadgeText`, `explainOpenButtonText` | 44 | 22.9′ | 16.6′ | **PASS** |
+| `cameraName_A/B/C` | 48 | 25.0′ | 18.1′ | **PASS** |
+| `cameraState_A/B/C`, `streamBadgeText_A/B/C`, `tileCaptionText_B/C`, `tileNoFrameText_A/B/C` | 44 | 22.9′ | 16.6′ | **PASS** |
+| **`streamStaleText_A/B`** — the staleness verdict | 44 | **22.9′** | **16.6′** | **PASS** |
+| `streamReasonText_C` — the failed camera's reason | 44 | 22.9′ | 16.6′ | **PASS** |
+| **`streamAgeText_A/B/C`** — the frame age | **56** | **29.1′** | **21.1′** | **PASS** |
+
+`mm/px = 0.63416` (1217.59 mm / 1920 px), distance 3.0 m, threshold 16′. **24 visible elements,
+nothing below 16′ on either measure.**
+
+**The stated target, and what it changes:** a **55-inch 16:9 1080p panel at 3 m** — a choice, not
+a measurement (`app/theme.py` records it, and M3's 27-inch assumption is recorded as the thing it
+replaces). At 44 px on this panel the cap height is 22.9′ and the x-height 16.6′. On the same
+render at other panel sizes: 40 in → 16.7′ / 12.1′ (**lowercase marginal**), 32 in → 13.3′ / 9.6′,
+27 in → 11.2′ / 8.1′. **A booth that installs anything under 55 inches has a regression, and no
+tool in this repository can gate a panel size.**
+
+### M4.2 What was removed, and where it went
+
+| removed from the always-visible screen | where it is now |
+|---|---|
+| per-camera backlog, analysis rate, frame-age window, activity line, utilisation figure, telemetry window | presenter drawer, per camera, **same item names** |
+| the event counts; `status:`; `telemetry fresh` | presenter drawer |
+| the header scope note (elided mid-word at 18 px) | presenter drawer, verbatim and in full |
+| the seven footer `?` keys and the pinned panel | removed; one 44 px header button, a card click, or F1 opens the drawer that holds all seven explanations |
+| `PipelineStrip.qml` (twelve 18 px labels) | **deleted**; `drawerPipelineText` states the topology |
+| the per-card hover hint | removed — it was clipped by the card's own `clip: true` and could never be seen |
+
+Kept and enlarged: the mandatory label, the title, the device badge, three captioned pictures,
+each camera's name/state/age/device badge, and **one verdict line per camera** (the staleness
+sentence, or that camera's stated failure reason).
+
+### M4.3 The gate set, run in the M4 Task 1 session
+
+On branch `main`, machine asserted clean before the timing run (`Get-Process python` → 0).
+
+```
+$ .venv\Scripts\python.exe -m tools.verify_sources
+PASS    yolo11n-fp16          xml       xml+OpenVINO-IR, 412503 bytes, sha256 4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95
+PASS    yolo11n-fp16:weights  binary    binary, 5283218 bytes, sha256 f14632518ebb4e312a89c26faa4cd2f95d4264b6f5f22aa6e0d5707b4667863e
+PASS    yolo11n-fp16:labels   text      text+utf-8, 80 lines, 701 bytes, sha256 82bf6a434f132c4d78534c0f2e0f991fc22c73cd911f6d5fc74a418c39c339ec
+PASS    retail_checkout       mp4       mp4+ftyp, 64996307 bytes, sha256 e107db69155af4774f907abe8ddbf24493dfcf9d81d51f3e71ff25300e4f5906
+PASS    store_aisle_alt       mp4       mp4+ftyp, 9214573 bytes, sha256 3526fee39cac70d6366471e4324a6d63b337c8f8ab99c015521bee0d60ed6e04
+PASS    queue_alt             mp4       mp4+ftyp, 3291918 bytes, sha256 a5964aa259099a482a8b360ffc2c57b5a30f84d5919236a4dad01f8e929ac07c
+
+Source verification: 6 PASS, 0 FAIL                              exit 0
+```
+
+```
+$ .venv\Scripts\python.exe -m tools.preflight
+PASS  Assets: pinned content verification
+PASS  Assets: sanity fixture
+PASS  Assets: model IR pin
+PASS  Runtime: OpenVINO and Python
+PASS  Budget: free disk on the repo volume
+PASS  Budget: free physical memory
+PASS  Device available: CPU
+PASS  Device available: GPU
+PASS  Device available: NPU
+PASS  Device discovery cost
+PASS  Recorded qualification run
+PASS  Recorded per-device compile, latency and placement
+PASS  Sanity fixture on CPU
+PASS  Recorded sanity fixture, per device
+WARN  Telemetry: in-process PDH GPU/NPU utilisation
+PASS  Telemetry: recorded LUID-to-device map
+WARN  Telemetry: LUID-to-device attribution and hardware identity
+PASS  Startup: this gate's import to the first inference
+Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows
+Status: Limited
+Exit code: 0.                                                   exit 0
+```
+
+The two `WARN`s are the carried telemetry rows, unchanged since M0; nothing was relaxed.
+
+```
+$ .venv\Scripts\python.exe -m app.main --selftest
+  ok   preprocess           letterbox 640x640 pad=114 scaled=640x360
+  ok   infer                25.91 ms on confirmed ['CPU']
+  ok   decode-track-event   1 zone_occupancy event(s) from a synthetic presence
+  ok   render-metadata      unavailable renders as unavailable, and no device is claimed before an inference confirms one
+PASS                                                             exit 0
+```
+
+```
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1388 tests in 543.753s
+OK                                                               exit 0   wall 544.7 s
+```
+
+Re-run on the exact committed tree (comment-only edits since): **1388 tests, 1387 green,
+542.7 s (wall 543.6 s)**. The one failure is the pre-existing RSS-ratio flake
+(`test_route_stress…test_nothing_grows_that_the_retained_records_do_not_account_for`), which
+passes in isolation on this tree and which M2 recorded failing 3 times in 15 full runs. Both
+runs are in the task report §9; neither is rounded up.
+
+**`tools/probe_telemetry.py` was run and reported `PROBE OK`** (the NPU counter is found and the
+LUID map is consistent). **It writes `config/telemetry_map.json` on every run with this boot's
+LUIDs**, which this task is not allowed to change, so the file was restored to its committed
+state afterwards — the map's LUIDs are per-boot values and the committed copy is the one the
+preflight grades against. Recorded because "the verification tool rewrote a config file" is
+something a later reader needs to know before trusting `git status`.
+
+### M4.4 What Task 1 does not claim
+
+- **The panel is a requirement, not a gate** (M4.1). This is the largest open risk.
+- The four captures still contain **no video frame** — they prove layout, strings, pixels and
+  census, not the video path (M3 §5.4 stands).
+- The drawer is 18 px: it is the presenter's arm's-length surface and is not part of the
+  passenger legibility contract.
+- M4 Tasks 2–6 (the timeout leak, paired trials, utilisation, the soak) are **not** started.

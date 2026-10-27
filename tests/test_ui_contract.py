@@ -170,7 +170,8 @@ def _render_png(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> str:
     return _render(tmpdir, seed)[0]
 
 
-def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict, dict]:
+def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED,
+            drawer: bool = False) -> tuple[str, dict, dict]:
     """`(png_path, {objectName: [text, visible, ...]}, per_camera_probe)`.
 
     The strings come out of the child's **scene graph**, read from the named items the QML
@@ -180,11 +181,13 @@ def _render(tmpdir: str, seed: str = _SINGLE_STREAM_SEED) -> tuple[str, dict, di
     badge, the `display_text()` card bindings, the `window_text()` line).
 
     `seed` chooses what state exists before the scene loads; see `_SINGLE_STREAM_SEED` and
-    `_ALLCPU_SEED`.
+    `_ALLCPU_SEED`. **`drawer` opens the presenter drawer after the load**, which is how the
+    figures M4 moved off the always-visible screen (backlog, rate, window, activity,
+    utilisation wording) are still read **as rendered**, not as bridge properties.
     """
     script = tmpdir.replace("\\", "/") + "/render.py"
     output = tmpdir.replace("\\", "/") + "/main.png"
-    Path(script).write_text(_render_script(seed), encoding="utf-8")
+    Path(script).write_text(_render_script(seed, drawer=drawer), encoding="utf-8")
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -234,7 +237,7 @@ for _sid, _requested, _confirmed in THREE_DEVICES:
 '''
 
 
-def _render_script(seed: str = _SINGLE_STREAM_SEED) -> str:
+def _render_script(seed: str = _SINGLE_STREAM_SEED, drawer: bool = False) -> str:
     """The child-process program, built with the repo's real paths substituted in.
 
     Written as one piece with `%`-style placeholders rather than a separate `.py` file in
@@ -246,6 +249,9 @@ def _render_script(seed: str = _SINGLE_STREAM_SEED) -> str:
     the three-stream M2 render exercise the *same* QML, the same font registration, the same
     grab and the same string dump - a second template would be a second thing that can
     drift, which is how M0 and M1 each produced a vacuous assertion.
+
+    `drawer` opens the presenter drawer after the scene exists, so a test can read the
+    figures M4 moved off the always-visible screen **as rendered**.
     """
     template = _RENDER_TEMPLATE
     # The paths go in as **repr'd literals**, not raw text. The first version substituted
@@ -257,6 +263,8 @@ def _render_script(seed: str = _SINGLE_STREAM_SEED) -> str:
             .replace("@REPO@", repr(str(REPO_ROOT)))
             .replace("@FONT@", repr(str(RENDER_FONT)))
             .replace("@UI@", repr(str(UI_DIR)))
+            .replace("@DRAWER@", "window.setProperty('drawerOpen', True)"
+                    if drawer else "pass")
             .replace("@SEED@", seed))
 
 
@@ -430,6 +438,11 @@ if not isinstance(window, QQuickWindow):
     print("root object is not a QQuickWindow", file=sys.stderr)
     sys.exit(5)
 
+# **@DRAWER@: the presenter drawer, opened after the scene exists.** The figures M4 moved
+# off the always-visible screen are read *as rendered* here rather than as bridge
+# properties - a bridge can hold a correct backlog while the screen shows nothing.
+@DRAWER@
+
 loop = QEventLoop()
 QTimer.singleShot(500, loop.quit)
 loop.exec()
@@ -479,10 +492,18 @@ class ThreeStreamBoothLayout(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="roadshow-allcpu-")
         cls._tmp = tmp
         cls.png, cls.strings, cls.probe = _render(tmp, _ALLCPU_SEED)
+        # **M4: the figures that left the always-visible screen, read as rendered.** A
+        # second render with the presenter drawer open, from the same seed, because the
+        # drawer covers the metrics column and the warning-border test below is a check on
+        # the *live* screen's pixels.
+        cls._tmp_detail = tempfile.mkdtemp(prefix="roadshow-allcpu-detail-")
+        _png, cls.detail_strings, _probe = _render(cls._tmp_detail, _ALLCPU_SEED,
+                                                   drawer=True)
 
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls._tmp, ignore_errors=True)
+        shutil.rmtree(cls._tmp_detail, ignore_errors=True)
 
     def text(self, name: str) -> str:
         self.assertIn(name, self.strings,
@@ -494,57 +515,86 @@ class ThreeStreamBoothLayout(unittest.TestCase):
         self.assertIn(name, self.strings, f"{name} is not on screen at all")
         return self.strings[name][1]
 
+    def detail(self, name: str) -> str:
+        """`name`'s rendered text **on the presenter drawer**, which M4 opened for this."""
+        self.assertIn(name, self.detail_strings,
+                      f"{name} is not on the drawer; the items that are: "
+                      f"{sorted(self.detail_strings)}")
+        return self.detail_strings[name][0]
+
     def test_every_item_this_class_reads_is_on_screen(self):
         # **First, and on purpose.** A missing item yields `""`, and every "is this not
         # empty / not zero" assertion on `""` passes. Naming the item first is the only
         # thing that stops that.
+        #
+        # **M4: two surfaces, two lists.** The ages, states, badges and verdict lines are on
+        # the always-visible screen; the six detail figures are on the presenter drawer, so
+        # each list is asserted against the render that has it.
         for sid in ("A", "B", "C"):
-            for prefix in ("streamAgeText_", "streamStaleText_", "streamWindowText_",
-                           "streamBadgeText_", "streamBacklogText_", "streamRateText_",
-                           "streamReasonText_", "streamActivityText_"):
+            for prefix in ("streamAgeText_", "streamStaleText_", "streamBadgeText_",
+                           "streamReasonText_", "cameraName_", "cameraState_",
+                           "verdictRow_"):
                 self.assertIn(prefix + sid, self.strings,
                               f"camera {sid}'s {prefix} item is missing, so any "
                               f"assertion about its contents would be asserting about "
                               f"nothing: {sorted(self.strings)}")
+            for prefix in ("streamWindowText_", "streamBacklogText_", "streamRateText_",
+                           "streamActivityText_", "drawerCameraHeading_"):
+                self.assertIn(prefix + sid, self.detail_strings,
+                              f"camera {sid}'s {prefix} item is missing from the presenter "
+                              f"drawer: {sorted(self.detail_strings)}")
             self.assertIn("card_" + sid, self.strings,
                           f"there is no card item for camera {sid}")
         self.assertEqual(len([n for n in self.strings if n.startswith("card_")
-                              and n != "cardText_system_cpu_percent"]), 3,
+                              and not n.startswith(("cardColumn_", "cardExplainMouse_"))]), 3,
                          f"exactly three cameras, three cards: {sorted(self.strings)}")
 
     def test_the_eleven_second_old_picture_is_legible_as_stale_in_words(self):
         # The ruling. Each camera states its own age, **in words as well as a number**, and
         # the age in the sentence is the age in the numeral.
+        #
+        # **M4: exactly one verdict line per camera.** A and B are stale with nothing else
+        # to say, so they carry the sentence; C has a stated failure reason, and the reason
+        # is the more specific statement, so it takes the line. Both are asserted, and so is
+        # the exclusivity - a camera cannot show two verdicts in a one-line budget, and
+        # cannot show none.
         for sid, p50, p95, backlog in (("A", "10.8 s", "11.6 s", "170 frames"),
                                        ("B", "11.1 s", "11.9 s", "179 frames"),
                                        ("C", "11.3 s", "12.3 s", "187 frames")):
             self.assertEqual(self.text(f"streamAgeText_{sid}"), p50,
                              f"camera {sid}'s measured p50 frame age is not on its card")
-            stale = self.text(f"streamStaleText_{sid}")
-            self.assertTrue(self.visible(f"streamStaleText_{sid}"),
-                            f"camera {sid}'s staleness line is present but not visible, "
-                            f"which is the frozen-binding shape")
-            self.assertIn("STALE", stale,
-                          f"camera {sid}: eleven seconds old must be a WORD, not only a "
-                          f"number. It reads {stale!r}")
-            self.assertIn(p50, stale,
-                          f"camera {sid}: the sentence must carry the age, so the number "
-                          f"and the word cannot disagree: {stale!r}")
-            self.assertIn("2 s", stale,
-                          f"camera {sid}: the sentence must carry the limit it exceeds: "
-                          f"{stale!r}")
-            # The window, the backlog and the rate. All three measured, all three on the
-            # card that camera is on.
-            self.assertEqual(self.text(f"streamWindowText_{sid}"),
+            has_reason = self.visible(f"streamReasonText_{sid}")
+            self.assertNotEqual(has_reason, self.visible(f"streamStaleText_{sid}"),
+                                f"camera {sid} shows both verdicts or neither")
+            if has_reason:
+                reason = self.text(f"streamReasonText_{sid}")
+                self.assertTrue(reason.startswith(f"Camera {sid}: "),
+                                f"camera {sid}'s reason line must name the camera: {reason!r}")
+            else:
+                stale = self.text(f"streamStaleText_{sid}")
+                self.assertIn("STALE", stale,
+                              f"camera {sid}: eleven seconds old must be a WORD, not only a "
+                              f"number. It reads {stale!r}")
+                self.assertIn(p50, stale,
+                              f"camera {sid}: the sentence must carry the age, so the number "
+                              f"and the word cannot disagree: {stale!r}")
+                self.assertIn("2 s", stale,
+                              f"camera {sid}: the sentence must carry the limit it exceeds: "
+                              f"{stale!r}")
+            # **The window, the backlog, the rate and the p95 - on the presenter drawer
+            # (M4).** All three measured, all three on the surface that says which camera
+            # they are about, and all three read as rendered strings rather than as bridge
+            # properties.
+            self.assertEqual(self.detail(f"streamWindowText_{sid}"),
                              "window: 256 analysed frames",
                              f"camera {sid}: the percentiles are of 256 frames and the "
-                             f"card must say so")
-            self.assertEqual(self.text(f"streamBacklogText_{sid}"),
+                             f"drawer must say so")
+            self.assertEqual(self.detail(f"streamBacklogText_{sid}"),
                              f"backlog {backlog}",
-                             f"camera {sid}'s backlog is not on its own card")
-            self.assertIn("analysis", self.text(f"streamRateText_{sid}"))
-            self.assertIn(p95, self.text(f"streamActivityText_{sid}"),
-                          f"camera {sid}'s p95 is not on its card")
+                             f"camera {sid}'s backlog is not on its own drawer block")
+            self.assertIn("analysis", self.detail(f"streamRateText_{sid}"))
+            self.assertIn(p95, self.detail(f"streamActivityText_{sid}"),
+                          f"camera {sid}'s p95 is not in its drawer block")
 
     def test_a_stale_camera_is_bordered_in_the_warning_colour(self):
         # The warning has to be visible across a room, not only to a reader of small text.
@@ -621,14 +671,15 @@ class ThreeStreamBoothLayout(unittest.TestCase):
         # The confirmed device drives the device's own utilisation wording. With three
         # cameras on three devices there is one of each; here all three are on the CPU, so
         # all three must carry the **CPU** wording - "no CPU sample yet", never the
-        # accelerators' "Utilization unavailable".
-        self.assertEqual(self.text("cardText_system_cpu_percent"), "no CPU sample yet")
-        self.assertNotIn("cardText_gpu_utilisation_percent", self.strings,
-                         "no camera is on the GPU, so no card may claim a GPU metric")
-        self.assertNotIn("cardText_", self.strings,
+        # accelerators' "Utilization unavailable". **M4: that line is in the presenter
+        # drawer**, on the surface that names the device and its sampling window.
+        self.assertEqual(self.detail("cardText_system_cpu_percent"), "no CPU sample yet")
+        self.assertNotIn("cardText_gpu_utilisation_percent", self.detail_strings,
+                         "no camera is on the GPU, so no line may claim a GPU metric")
+        self.assertNotIn("cardText_", self.detail_strings,
                          f"a half-named cardText_ item exists, which is the exact shape "
                          f"the M1 test was rewritten to stop reaching for: "
-                         f"{sorted(self.strings)}")
+                         f"{sorted(self.detail_strings)}")
 
     def test_a_camera_with_nothing_measured_reads_unavailable_and_never_zero(self):
         # A **second render**, seeded with three declared streams and nothing else: no
@@ -647,17 +698,26 @@ class ThreeStreamBoothLayout(unittest.TestCase):
                              f"camera {sid} has analysed nothing, so its age must be the "
                              f"word and not 0.0 ms - it reads {age!r}")
             self.assertTrue(age_visible)
-            for prefix in ("streamWindowText_", "streamBacklogText_", "streamRateText_"):
-                text, _vis = strings[f"{prefix}{sid}"]
-                self.assertIn("unavailable", text,
-                              f"{prefix}{sid} on a cold screen reads {text!r}; "
-                              f"'0 frames of backlog' looks like a healthy empty queue")
             self.assertEqual(strings[f"streamBadgeText_{sid}"][0],
                              "no device is running",
                              "nothing has confirmed anything, so no camera claims a "
                              "device")
             self.assertEqual(strings[f"streamReasonText_{sid}"][1], False,
                              "a pending camera has nothing to explain")
+        # **The moved figures, on the record that renders them.** The cold state's drawer
+        # block says `unavailable` for every optional figure; reading the record here rather
+        # than the drawer is the same claim at one remove, and it is the only way to assert
+        # it without a fourth child render - the record is what the drawer binds to, and
+        # `test_the_record_reads_unavailable_and_never_zero` (below) proves the binding is
+        # live.
+        bridge = _bridge()
+        bridge.set_streams(["A", "B", "C"])
+        for sid in ("A", "B", "C"):
+            record = bridge.stream_cards_by_id[sid]
+            for field in ("backlog_text", "fps_text", "window_text"):
+                self.assertEqual(record[field], "unavailable",
+                                 f"camera {sid}'s {field} reads {record[field]!r}; "
+                                 f"'0 frames of backlog' looks like a healthy empty queue")
 
     def test_the_overlay_geometry_is_recomputed_and_a_square_frame_would_not_catch_it(self):
         # **Obligation: overlay geometry must be checked against an independent
@@ -1016,14 +1076,16 @@ class StreamCardRecord(unittest.TestCase):
 
 
     def test_each_camera_carries_its_own_device_wording_on_a_three_device_render(self):
-        # **Obligation: the CPU card must not wear the accelerator's wording.** M1 checked
+        # **Obligation: the CPU camera must not wear the accelerator's wording.** M1 checked
         # this by asserting `unavailable_notice["GPU"] == "Utilization unavailable"` on a
         # screen that had one camera on the CPU - i.e. on cards that were not there. Now
-        # there really is one camera per device, so each wording is read off the card that
-        # carries it.
+        # there really is one camera per device, so each wording is read off the line that
+        # carries it. **M4: that line is in the presenter drawer** (the always-visible
+        # screen shows the device class, not a utilisation figure), so the render is taken
+        # with the drawer open - still as rendered strings, never as bridge properties.
         tmp = tempfile.mkdtemp(prefix="roadshow-devices-")
         try:
-            _png, strings, _probe = _render(tmp, _THREE_DEVICE_SEED)
+            _png, strings, _probe = _render(tmp, _THREE_DEVICE_SEED, drawer=True)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         expected = {"system_cpu_percent": "no CPU sample yet",
@@ -1032,7 +1094,7 @@ class StreamCardRecord(unittest.TestCase):
         for metric, wording in expected.items():
             name = "cardText_" + metric
             self.assertIn(name, strings,
-                          f"there must be a card figure named for the {metric}: "
+                          f"there must be a camera figure named for the {metric}: "
                           f"{sorted(strings)}")
             self.assertEqual(strings[name][0], wording,
                              f"{metric} renders {strings[name][0]!r}; a machine-wide "
@@ -1747,29 +1809,33 @@ class UtilisationHonesty(unittest.TestCase):
         self.assertNotIn("gpu_utilisation_percent: ", qml.replace('"', ""))
         self.assertNotIn("utilisationAvailable: true", qml,
                          "no card may hardcode its own availability")
-        # **M2 Task 5 retarget.** The device-to-metric mapping moved from three hand-written
-        # cards in `Main.qml` into `ComputeCard.qml`, because the card is now per *stream*
-        # and a stream's device is only known at run time - three fixed cards would each
-        # have to claim a device the stream might not be on. The guard's teeth are the two
-        # things it always cared about: **each device maps to its own metric name**, and
+        # **M4 retarget.** The device-to-metric mapping moved again: the card is three rows
+        # of verdict at the legibility ladder, and the utilisation figure lives in
+        # `PresenterDrawer.qml` (the surface a presenter reads at arm's length). The guard's
+        # teeth are unchanged: **each device maps to its own metric name**, and
         # **availability is read from the bridge, never asserted**.
-        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
-        code = "\n".join(line for line in card.splitlines()
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in drawer.splitlines()
                          if not line.strip().startswith("//"))
         for device, metric in (("CPU", "system_cpu_percent"),
                                ("GPU", "gpu_utilisation_percent"),
                                ("NPU", "npu_utilisation_percent")):
-            self.assertIn(f'deviceId === "{device}" ? "{metric}"', code,
+            self.assertIn(f'deviceId === "{device}"', code,
                           f"the {device} line must name the {device}'s own metric, not a "
                           f"shared one")
+            self.assertIn(f'"{metric}"', code,
+                          f"and the {device} metric key must be the bridge's own")
         self.assertIn("bridge.metric_text[metricName]", code,
                       "the utilisation figure must come from the bridge's notified map")
         self.assertIn("bridge.unavailable_text", code,
                       "and an absent figure must read as the bridge's word, not a 0")
-        # A card may not dim itself on utilisation any more - see ComputeCard.qml's header:
-        # dimming the card that says the NPU stream is eleven seconds stale, because NPU
-        # utilisation cannot be measured, would dim the one warning that matters.
-        self.assertNotIn("opacity: card.utilisationAvailable", code)
+        # A card may not dim itself on utilisation - see ComputeCard.qml's header: dimming
+        # the card that says the NPU stream is eleven seconds stale, because NPU utilisation
+        # cannot be measured, would dim the one warning that matters.
+        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
+        self.assertNotIn("utilisationAvailable", card,
+                         "the card no longer renders a utilisation figure at all; if it does "
+                         "again it must answer availability from the bridge")
 
     def test_the_cpu_card_answers_the_same_question_the_accelerators_do(self):
         # The bridge side of I7: `cpu_available` is derived from the value, so an
@@ -2433,12 +2499,15 @@ class SlotBindingAudit(unittest.TestCase):
         # bans the Slot call **anywhere** in the card, which is strictly stronger than
         # banning it in one property, and requires the window to arrive through a notified
         # property.
-        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
-        code = "\n".join(line for line in card.splitlines()
+        #
+        # **M4: the window moved into the presenter drawer**, and the ban moved with it -
+        # the guard reads *both* files now, so neither surface can reintroduce the call.
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in drawer.splitlines()
                          if not line.strip().startswith("//"))
         self.assertNotRegex(
             code, r"\bwindow_text\s*\(",
-            "the card calls the window_text Slot, so the window line is evaluated once at "
+            "the drawer calls the window_text Slot, so the window line is evaluated once at "
             "engine.load and never appears again")
         self.assertNotRegex(
             code, r"\bdisplay_text\s*\(",
@@ -2450,29 +2519,43 @@ class SlotBindingAudit(unittest.TestCase):
 
     def test_every_device_card_binds_its_unavailable_wording_to_the_bridge(self):
         # R1. The accelerators say "Utilization unavailable" because there is no counter
-        # for them; the CPU card must say its own thing, because `psutil.cpu_percent` works
+        # for them; the CPU line must say its own thing, because `psutil.cpu_percent` works
         # here and "no sample yet" is the truth. One shared literal claimed a failure to
         # read a counter that is not failing.
-        card = (UI_DIR / "ComputeCard.qml").read_text(encoding="utf-8")
-        code = "\n".join(line for line in card.splitlines()
+        #
+        # **M4: the line is in the presenter drawer.** The always-visible screen shows the
+        # device *class* on each camera's badge and does not print a utilisation figure at
+        # all; the wording is a presenter's claim about a counter, and it moved to the
+        # surface a presenter reads.
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in drawer.splitlines()
                          if not line.strip().startswith("//"))
         self.assertIn("bridge.unavailable_notice[deviceId]", code,
-                      "the unavailable label must be per-card, keyed by deviceId")
+                      "the unavailable label must be per-device, keyed by deviceId")
         self.assertNotIn("text: bridge.utilisation_unavailable_text", code,
-                         "one shared literal on every card is what R1 is about")
+                         "one shared literal on every camera is what R1 is about")
 
     def test_the_event_counts_are_gated_on_frames_analysed_not_on_the_route(self):
         # R3. A confirmed placement arrives from the worker's route *before* any frame has
         # been analysed, so gating on it printed three hard zeros for an event machine
         # that had not run.
-        main_qml = (UI_DIR / "Main.qml").read_text(encoding="utf-8")
-        code = "\n".join(line for line in main_qml.splitlines()
+        #
+        # **M4: the row moved into the presenter drawer**, with its gating; and the live
+        # screen must not carry an ungated copy.
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in drawer.splitlines()
                          if not line.strip().startswith("//"))
         self.assertIn("bridge.frames_analysed > 0", code,
                       "the event counts must be gated on frames analysed")
         self.assertNotIn("routeConfirmed", code,
                          "gating on the route leaves a window where a measured 0 is "
                          "printed for a machine that has analysed nothing")
+        main_qml = (UI_DIR / "Main.qml").read_text(encoding="utf-8")
+        main_code = "\n".join(line for line in main_qml.splitlines()
+                              if not line.strip().startswith("//"))
+        self.assertNotIn("eventCountRow", main_code,
+                         "the event row is a presenter's reading now; two copies would be "
+                         "two gates to keep in step")
 
 
 class EventRowGating(unittest.TestCase):
@@ -2572,6 +2655,12 @@ if not roots:
     print("no root objects", file=sys.stderr)
     sys.exit(3)
 root = roots[0]
+
+# **M4: the event row lives in the presenter drawer.** It is a presenter's reading of how
+# many events the machine has counted, not a number a passer-by reads from the aisle at 3 m,
+# so the drawer is opened here and the row is read from it - as rendered text, which is the
+# only thing that proves the binding re-evaluated.
+root.setProperty("drawerOpen", True)
 
 
 def row():
@@ -2832,8 +2921,8 @@ class AttractModeState(unittest.TestCase):
 _DRAWER_STABLE_ITEMS = (
     # the hero
     "heroTile",
-    # the header badge
-    "deviceBadgeText",
+    # the header: the mandatory label, the title and the badge
+    "recordedFootageText", "appTitle", "deviceBadgeText",
     # the two thumbnails, and all three pictures
     "thumb_B", "thumb_C",
     "tileImage_A", "tileImage_B", "tileImage_C",
@@ -2841,15 +2930,17 @@ _DRAWER_STABLE_ITEMS = (
     # **the three badges** - one per camera, each stating that camera's confirmed device
     "streamBadgeBox_A", "streamBadgeBox_B", "streamBadgeBox_C",
     "streamBadgeText_A", "streamBadgeText_B", "streamBadgeText_C",
-    # the per-stream age, staleness sentence, window, backlog and rate
+    # the per-camera name, state and age
+    "cameraName_A", "cameraName_B", "cameraName_C",
+    "cameraState_A", "cameraState_B", "cameraState_C",
     "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
+    # the verdict lines, which are the reason the screen exists
+    "verdictRow_A", "verdictRow_B", "verdictRow_C",
     "streamStaleText_A", "streamStaleText_B", "streamStaleText_C",
-    "streamWindowText_A", "streamBacklogText_A", "streamRateText_A",
-    # the three cards and the event counts
+    "streamReasonText_C",
+    # the three cards and the screen itself
     "card_A", "card_B", "card_C",
-    "eventCountRow",
-    # **the staleness line**, and the screen it sits on
-    "stalenessText", "liveScreen",
+    "liveScreen",
 )
 
 #: The child for `AttractModeOnTheScreen` and `PresenterDrawerOnTheScreen`. One process,
@@ -2972,15 +3063,8 @@ def click_named(name):
                      QPoint(int(round(pos.x())), int(round(pos.y()))))
 
 
-def affordance(key):
-    return {"pinned_key": str(root.property("pinnedExplanationKey")),
-            "pinned_text": str(root.property("pinnedExplanationText")),
-            "expected": bridge.explanation(key)}
-
-
-#: **The keys, from the bridge - the one definition both surfaces read.** The footer's
-#: `?` row and the drawer's buttons are driven from this list, so the two surfaces cannot
-#: offer different sets and this child cannot silently click nothing.
+#: **The keys, from the bridge - the one definition the surfaces read.** The drawer's buttons
+#: are driven from this list, so the child cannot silently click nothing.
 KEYS = list(bridge.explanation_keys)
 state = {"i": 0, "drawer_i": 0, "card_done": False}
 
@@ -2990,15 +3074,17 @@ def extents(scene):
 
 
 def census(scene):
-    """`font px -> how many items carry it **and have text on screen**`.
+    """`font px -> how many items carry it **and are visible with text on screen**`.
 
-    The filter is what makes this the census the M3 report quotes: an item whose text is
-    empty is a font that draws nothing, and counting it would make the number depend on
-    which optional lines happened to be blank.
+    The filter is what makes this the census the M4 report quotes. **M4 added `visible`**:
+    an item whose text is non-empty but hidden draws nothing, and counting it would put the
+    reply to "what is on the screen" in the hands of an item that is not. (M3's census
+    filtered on non-empty text only, which is why a hidden 18 px hover hint would have been
+    counted as type on the booth screen.)
     """
     counts = {}
     for name, size in scene.font_pixels.items():
-        if scene.strings.get(name):
+        if scene.strings.get(name) and scene.visible.get(name):
             counts[size] = counts.get(size, 0) + 1
     return counts
 
@@ -3021,26 +3107,30 @@ def step(name):
 
 
 def affordance_step():
-    if state["i"] < len(KEYS):
-        key = KEYS[state["i"]]
-        step("affordance:" + key)
-        click_named("explainButtonMouse_" + key)
-        report["affordances"][key] = affordance(key)
-        # Close the panel again, or it covers the next button - the pinned panel spans the
-        # metrics column and the footer's right side, which is where the buttons are.
-        root.setProperty("pinnedExplanationKey", "")
-        state["i"] += 1
-        QTimer.singleShot(150, guard(affordance_step))
-        return
-    if not state["card_done"]:
-        state["card_done"] = True
-        step("affordance:card")
-        click_named("cardExplainMouse_A")
-        report["card_affordance"] = affordance("cpu")
-        root.setProperty("pinnedExplanationKey", "")
-        QTimer.singleShot(150, guard(affordance_step))
-        return
-    QTimer.singleShot(150, guard(drawer_step))
+    # **M4: one touch entry point, not seven 18 px keys.** The seven `?` chips are gone from
+    # the footer (their labels were 18 px, i.e. below the acuity floor at 3 m, and they are
+    # all inside the drawer), so what is driven here is the header's `what the boxes mean`
+    # button and then a card's own click.
+    step("affordance:open_button")
+    click_named("explainOpenMouse")
+    report["explain_open"] = {
+        "drawer_open": bool(root.property("drawerOpen")),
+        "drawer_present": has("presenterDrawer"),
+        "footer_button_present": has("explainButtonMouse_yolo"),
+    }
+    root.setProperty("drawerOpen", False)
+    QTimer.singleShot(250, guard(card_open_step))
+
+
+def card_open_step():
+    step("affordance:card")
+    click_named("cardExplainMouse_A")
+    report["card_open"] = {
+        "drawer_open": bool(root.property("drawerOpen")),
+        "drawer_present": has("presenterDrawer"),
+    }
+    root.setProperty("drawerOpen", False)
+    QTimer.singleShot(250, guard(drawer_step))
 
 
 def drawer_step():
@@ -3066,10 +3156,12 @@ def drawer_open_step():
     report["drawer"]["expected_scope_note"] = bridge.scope_note
     report["drawer"]["expected_explanations"] = {
         key: bridge.explanation(key) for key in KEYS}
-    # **The drawer's buttons must not be the footer's buttons under another name.** A
-    # click in the drawer must not pin anything in the footer's panel; that separation is
-    # the whole reason the two surfaces have different item names.
-    report["drawer"]["footer_pinned_before"] = str(root.property("pinnedExplanationKey"))
+    # **The drawer's buttons must not be the footer's buttons under another name.** M4
+    # removed the footer's pinned panel outright (one explanation surface, at a legible
+    # size), so what is asserted is that there is no second surface for a click to land in:
+    # the window has no `pinnedExplanationKey` at all.
+    report["drawer"]["pinned_property_exists"] = (
+        root.property("pinnedExplanationKey") is not None)
     QTimer.singleShot(0, guard(drawer_explanation_step))
 
 
@@ -3081,7 +3173,7 @@ def drawer_explanation_step():
         scene = read()
         report["drawer"]["explanation_texts"][key] = {
             "shown": str(scene.strings.get("drawerExplanationText")),
-            "footer_pinned": str(root.property("pinnedExplanationKey")),
+            "drawer_open": bool(root.property("drawerOpen")),
         }
         state["drawer_i"] += 1
         QTimer.singleShot(150, guard(drawer_explanation_step))
@@ -3217,8 +3309,8 @@ def _expected_steps() -> list[str]:
     guards is a child that produced *some* JSON and was accepted because the keys the tests
     happened to read were present.
     """
-    steps = [f"affordance:{key}" for key in KEY_ORDER]
-    steps += ["affordance:card", "drawer:closed_baseline", "drawer:open"]
+    steps = ["affordance:open_button", "affordance:card",
+             "drawer:closed_baseline", "drawer:open"]
     steps += [f"drawer:explain:{i}" for i in range(len(KEY_ORDER) + 1)]
     steps += ["drawer:closed_again", "keyboard:open", "keyboard:opened",
               "keyboard:closed", "attract:baseline", "attract:up", "attract:down"]
@@ -3276,19 +3368,19 @@ def _drawer_attract_report() -> dict:
         raise AssertionError(
             "the child did not run every step: expected "
             f"{_expected_steps()}, got {report.get('steps')}")
-    if len(report["affordances"]) != len(KEY_ORDER):
-        raise AssertionError(
-            f"the child clicked {len(report['affordances'])} footer buttons, not "
-            f"{len(KEY_ORDER)}: {sorted(report['affordances'])}")
     if len(report["drawer"]["explanation_texts"]) != len(KEY_ORDER):
         raise AssertionError(
             f"the child clicked {len(report['drawer']['explanation_texts'])} drawer buttons, "
             f"not {len(KEY_ORDER)}: {sorted(report['drawer']['explanation_texts'])}")
+    for section in ("explain_open", "card_open"):
+        if report.get(section, {}).get("drawer_open") is not True:
+            raise AssertionError(
+                f"{section} did not open the explanation surface: {report.get(section)!r}")
     _REPORT_CACHE = report
     return report
 
 
-class ExplanationAffordancesWork(unittest.TestCase):
+class ExplanationEntryPoints(unittest.TestCase):
     """**Every explanation affordance is proved to work, not merely present.**
 
     M1 shipped a `?` panel that called `bridgeUi.explain(...)` when `Bridge.qml` had no
@@ -3297,42 +3389,45 @@ class ExplanationAffordancesWork(unittest.TestCase):
     screen whose purpose is explaining what the boxes mean. A button that is present and
     dead is invisible until somebody clicks it, which at a booth is the worst moment.
 
-    So this clicks **each** footer button and the card's own surface, through the real
-    `Main.qml` and the real scene graph, and asserts the text that appeared is the bridge's
-    explanation for that key.
+    **M4 moved the affordances and kept the proof.** The seven 18 px `?` chips cannot be
+    read at 3 m and duplicated the drawer's own buttons, so the always-visible entry points
+    are now two, both 44 px and both touch-reachable: the header's `what the boxes mean`
+    button and a click on any camera card. Each is clicked here, through the real
+    `Main.qml` and the real scene graph, and each must put the explanation surface in the
+    scene graph. The per-key proof - that every button shows *its own* text - is
+    `PresenterDrawerOnTheScreen::test_every_drawer_button_shows_its_own_explanation`.
     """
 
     @classmethod
     def setUpClass(cls):
         cls.report = _drawer_attract_report()
 
-    def test_every_footer_button_pins_its_own_explanation(self):
-        affordances = self.report["affordances"]
-        self.assertEqual(sorted(affordances), sorted(KEY_ORDER),
-                         f"every explanation button must have been clicked and read: "
-                         f"{sorted(affordances)}")
-        for key, result in affordances.items():
-            self.assertEqual(result["pinned_key"], key,
-                             f"clicking the {key!r} button pinned {result['pinned_key']!r}")
-            self.assertTrue(result["pinned_text"].strip(),
-                            f"clicking the {key!r} button produced no explanation text - the "
-                            f"M1 dead-affordance shape")
-            self.assertEqual(result["pinned_text"], result["expected"],
-                             f"the {key!r} panel must show the bridge's explanation for that "
-                             f"key, not another's")
+    def test_the_header_button_opens_the_explanation_surface(self):
+        opened = self.report["explain_open"]
+        self.assertTrue(opened["drawer_open"],
+                        f"the header's `what the boxes mean` button did not open the drawer: "
+                        f"{opened}")
+        self.assertTrue(opened["drawer_present"],
+                        "the drawer's Loader is open but its content is not in the scene - "
+                        "the M1 dead-affordance shape, one layer down")
+        self.assertFalse(opened["footer_button_present"],
+                         "the footer's 18 px `?` row is still there, so there are two "
+                         "explanation surfaces to keep in step")
 
-    def test_the_cards_own_click_pins_the_cards_explanation(self):
-        result = self.report["card_affordance"]
-        self.assertEqual(result["pinned_key"], "cpu",
-                         f"a card click must pin the card's own explanation key: {result}")
-        self.assertEqual(result["pinned_text"], result["expected"])
-        self.assertTrue(result["pinned_text"].strip())
+    def test_a_cards_click_opens_the_explanation_surface(self):
+        opened = self.report["card_open"]
+        self.assertTrue(opened["drawer_open"],
+                        f"clicking a camera card did not open the explanation surface: "
+                        f"{opened}")
+        self.assertTrue(opened["drawer_present"], opened)
 
     def test_each_required_explanation_is_reachable_from_the_screen(self):
         # The design's section 9 names six required explanations; the screen offers seven
         # (it adds `utilisation`). Every one of them must be a button that works.
+        offered = self.report["drawer"]["explanation_texts"]
         for key in ("yolo", "tracking", "zone", "cpu", "gpu", "metrics"):
-            self.assertIn(key, self.report["affordances"], key)
+            self.assertIn(key, offered, key)
+            self.assertTrue(offered[key]["shown"].strip(), f"{key} showed nothing")
 
 
 class ExplanationKeysHaveOneDefinition(unittest.TestCase):
@@ -3476,8 +3571,20 @@ class PresenterDrawerOnTheScreen(unittest.TestCase):
                          "failed to load, and an empty drawer is the M1 dead-affordance shape")
         strings = self.report["drawer"]["strings"]
         for name in ("drawerTitle", "drawerScopeNote",
-                     "drawerScopeReduction", "drawerUtilisationNote",
-                     "drawerExplanationText"):
+                     "drawerScopeReduction", "drawerExplanationText",
+                     "drawerCameraHeading_A", "drawerCameraHeading_B",
+                     "drawerCameraHeading_C",
+                     # **M4: the six rows that left the always-visible screen**, one item
+                     # per camera each, so "moved into the drawer" is checkable per camera
+                     # and per figure.
+                     "streamBacklogText_A", "streamBacklogText_B", "streamBacklogText_C",
+                     "streamRateText_A", "streamRateText_B", "streamRateText_C",
+                     "streamWindowText_A", "streamWindowText_B", "streamWindowText_C",
+                     "streamActivityText_A", "streamActivityText_B", "streamActivityText_C",
+                     "cardText_system_cpu_percent",
+                     # and the once-only ones
+                     "eventCountRow", "drawerPipelineText", "drawerStatusText",
+                     "stalenessText"):
             self.assertIn(name, strings, f"{name} is not on screen: {sorted(strings)}")
             self.assertTrue(strings[name].strip(), f"{name} is on screen but empty")
         # The drawer's own rectangle has no `text`, so it is in `extents` and not in
@@ -3486,18 +3593,25 @@ class PresenterDrawerOnTheScreen(unittest.TestCase):
         # **Nothing it draws is clipped away.** The drawer clips, so a button or a line that
         # spills past its edge is reported as overflow and is only half on screen - measured,
         # the seven buttons fill 487 px of the 566 px inner width and the report is empty.
+        # **M4: the drawer is fuller than it was** (it holds the six per-camera rows that left
+        # the live screen), so this is the assertion that its 1032 px inner height is enough.
         self.assertEqual(drawer["overflow"], [],
                          f"the drawer's own content overflows its clipped edge, so part of it "
                          f"is not on screen: {drawer['overflow']}")
-        # And its own affordances are there, one per key, under names that are **not** the
-        # footer's - the two surfaces are distinguishable by name, which is how a dead one
-        # stays visible.
+        # And its own affordances are there, one per key. **M4: there is no second surface to
+        # be confused with** - the footer's `?` row is gone, and the header button opens this
+        # drawer (asserted in `ExplanationEntryPoints`), so the drawer's buttons are the only
+        # ones and they are all named.
         for key in KEY_ORDER:
             self.assertIn(f"drawerExplainMouse_{key}", drawer["open_extents"],
                           f"the drawer offers no working button for {key!r}: "
                           f"{sorted(n for n in drawer['open_extents'] if 'Explain' in n)}")
-            self.assertIn(f"explainButtonMouse_{key}", drawer["open_extents"],
-                          f"the footer offers no working button for {key!r}")
+            self.assertNotIn(f"explainButtonMouse_{key}", drawer["open_extents"],
+                             f"the footer still offers a second {key!r} button - one "
+                             f"explanation surface is the M4 decision")
+        self.assertFalse(drawer["pinned_property_exists"],
+                         "the window still has a `pinnedExplanationKey`, so there is a "
+                         "second explanation surface for a click to land in")
 
     def test_the_drawer_does_not_cover_the_picture(self):
         """**"Moves nothing" is not the same as "obscures nothing".**
@@ -3521,17 +3635,24 @@ class PresenterDrawerOnTheScreen(unittest.TestCase):
 
     def test_opening_the_drawer_shrinks_no_font(self):
         # **The live screen's census, before and after the drawer exists.** Only the three
-        # ramp sizes may be present, and the holders of the two non-detail sizes are the
-        # same items the canvas gate names: one device badge and three age headlines. The
+        # ladder sizes may be present, and the holders of the two non-detail sizes are the
+        # same items the canvas gate names: three camera names and three age headlines. The
         # authoritative count against the committed capture is
         # `test_capture_ui_canvas.the_font_census_is_the_one_on_record`; this one proves the
         # drawer moved none of it.
+        from app import theme
+
         drawer = self.report["drawer"]
         base = {int(size): count for size, count in drawer["base_census"].items()}
-        self.assertEqual(sorted(base), [18, 26, 34],
-                         f"a font size appeared on the live screen: {base}")
-        self.assertEqual(base[26], 1, f"the only 26 px item is the device badge: {base}")
-        self.assertEqual(base[34], 3, f"the only 34 px items are the age headlines: {base}")
+        self.assertEqual(sorted(base), [theme.TYPE_BOOTH_DETAIL, theme.TYPE_BOOTH_LABEL,
+                                        theme.TYPE_BOOTH_NUMERAL],
+                         f"a font size outside the ladder appeared on the live screen: {base}")
+        self.assertEqual(base[theme.TYPE_BOOTH_LABEL], 3,
+                         f"the only {theme.TYPE_BOOTH_LABEL} px items are the camera names: "
+                         f"{base}")
+        self.assertEqual(base[theme.TYPE_BOOTH_NUMERAL], 3,
+                         f"the only {theme.TYPE_BOOTH_NUMERAL} px items are the age "
+                         f"headlines: {base}")
         self.assertEqual(drawer["closed_census"], drawer["base_census"],
                          "the census after closing the drawer differs from before opening it")
 
@@ -3562,12 +3683,17 @@ class PresenterDrawerOnTheScreen(unittest.TestCase):
         self.assertIn("2 events per clip", reduction, reduction)
 
     def test_the_drawer_states_that_gpu_and_npu_utilisation_is_unavailable_and_why(self):
-        note = self.report["drawer"]["strings"]["drawerUtilisationNote"]
-        self.assertIn("unavailable", note.lower(), note)
-        self.assertIn("GPU", note, note)
-        self.assertIn("NPU", note, note)
-        self.assertIn("not attributable", note,
-                      f"the reason a machine-wide peak is not used must be on the drawer: {note}")
+        # **M4: asserted through the button that states it.** The standalone paragraph was
+        # removed from the drawer to make room for the six per-camera rows that left the
+        # live screen, so the claim is now checked the way a presenter gets it: click
+        # `utilisation` and read what the drawer shows. That is stricter than reading a
+        # paragraph that was always on screen, because it drives the affordance too.
+        shown = self.report["drawer"]["explanation_texts"]["utilisation"]["shown"]
+        self.assertIn("unavailable", shown.lower(), shown)
+        self.assertIn("GPU", shown, shown)
+        self.assertIn("NPU", shown, shown)
+        self.assertIn("not attributable", shown,
+                      f"the reason a machine-wide peak is not used must be on the drawer: {shown}")
 
     def test_every_drawer_button_shows_its_own_explanation(self):
         """**Every one, not merely one.** The brief says the six affordances work; the
@@ -3584,15 +3710,18 @@ class PresenterDrawerOnTheScreen(unittest.TestCase):
             self.assertEqual(result["shown"], expected[key],
                              f"the drawer's {key!r} button showed another key's explanation")
 
-    def test_the_drawers_buttons_do_not_pin_the_footers_panel(self):
-        # **The surfaces are distinguishable, and that is the point.** A drawer button that
-        # set the footer's pinned key would be setting text under the drawer - the exact
-        # defect M1's `?` panel had, one surface over.
+    def test_the_drawers_buttons_land_in_the_only_explanation_surface(self):
+        # **M4 removed the second surface rather than distinguishing two.** The footer's
+        # pinned panel is gone (`pinnedExplanationKey` does not exist), so there is nowhere
+        # for a click to land except this drawer - and the click must leave the drawer open
+        # and showing the text, which is the claim M1's dead affordance failed.
         drawer = self.report["drawer"]
+        self.assertFalse(drawer["pinned_property_exists"],
+                         "the window still has a `pinnedExplanationKey`: a second explanation "
+                         "surface is a second place for a click to land in")
         for key, result in drawer["explanation_texts"].items():
-            self.assertEqual(result["footer_pinned"], "",
-                             f"the drawer's {key!r} button changed the footer's pinned "
-                             f"explanation to {result['footer_pinned']!r}")
+            self.assertTrue(result["drawer_open"],
+                            f"the drawer's {key!r} button closed the drawer it lives in")
 
     def test_the_drawer_is_keyboard_reachable_and_escape_closes_it(self):
         drawer = self.report["drawer"]
@@ -3668,6 +3797,27 @@ class AttractModeOnTheScreen(unittest.TestCase):
                           f"the date {headline['date']} must be shown with the figure: {recorded}")
             self.assertIn(headline["source"], recorded,
                           f"the committed source must be shown with the figure: {recorded}")
+
+    def test_the_idle_screen_is_on_the_same_ladder_as_the_live_one(self):
+        """**A booth with nobody at it is exactly when a passer-by reads the screen.**
+
+        M3 Task 4's overlay used the 40 / 26 / 18 px ramp, so the idle screen - the one a
+        visitor sees when no presenter is there - was drawn at **9.4'** of cap height at 3 m,
+        below the acuity floor. M4 rebuilt it on the booth ladder, and this asserts the
+        census contains no size below it. (The census is visible, non-empty named items; the
+        overlay is the only thing drawn in attract mode, so it is the whole of that read.)
+        """
+        from app import theme
+
+        census = {int(size): count for size, count in self.report["attract"]["census"].items()}
+        self.assertTrue(census, "attract mode drew no text at all")
+        below = {size: count for size, count in census.items()
+                 if size < theme.TYPE_BOOTH_DETAIL}
+        self.assertEqual(below, {},
+                         f"the idle screen draws type below the booth ladder ({below}); a "
+                         f"passer-by reading an unattended booth reads that type")
+        self.assertIn(theme.TYPE_BOOTH_NUMERAL, census,
+                      f"the attract title must be the headline size: {census}")
 
     def test_the_attract_overlay_overflows_nothing_of_its_own(self):
         """**The overlay's own text fits the window.**

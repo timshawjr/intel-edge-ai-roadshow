@@ -1,24 +1,31 @@
-// ComputeCard.qml - one **camera's** card.
+// ComputeCard.qml - one **camera's** verdict block, sized to be read from three metres.
 //
-// M2 Task 5 changed what this card is about. It used to be a card for a **device** -
-// CPU, GPU or NPU - with the device's utilisation as the headline figure. It is now a card
-// for a **stream**, and the device that stream is really running on is one line of it.
-// Three cameras, three cards, each reading only its own stream's record from
-// `bridge.stream_cards_by_id[streamId]`.
+// ## What this card is, after M4 Task 1
 //
-// ## Why the headline is the frame age, and not the utilisation
+// M3's card carried eleven rows: name and state, the frame age, the staleness
+// sentence, the frame-age window, the activity line, the confirmed device, the backlog, the
+// analysis rate, the utilisation figure, its averaging window and the stated reason - ten of
+// them at 18 px. M3's
+// readability review then measured it at 3 m: **the age was 8.5 arcmin and every 18 px line
+// was below the acuity floor.** At the 44 px the arithmetic requires, those eleven rows are
+// **764 px per camera** (recomputed row by row at the ladder in section 4 of the
+// legibility review), so three cameras are **2 292 px in the 660 px band they share** - 3.5x over.
 //
-// Measured, unsaturated, three streams on the CPU - which is literally spec section 5
-// row 4, a state the booth will be in on a quiet day - gives per-stream frame age
-// **p50 10767 / 11085 / 11319 ms** and **p95 11626 / 11905 / 12286 ms**, a backlog of
-// **170-187 frames per stream**, about **13.5 of the 15 fps** analysed, **zero drops**,
-// and all three streams reporting `active`.
+// So the card keeps what a passer-by reads from the aisle - **which camera, whether it is
+// running, how old its picture is, and where it is running** - and the other six numbers
+// moved into `PresenterDrawer.qml`, where a presenter looks closely:
 //
-// So the picture on screen is **eleven seconds old** and every other counter says the
-// system is healthy. That is the most dangerous shape this project has produced, and it is
-// why the age is the largest thing on the card, why the window it is taken over is
-// printed next to it, and why the card carries a **word** - `STALE` - once the age passes
-// the threshold spec section 7 quotes.
+//   backlog, analysis rate, frame-age window, activity line, the device's utilisation
+//   figure and the telemetry averaging window. The staleness sentence moved to
+//   `Main.qml`'s footer, where it is one line at full width instead of two at 567 px.
+//
+// The claim the card is *about* is unchanged, and it is the reason the age is the largest
+// figure on the screen: measured, unsaturated, three streams on the CPU - spec section 5
+// row 4, a state the booth is in on a quiet day - gives per-stream frame age p50 10767 /
+// 11085 / 11319 ms, p95 11626 / 11905 / 12286 ms, a backlog of 170-187 frames per stream,
+// about 13.5 of the 15 fps analysed, zero drops, and all three streams reporting `active`.
+// The picture on screen is **eleven seconds old** and every other counter says the system is
+// healthy.
 //
 // ## Frame age is not inference cost
 //
@@ -28,20 +35,18 @@
 //
 // ## Per device, not per screen
 //
-// The device utilisation line keeps M1's per-device wording exactly: the CPU card says
-// "no CPU sample yet" because `psutil.cpu_percent` is called every 250 ms and works, and
-// the GPU and NPU cards say "Utilization unavailable" because there is no counter for
-// them and a machine-wide peak is not attributable to this process. A camera on the NPU
-// therefore carries the accelerator's wording on **its own card**, which is the point of a
-// per-stream layout: with three cameras on three devices there is one of each.
+// The card shows the **confirmed** device class for its own camera, or `no device is
+// running`. A failed route claims no device and never borrows the one it asked for. The
+// utilisation wording ("no CPU sample yet" / "Utilization unavailable") is in the drawer,
+// on the line named after the device's own metric - it is a claim about a counter, not
+// about the picture, so it is a presenter's reading rather than an aisle reading.
 //
 // ## The card is never dimmed
 //
-// M1 dimmed a card whose utilisation was unmeasurable, because the card had nothing else
-// to show. This card has the frame age, the backlog, the placement and the reason, all of
-// which are real, so dimming the card that tells a presenter the NPU stream is eleven
-// seconds stale - because NPU utilisation cannot be measured - would dim the one warning
-// that matters. The wording is on the line it belongs to; the card stays legible.
+// M1 dimmed a card whose utilisation was unmeasurable, because the card had nothing else to
+// show. This card has the frame age, the placement and the state, all of which are real, so
+// dimming the card that tells a presenter the NPU stream is eleven seconds stale - because
+// NPU utilisation cannot be measured - would dim the one warning that matters.
 
 import QtQuick
 
@@ -67,7 +72,7 @@ Rectangle {
             "fps_text": bridge.unavailable_text,
             "backlog_text": bridge.unavailable_text,
             "window_text": bridge.unavailable_text,
-            "stale": false, "staleness": "", "reason": "",
+            "stale": false, "staleness": "", "reason": "", "reason_display": "",
             "summary_text": bridge.unavailable_text
         })
 
@@ -75,43 +80,9 @@ Rectangle {
     ///
     /// `""` is a real state and is rendered as `no device is running`: a failed route
     /// claims no device, and a card that borrowed the requested one would be claiming a
-    /// placement that was never proved.
+    /// placement that was never proved. The device's own *utilisation* wording lives in
+    /// `PresenterDrawer.qml`, which is the surface that renders a utilisation figure.
     readonly property string deviceId: String(record.device)
-
-    /// The optional metric that describes this camera's device's utilisation.
-    ///
-    /// A name mapping, not a figure: the number itself comes from the bridge's notified
-    /// `metric_text`. `""` for a stream with no device, and the utilisation line then says
-    /// so instead of printing a utilisation for a device that is not running.
-    readonly property string metricName: deviceId === "CPU" ? "system_cpu_percent"
-        : (deviceId === "GPU" ? "gpu_utilisation_percent"
-            : (deviceId === "NPU" ? "npu_utilisation_percent" : ""))
-
-    readonly property bool utilisationAvailable: metricName.length > 0
-        && bridge.metric_text[metricName] !== undefined
-        && bridge.metric_text[metricName] !== bridge.unavailable_text
-
-    /// The rendered utilisation figure for this camera's device, or the word.
-    readonly property string metricText: metricName.length > 0
-        && bridge.metric_text[metricName] !== undefined
-        ? bridge.metric_text[metricName] : bridge.unavailable_text
-
-    /// The per-device "why there is no number here", kept verbatim from M1.
-    readonly property string unavailableNotice: deviceId.length === 0
-        ? "no device is running"
-        : (bridge.unavailable_notice[deviceId] !== undefined
-            ? bridge.unavailable_notice[deviceId] : bridge.unavailable_text)
-
-    /// The window the **device figure** was averaged over, or the bridge's word.
-    ///
-    /// **Not the frame-age window.** The left column's `window: N analysed frames` says how
-    /// many frames the age is a percentile of; this says how long `psutil` averaged over for
-    /// the utilisation figure. Two different claims about two different measurements, kept
-    /// on two different lines - merging them would produce a sentence that is true of
-    /// neither.
-    readonly property string windowNote: metricName.length > 0
-        && bridge.window_notes[metricName] !== undefined
-        ? bridge.window_notes[metricName] : bridge.unavailable_text
 
     /// The state word, from **this stream's own** state and never the aggregate.
     readonly property string stateText: String(record.state)
@@ -121,39 +92,27 @@ Rectangle {
     /// The headline: this camera's measured p50 frame age, already formatted.
     readonly property string ageText: String(record.age_p50_text)
 
-    /// The activity line, composed by the bridge. Frame age and rate only.
-    readonly property string activityText: String(record.summary_text)
-
-    /// Which explanation this card pins when clicked. See `explanationKeys` in Bridge.qml.
+    /// Which explanation the presenter's drawer opens with. See `explanationKeys` in
+    /// `Bridge.qml`.
     property string explainKey: "cpu"
-
-    /// The explanation's text, resolved from the bridge rather than duplicated here.
-    readonly property string explanationText: bridge.explanation(explainKey)
 
     /// The camera's colour: good while it is running, bad once it has failed, neutral
     /// while it is still proving where it runs.
     ///
-    /// **Colour is never the only signal**: the state is also a word on the card, and
-    /// `STALE` is a word, and both are readable without colour.
+    /// **Colour is never the only signal**: the state is also a word on the card, the
+    /// device badge is a word, and `STALE` is a word in the footer.
     readonly property color accentColor: isFailed ? Theme.COLOR_BAD
         : (stateText === "active" ? Theme.COLOR_GOOD : Theme.COLOR_NEUTRAL)
 
     color: Theme.BG_PANEL
     radius: Theme.RADIUS
-    // **The card clips. M3 Task 2's `clip: true` decision.**
+    // **The card clips. M3 Task 2's `clip: true` decision, kept.**
     //
-    // A `Column` does not clip, and both this card's columns are `Column`s anchored to the
-    // card's top and bottom. So before this, a text longer than the card was **drawn anyway,
-    // over the card below it** - which is the defect this milestone has already recorded twice
-    // (a `Column` that does not clip; the activity line's third line drawn over the pipeline
-    // strip). It is invisible in a screenshot unless you know what the neighbour should say.
-    //
-    // **The consequence, stated rather than discovered:** `capture_ui`'s `overflow` measure
-    // was against the window alone, because `grep -c 'clip: true'` over `app/ui/*.qml` was
-    // **0**. With this line the nearest clipping ancestor is the card, so `overflow` becomes
-    // a **per-card** measure: a card whose content exceeds its own box is now named. That is
-    // the point of the decision - but it also means this card is now *held* to its box, and
-    // any content that does not fit is reported rather than painted over a neighbour.
+    // A `Column` does not clip, so before this a text longer than the card was **drawn
+    // anyway, over the card below it** - which is the defect this milestone has already
+    // recorded twice. With this line the card is the nearest clipping ancestor of
+    // everything in it, so `capture_ui`'s `overflow` becomes a **per-card** measure: a card
+    // whose content exceeds its own box is named rather than painted over a neighbour.
     clip: true
     border.color: isFailed ? Theme.COLOR_BAD
         : (record.stale ? Theme.COLOR_WARN : Theme.BORDER)
@@ -163,318 +122,110 @@ Rectangle {
 
     signal explainRequested(string key)
 
-    // -- left column: the camera, its state, and how old the picture is ---------------
-    //
-    // **Two columns, and the split is 58/42.** M1's card was two columns because a single
-    // stack of six rows did not fit the ~220 px the three cards share. The same arithmetic
-    // applies here, and the first render of this layout showed it: the age read
-    // `unavaila...` because `TYPE_NUMERAL` at 56 px does not fit "unavailable" in a 46%
-    // column of a 590 px card. The age is therefore `TYPE_NUMERAL_SMALL` - still the
-    // largest text on the card, since everything else is `TYPE_DETAIL` or `TYPE_LABEL` -
-    // and the left column takes 58% so the figure and the window sit on one line each.
     Column {
-        id: identityColumn
-        // **Named, so an `overflow` report says *which* column.** `clip: true` makes this
-        // Column the nearest clipping ancestor of everything in it, and `capture_ui` records
-        // the ancestor's label - so without a name the report says `ancestor:` and a reader
-        // has to guess between the two columns, the card and the window.
-        objectName: "cardLeftColumn_" + card.streamId
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        // **`sm` (8 px), not `md` (16 px). M3 Task 2.** Measured: with `md` the left column's
-        // content is 180 px tall (26 identity row + 38 age + 40 staleness + 20 window + 40
-        // activity, plus four 4 px gaps), so `md` margins need **212 px** and the card is
-        // **209.3 px** after the overflow fix in `Main.qml`. `sm` needs 196 and leaves 13 px of
-        // slack. **No font size changed** - this is a margin, not a type size, and Task 6
-        // measures the readability margin, so shrinking text to make a layout fit would have
-        // been a false pass.
+        id: cardColumn
+        // **Named, so an `overflow` report says *which* box.** `clip: true` makes this
+        // Column the nearest clipping ancestor of everything in it, and `capture_ui`
+        // records the ancestor's label - so without a name the report says `ancestor:` and
+        // a reader has to guess between the column and the card.
+        objectName: "cardColumn_" + card.streamId
+        anchors.fill: parent
         anchors.margins: Theme.SPACING.sm
-        anchors.right: rightColumn.left
-        anchors.rightMargin: Theme.SPACING.sm
         spacing: Theme.SPACING.xs
-        // **Clipped as well as the card.** The card is the outer bound; this is the inner one,
-        // so a `Column` that outgrows its own margins is reported against the column and not
-        // against the card.
         clip: true
 
+        // Which camera, and whether it is running. **A row, not two rows**: at 48 px the
+        // name and the state word together are 337 px of a 567 px inner width, and the
+        // vertical budget is what decides this layout.
         Row {
+            width: parent.width
             spacing: Theme.SPACING.sm
 
-            Rectangle {
-                width: Theme.SPACING.md
-                height: Theme.SPACING.md
-                radius: width / 2
-                color: card.accentColor
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
             Text {
-                anchors.verticalCenter: parent.verticalCenter
+                objectName: "cameraName_" + card.streamId
+                // **Named in M4.** It had an `id` and no `objectName`, so the harness could
+                // not see the word that says which camera the number below it belongs to.
                 text: "Camera " + card.streamId
                 color: Theme.TEXT_ON_PANEL
                 font.family: Theme.FONT_FAMILY
-                font.pixelSize: Theme.TYPE_LABEL
+                font.pixelSize: Theme.TYPE_BOOTH_LABEL
                 font.bold: true
             }
 
             // The state as a word, per this camera only.
             Text {
-                anchors.verticalCenter: parent.verticalCenter
+                objectName: "cameraState_" + card.streamId
                 text: card.stateText
                 color: card.accentColor
                 font.family: Theme.FONT_FAMILY
-                font.pixelSize: Theme.TYPE_LABEL
+                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                 font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
 
-        // The measured age. The biggest thing on the card, because in the condition this
-        // card exists for it is the only number that tells the presenter anything.
+        // The measured age. The biggest thing on the screen, because in the condition this
+        // card exists for it is the only number that tells the presenter anything, and
+        // spec section 7 requires it to be legible at a glance.
         Text {
-            width: parent.width
             objectName: "streamAgeText_" + card.streamId
+            width: parent.width
             text: card.ageText
             color: record.stale ? Theme.COLOR_WARN : Theme.TEXT_ON_PANEL
             font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_NUMERAL_SMALL
+            font.pixelSize: Theme.TYPE_BOOTH_NUMERAL
             font.bold: true
             elide: Text.ElideRight
         }
-
-        // **The word, not only the number.**
-        Text {
-            width: parent.width
-            objectName: "streamStaleText_" + card.streamId
-            visible: card.record.staleness !== ""
-            text: card.record.staleness
-            color: Theme.COLOR_WARN
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            font.bold: true
-            wrapMode: Text.WordWrap
-            // **From a token, and it is the requirement, not a style.** The staleness line is
-            // the number a passer-by has to be able to read, so its budget is named where a
-            // test can read it. `TYPE_DETAIL` is **unchanged at 18 px**: this task changed no
-            // font size anywhere, and Task 6 measures the 2-3 m margin.
-            maximumLineCount: Theme.CARD_STALENESS_LINES
-            elide: Text.ElideRight
-        }
-        // The window, because a percentile of a bounded deque is not comparable with a
-        // percentile of a different one, and the age above is a percentile.
-        Text {
-            width: parent.width
-            objectName: "streamWindowText_" + card.streamId
-            text: "window: " + card.record.window_text
-            color: Theme.COLOR_NEUTRAL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            elide: Text.ElideRight
-        }
-
-        // The rate and both ages, on this camera's card rather than in the header, because
-        // they are about this camera.
-        Text {
-            width: parent.width
-            objectName: "streamActivityText_" + card.streamId
-            visible: card.activityText.length > 0
-            text: card.activityText
-            color: Theme.COLOR_NEUTRAL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            wrapMode: Text.WordWrap
-            // **Two lines, not three.** The first render put the window on this line too
-            // and the third line of it was drawn *below* the card's own bottom edge - a
-            // Repeater delegate has no implicit clipping, so the overflow was drawn over
-            // the pipeline strip. The window has its own labelled line now, and this line
-            // is the rate and the two ages. The budget is a token, like the other two.
-            maximumLineCount: Theme.CARD_ACTIVITY_LINES
-            elide: Text.ElideRight
-        }
-    }
-
-    // -- right column: placement, backlog, and this camera's reason -------------------
-    Column {
-        id: rightColumn
-        // Named for the same reason as the left column, and it is the one that matters most:
-        // the reason, the badge, the backlog and the rate all live here, and they are what a
-        // 2 331-character message competes with.
-        objectName: "cardRightColumn_" + card.streamId
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        // **`sm`, for the same arithmetic and the same reason as the left column.**
-        anchors.margins: Theme.SPACING.sm
-        // **The split is a token.** It was `0.42` inline with its complement `0.58` implicit
-        // in `anchors.right: rightColumn.left`, so the two halves of one ratio lived in two
-        // places and could not be checked against each other.
-        width: Math.max(Theme.TYPE_NUMERAL_SMALL * Theme.CARD_COLUMN_MIN_EM,
-                        parent.width * Theme.CARD_COLUMN_SPLIT)
-        spacing: Theme.SPACING.xs
-        clip: true
 
         // The placement, from the **confirmed** reading. The requested device rides along
         // inside `badge` only when it differs, so a fallback is visible as a fallback.
+        //
+        // **A word, not only a colour**, and the one string the specification names as the
+        // placement proof: `device: CPU` in the header is the routed camera's, and this is
+        // each camera's own.
         Rectangle {
+            objectName: "streamBadgeBox_" + card.streamId
             width: parent.width
-            height: Theme.TYPE_DETAIL + Theme.SPACING.sm * 2
+            height: badgeText.implicitHeight + Theme.CARD_BADGE_INSET * 2
             radius: Theme.RADIUS
             color: Theme.BG_PANEL_DEEP
-            objectName: "streamBadgeBox_" + card.streamId
 
             Text {
+                id: badgeText
+                objectName: "streamBadgeText_" + card.streamId
                 anchors.fill: parent
                 anchors.leftMargin: Theme.SPACING.sm
                 anchors.rightMargin: Theme.SPACING.sm
                 verticalAlignment: Text.AlignVCenter
-                objectName: "streamBadgeText_" + card.streamId
                 text: card.record.badge
                 color: card.record.confirmed.length > 0
                     ? Theme.COLOR_GOOD
                     : (card.isFailed ? Theme.COLOR_BAD : Theme.COLOR_NEUTRAL)
                 font.family: Theme.FONT_FAMILY
-                font.pixelSize: Theme.TYPE_DETAIL
+                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                 elide: Text.ElideRight
             }
         }
-
-        // **Backlog and rate on their own lines, not one joined line.** The first render
-        // elided the joined form to `analysis...`, which drops the half of the pair the
-        // presenter needs least visible - and a backlog with no rate beside it looks like a
-        // queue on its own.
-        Text {
-            width: parent.width
-            objectName: "streamBacklogText_" + card.streamId
-            text: "backlog " + card.record.backlog_text
-            color: Theme.TEXT_ON_PANEL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            elide: Text.ElideRight
-        }
-
-        Text {
-            width: parent.width
-            objectName: "streamRateText_" + card.streamId
-            text: "analysis " + card.record.fps_text
-            color: Theme.TEXT_ON_PANEL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            elide: Text.ElideRight
-        }
-
-        // This camera's own utilisation figure, with this **device's** wording.
-        Text {
-            width: parent.width
-            // **Empty when there is no device**, so a failed camera does not leave an item
-            // named `cardText_` - with no metric in the name, which is exactly the kind of
-            // half-named handle the M1 card-text test was rewritten to stop reaching for.
-            objectName: card.metricName.length > 0
-                ? "cardText_" + card.metricName : ""
-            visible: card.metricName.length > 0
-            text: card.utilisationAvailable
-                ? card.deviceId + " " + card.metricText
-                : card.unavailableNotice
-            color: card.utilisationAvailable ? Theme.TEXT_ON_PANEL : Theme.COLOR_NEUTRAL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            elide: Text.ElideRight
-        }
-
-        // The **telemetry sampler's** window for this device's figure - a different claim
-        // from the frame-age window on the left, and deliberately not merged with it: one
-        // says how long `psutil` averaged over, the other says how many analysed frames
-        // the age is a percentile of.
-        //
-        // Read from the bridge's **notified** `window_notes` map, never by calling
-        // `window_text(...)`. That was a Slot call and therefore evaluated once, at
-        // `engine.load`, when no sample existed - so this line never appeared in a live
-        // session and its `visible:` guard was false throughout. The standing guard in
-        // `tests/test_ui_contract.py` still bans the Slot call here.
-        Text {
-            width: parent.width
-            objectName: "cardWindowNote_" + card.metricName
-            visible: card.metricName.length > 0
-                     && card.windowNote !== bridge.unavailable_text
-            text: "measured " + card.windowNote
-            color: Theme.COLOR_NEUTRAL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            elide: Text.ElideRight
-        }
-        // This camera's own stated reason, **already cut and already saying so.**
-        //
-        // `reason_display` is the bridge's string, cut at `Theme.CARD_REASON_CHARS` and
-        // carrying `... +N more`. It is **not** `record.reason`: the complete 2 331-character
-        // message is still published as `reason`, and this is the part that fits.
-        //
-        // **Why the cut is not Qt's to make.** This item used to ask Qt for it -
-        // `wrapMode`, `maximumLineCount: 3`, `elide: Text.ElideRight` - and Qt obliged, so the
-        // screen showed `... stream(s) ['C'] did not confir…` with **nothing on it saying that
-        // 2 291 characters were not shown**. A presenter reading that has no way to know they
-        // are looking at 1.7% of the message, and a silently shortened error is a hidden
-        // error. Cutting in Python at a declared budget makes the loss **visible on the
-        // screen**, assertable in a test, and identical at every DPI scale.
-        //
-        // `elide: Text.ElideRight` **stays** as the backstop, and the harness's `truncated`
-        // list is what says whether the backstop was needed. It should be empty; a test
-        // asserts it is.
-        Text {
-            width: parent.width
-            objectName: "streamReasonText_" + card.streamId
-            visible: card.record.reason !== ""
-            text: card.record.reason_display
-            color: card.isFailed ? Theme.COLOR_BAD : Theme.COLOR_NEUTRAL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            wrapMode: Text.WordWrap
-            maximumLineCount: Theme.CARD_REASON_LINES
-            elide: Text.ElideRight
-        }
     }
 
-    // Hover opens the explanation; a click pins it. The design wants both, because a
+    // Hover opens the explanation; a click opens it too. The design wants both, because a
     // booth machine is often touch-only and hover alone is then unreachable.
     //
     // **Named, M3 Task 5.** A card's click is one of the explanation affordances the M1
-    // `?`-panel defect showed can be silently dead; a test reaches this `MouseArea` by
-    // name and clicks it, so "the card explains itself" is proved rather than assumed.
+    // `?`-panel defect showed can be silently dead; a test reaches this `MouseArea` by name
+    // and clicks it.
+    //
+    // **M4 removed the hover *hint* that used to sit above the card.** It was anchored to
+    // `parent.top` - outside the card - and M3's `clip: true` on the card clipped it away,
+    // so it could never be seen; naming it made `capture_ui` report it as overflow, which is
+    // how the dead affordance surfaced. It is removed rather than repaired: the drawer is
+    // the explanation surface now, and a hover-only hint is unreachable on a touch booth.
     MouseArea {
         objectName: "cardExplainMouse_" + card.streamId
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
         onClicked: card.explainRequested(card.explainKey)
-        onEntered: hoverHint.visible = true
-        onExited: hoverHint.visible = false
-    }
-
-    // The hover hint. Short by design: the long copy is the pinned panel, and a long
-    // explanation floating over the hero would obscure the picture.
-    Rectangle {
-        id: hoverHint
-        visible: false
-        anchors.left: parent.left
-        anchors.bottom: parent.top
-        anchors.bottomMargin: Theme.SPACING.sm
-        width: hintText.implicitWidth + Theme.MARGIN
-        height: hintText.implicitHeight + Theme.SPACING.sm * 2
-        radius: Theme.RADIUS
-        color: Theme.BG_PANEL_DEEP
-        border.color: Theme.ACCENT
-        border.width: 1
-        opacity: 0.96
-
-        Text {
-            id: hintText
-            anchors.centerIn: parent
-            width: Math.min(implicitWidth, Theme.CANVAS_WIDTH * 0.28)
-            text: "Camera " + card.streamId
-                  + (card.deviceId.length > 0 ? " on " + card.deviceId : "")
-                  + " - " + card.explanationText
-            color: Theme.TEXT_ON_PANEL
-            font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
-            wrapMode: Text.WordWrap
-        }
     }
 }

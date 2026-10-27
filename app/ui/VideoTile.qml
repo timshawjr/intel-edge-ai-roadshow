@@ -92,7 +92,15 @@ Item {
         border.color: Theme.BORDER
         border.width: 1
         Text {
-            anchors.centerIn: parent
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            // **Above the caption bar, not behind it.** The caption is drawn after this
+            // panel (it is a sibling later in the file), so a sentence centred in the whole
+            // tile had its lower half painted over by the caption - measured: the ink band
+            // was 29 px against a 31.5 px cap height, which is exactly the "is the text
+            // really drawn" defect the M4 ink check exists to catch.
+            anchors.verticalCenterOffset: tile.caption.length > 0
+                ? -(Theme.TYPE_BOOTH_DETAIL + Theme.SPACING.sm * 2) / 2 : 0
             width: parent.width - Theme.SPACING.md
             objectName: "tileNoFrameText_" + tile.streamId
             text: tile.streamId.length > 0
@@ -100,7 +108,10 @@ Item {
                 : "no camera on this surface"
             color: Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
+            // **The legibility ladder, M4.** This sentence is how a camera that has
+            // delivered nothing says so, and at 18 px it was below the acuity floor at
+            // 3 m - the one thing a passer-by most needs to read on a dead surface.
+            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
         }
@@ -148,13 +159,19 @@ Item {
             // The track id, drawn on the box. Present because a track id is the identity
             // half of every event key on screen; a box nobody can name cannot be matched
             // to an event by a visitor asking "what is that?".
+            //
+            // **M4: named, and on the ladder.** It used to be 18 px with no `objectName`,
+            // so it was text on the picture that the harness could not see and a
+            // passer-by could not read. A track id a visitor is invited to ask about has
+            // to be legible from where the visitor stands.
             Text {
+                objectName: "tileTrackLabel_" + tile.streamId + "_" + modelData.track_id
                 x: 2
-                y: -Theme.OVERLAY_TRACK - 2
+                y: -height - Theme.SPACING.xs
                 text: "#" + modelData.track_id
                 color: modelData.confirmed ? Theme.ACCENT : Theme.COLOR_NEUTRAL
                 font.family: Theme.FONT_FAMILY
-                font.pixelSize: Theme.OVERLAY_TRACK
+                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
             }
         }
     }
@@ -172,7 +189,10 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: Theme.TYPE_DETAIL + Theme.SPACING.sm * 2
+        // **M4: the caption bar has to hold a `TYPE_BOOTH_DETAIL` line.** A caption is a
+        // claim about the picture above it; at 18 px it was a claim nobody at 3 m could
+        // read, on the surface whose job is to say which camera is on it.
+        height: Theme.TYPE_BOOTH_DETAIL + Theme.SPACING.sm * 2
         color: Theme.BG_PANEL_DEEP
         radius: Theme.RADIUS
         Text {
@@ -195,7 +215,7 @@ Item {
             text: tile.caption
             color: Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
-            font.pixelSize: Theme.TYPE_DETAIL
+            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
         }
     }
 

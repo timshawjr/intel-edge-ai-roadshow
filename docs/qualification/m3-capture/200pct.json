@@ -1,69 +1,47 @@
 {
   "absent": [],
   "clip_sources": {
+    "appTitle": "window",
     "attractLoader": "window",
+    "cameraName_A": "ancestor:cardColumn_A",
+    "cameraName_B": "ancestor:cardColumn_B",
+    "cameraName_C": "ancestor:cardColumn_C",
+    "cameraState_A": "ancestor:cardColumn_A",
+    "cameraState_B": "ancestor:cardColumn_B",
+    "cameraState_C": "ancestor:cardColumn_C",
+    "cardColumn_A": "ancestor:card_A",
+    "cardColumn_B": "ancestor:card_B",
+    "cardColumn_C": "ancestor:card_C",
     "cardExplainMouse_A": "ancestor:card_A",
     "cardExplainMouse_B": "ancestor:card_B",
     "cardExplainMouse_C": "ancestor:card_C",
-    "cardLeftColumn_A": "ancestor:card_A",
-    "cardLeftColumn_B": "ancestor:card_B",
-    "cardLeftColumn_C": "ancestor:card_C",
-    "cardRightColumn_A": "ancestor:card_A",
-    "cardRightColumn_B": "ancestor:card_B",
-    "cardRightColumn_C": "ancestor:card_C",
-    "cardText_system_cpu_percent": "ancestor:cardRightColumn_A",
-    "cardWindowNote_": "ancestor:cardRightColumn_C",
-    "cardWindowNote_system_cpu_percent": "ancestor:cardRightColumn_A",
     "card_A": "window",
     "card_B": "window",
     "card_C": "window",
     "deviceBadgeText": "window",
     "drawerLoader": "window",
-    "eventCountRow": "window",
-    "explainButtonMouse_cpu": "window",
-    "explainButtonMouse_gpu": "window",
-    "explainButtonMouse_metrics": "window",
-    "explainButtonMouse_tracking": "window",
-    "explainButtonMouse_utilisation": "window",
-    "explainButtonMouse_yolo": "window",
-    "explainButtonMouse_zone": "window",
-    "explainButton_cpu": "window",
-    "explainButton_gpu": "window",
-    "explainButton_metrics": "window",
-    "explainButton_tracking": "window",
-    "explainButton_utilisation": "window",
-    "explainButton_yolo": "window",
-    "explainButton_zone": "window",
+    "errorText": "window",
+    "explainOpenButton": "window",
+    "explainOpenButtonText": "window",
+    "explainOpenMouse": "window",
     "heroTile": "window",
     "liveScreen": "window",
-    "stalenessText": "window",
-    "streamActivityText_A": "ancestor:cardLeftColumn_A",
-    "streamActivityText_B": "ancestor:cardLeftColumn_B",
-    "streamActivityText_C": "ancestor:cardLeftColumn_C",
-    "streamAgeText_A": "ancestor:cardLeftColumn_A",
-    "streamAgeText_B": "ancestor:cardLeftColumn_B",
-    "streamAgeText_C": "ancestor:cardLeftColumn_C",
-    "streamBacklogText_A": "ancestor:cardRightColumn_A",
-    "streamBacklogText_B": "ancestor:cardRightColumn_B",
-    "streamBacklogText_C": "ancestor:cardRightColumn_C",
-    "streamBadgeBox_A": "ancestor:cardRightColumn_A",
-    "streamBadgeBox_B": "ancestor:cardRightColumn_B",
-    "streamBadgeBox_C": "ancestor:cardRightColumn_C",
-    "streamBadgeText_A": "ancestor:cardRightColumn_A",
-    "streamBadgeText_B": "ancestor:cardRightColumn_B",
-    "streamBadgeText_C": "ancestor:cardRightColumn_C",
-    "streamRateText_A": "ancestor:cardRightColumn_A",
-    "streamRateText_B": "ancestor:cardRightColumn_B",
-    "streamRateText_C": "ancestor:cardRightColumn_C",
-    "streamReasonText_A": "ancestor:cardRightColumn_A",
-    "streamReasonText_B": "ancestor:cardRightColumn_B",
-    "streamReasonText_C": "ancestor:cardRightColumn_C",
-    "streamStaleText_A": "ancestor:cardLeftColumn_A",
-    "streamStaleText_B": "ancestor:cardLeftColumn_B",
-    "streamStaleText_C": "ancestor:cardLeftColumn_C",
-    "streamWindowText_A": "ancestor:cardLeftColumn_A",
-    "streamWindowText_B": "ancestor:cardLeftColumn_B",
-    "streamWindowText_C": "ancestor:cardLeftColumn_C",
+    "recordedFootageText": "window",
+    "streamAgeText_A": "ancestor:cardColumn_A",
+    "streamAgeText_B": "ancestor:cardColumn_B",
+    "streamAgeText_C": "ancestor:cardColumn_C",
+    "streamBadgeBox_A": "ancestor:cardColumn_A",
+    "streamBadgeBox_B": "ancestor:cardColumn_B",
+    "streamBadgeBox_C": "ancestor:cardColumn_C",
+    "streamBadgeText_A": "ancestor:cardColumn_A",
+    "streamBadgeText_B": "ancestor:cardColumn_B",
+    "streamBadgeText_C": "ancestor:cardColumn_C",
+    "streamReasonText_A": "window",
+    "streamReasonText_B": "window",
+    "streamReasonText_C": "window",
+    "streamStaleText_A": "window",
+    "streamStaleText_B": "window",
+    "streamStaleText_C": "window",
     "thumb_B": "window",
     "thumb_C": "window",
     "tileCaptionText_A": "ancestor:heroTile",
@@ -77,113 +55,122 @@
     "tileNoFrameText_C": "ancestor:thumb_C",
     "tileNoFrame_A": "ancestor:heroTile",
     "tileNoFrame_B": "ancestor:thumb_B",
-    "tileNoFrame_C": "ancestor:thumb_C"
+    "tileNoFrame_C": "ancestor:thumb_C",
+    "verdictRow_A": "window",
+    "verdictRow_B": "window",
+    "verdictRow_C": "window"
   },
   "dpr": 2.0,
-  "elapsed_s": 0.3262242000000697,
+  "elapsed_s": 0.3459870000006049,
   "empty_nonempty": [],
   "extents": {
+    "appTitle": [
+      717.0,
+      32.0,
+      464.0,
+      49.0
+    ],
     "attractLoader": [
       0.0,
       0.0,
       1920.0,
       1080.0
     ],
+    "cameraName_A": [
+      1321.0,
+      178.0,
+      216.0,
+      53.0
+    ],
+    "cameraName_B": [
+      1321.0,
+      403.33333333333337,
+      217.0,
+      53.0
+    ],
+    "cameraName_C": [
+      1321.0,
+      628.6666666666667,
+      220.0,
+      53.0
+    ],
+    "cameraState_A": [
+      1545.0,
+      180.0,
+      114.0,
+      49.0
+    ],
+    "cameraState_B": [
+      1546.0,
+      405.33333333333337,
+      114.0,
+      49.0
+    ],
+    "cameraState_C": [
+      1549.0,
+      630.6666666666667,
+      104.0,
+      49.0
+    ],
+    "cardColumn_A": [
+      1321.0,
+      178.0,
+      567.0,
+      193.33333333333334
+    ],
+    "cardColumn_B": [
+      1321.0,
+      403.33333333333337,
+      567.0,
+      193.33333333333334
+    ],
+    "cardColumn_C": [
+      1321.0,
+      628.6666666666667,
+      567.0,
+      193.33333333333334
+    ],
     "cardExplainMouse_A": [
       1313.0,
-      160.0,
+      170.0,
       583.0,
       209.33333333333334
     ],
     "cardExplainMouse_B": [
       1313.0,
-      385.33333333333337,
+      395.33333333333337,
       583.0,
       209.33333333333334
     ],
     "cardExplainMouse_C": [
       1313.0,
-      610.6666666666667,
+      620.6666666666667,
       583.0,
       209.33333333333334
     ],
-    "cardLeftColumn_A": [
-      1321.0,
-      168.0,
-      314.14,
-      193.33333333333334
-    ],
-    "cardLeftColumn_B": [
-      1321.0,
-      393.33333333333337,
-      314.14,
-      193.33333333333334
-    ],
-    "cardLeftColumn_C": [
-      1321.0,
-      618.6666666666667,
-      314.14,
-      193.33333333333334
-    ],
-    "cardRightColumn_A": [
-      1643.1399999999999,
-      168.0,
-      244.85999999999999,
-      193.33333333333334
-    ],
-    "cardRightColumn_B": [
-      1643.1399999999999,
-      393.33333333333337,
-      244.85999999999999,
-      193.33333333333334
-    ],
-    "cardRightColumn_C": [
-      1643.1399999999999,
-      618.6666666666667,
-      244.85999999999999,
-      193.33333333333334
-    ],
-    "cardText_system_cpu_percent": [
-      1643.1399999999999,
-      254.0,
-      244.85999999999999,
-      20.0
-    ],
-    "cardWindowNote_": [
-      1643.1399999999999,
-      618.6666666666667,
-      244.85999999999999,
-      20.0
-    ],
-    "cardWindowNote_system_cpu_percent": [
-      1643.1399999999999,
-      168.0,
-      244.85999999999999,
-      20.0
-    ],
     "card_A": [
       1313.0,
-      160.0,
+      170.0,
       583.0,
       209.33333333333334
     ],
     "card_B": [
       1313.0,
-      385.33333333333337,
+      395.33333333333337,
       583.0,
       209.33333333333334
     ],
     "card_C": [
       1313.0,
-      610.6666666666667,
+      620.6666666666667,
       583.0,
       209.33333333333334
     ],
     "deviceBadgeText": [
-      1741.0,
-      57.0,
-      143.0,
-      30.0
+      1641.0,
+      32.0,
+      243.0,
+      49.0
     ],
     "drawerLoader": [
       1306.0,
@@ -191,101 +178,35 @@
       614.0,
       1080.0
     ],
-    "eventCountRow": [
-      122.0,
-      931.0,
-      747.0,
-      20.0
+    "errorText": [
+      32.0,
+      32.0,
+      1856.0,
+      49.0
     ],
-    "explainButtonMouse_cpu": [
-      1592.0,
-      1012.0,
-      45.0,
-      34.0
+    "explainOpenButton": [
+      1184.0,
+      24.0,
+      429.0,
+      65.0
     ],
-    "explainButtonMouse_gpu": [
-      1645.0,
-      1012.0,
-      46.0,
-      34.0
+    "explainOpenButtonText": [
+      1192.0,
+      32.0,
+      413.0,
+      49.0
     ],
-    "explainButtonMouse_metrics": [
-      1798.0,
-      1012.0,
-      74.0,
-      34.0
-    ],
-    "explainButtonMouse_tracking": [
-      1442.0,
-      1012.0,
-      79.0,
-      34.0
-    ],
-    "explainButtonMouse_utilisation": [
-      1699.0,
-      1012.0,
-      91.0,
-      34.0
-    ],
-    "explainButtonMouse_yolo": [
-      1385.0,
-      1012.0,
-      49.0,
-      34.0
-    ],
-    "explainButtonMouse_zone": [
-      1529.0,
-      1012.0,
-      55.0,
-      34.0
-    ],
-    "explainButton_cpu": [
-      1592.0,
-      1012.0,
-      45.0,
-      34.0
-    ],
-    "explainButton_gpu": [
-      1645.0,
-      1012.0,
-      46.0,
-      34.0
-    ],
-    "explainButton_metrics": [
-      1798.0,
-      1012.0,
-      74.0,
-      34.0
-    ],
-    "explainButton_tracking": [
-      1442.0,
-      1012.0,
-      79.0,
-      34.0
-    ],
-    "explainButton_utilisation": [
-      1699.0,
-      1012.0,
-      91.0,
-      34.0
-    ],
-    "explainButton_yolo": [
-      1385.0,
-      1012.0,
-      49.0,
-      34.0
-    ],
-    "explainButton_zone": [
-      1529.0,
-      1012.0,
-      55.0,
-      34.0
+    "explainOpenMouse": [
+      1184.0,
+      24.0,
+      429.0,
+      65.0
     ],
     "heroTile": [
       24.0,
-      160.0,
+      170.0,
       1273.0,
-      538.4
+      498.8
     ],
     "liveScreen": [
       0.0,
@@ -293,377 +214,297 @@
       1920.0,
       1080.0
     ],
-    "stalenessText": [
-      194.0,
-      1019.0,
-      170.0,
-      20.0
-    ],
-    "streamActivityText_A": [
-      1321.0,
-      312.0,
-      314.14,
-      40.0
-    ],
-    "streamActivityText_B": [
-      1321.0,
-      537.3333333333334,
-      314.14,
-      40.0
-    ],
-    "streamActivityText_C": [
-      1321.0,
-      762.6666666666667,
-      314.14,
-      40.0
+    "recordedFootageText": [
+      36.0,
+      32.0,
+      641.0,
+      49.0
     ],
     "streamAgeText_A": [
       1321.0,
-      202.0,
-      314.14,
-      38.0
+      235.0,
+      567.0,
+      63.0
     ],
     "streamAgeText_B": [
       1321.0,
-      427.33333333333337,
-      314.14,
-      38.0
+      460.33333333333337,
+      567.0,
+      63.0
     ],
     "streamAgeText_C": [
       1321.0,
-      652.6666666666667,
-      314.14,
-      38.0
-    ],
-    "streamBacklogText_A": [
-      1643.1399999999999,
-      206.0,
-      244.85999999999999,
-      20.0
-    ],
-    "streamBacklogText_B": [
-      1643.1399999999999,
-      431.33333333333337,
-      244.85999999999999,
-      20.0
-    ],
-    "streamBacklogText_C": [
-      1643.1399999999999,
-      656.6666666666667,
-      244.85999999999999,
-      20.0
+      685.6666666666667,
+      567.0,
+      63.0
     ],
     "streamBadgeBox_A": [
-      1643.1399999999999,
-      168.0,
-      244.85999999999999,
-      34.0
+      1321.0,
+      302.0,
+      567.0,
+      57.0
     ],
     "streamBadgeBox_B": [
-      1643.1399999999999,
-      393.33333333333337,
-      244.85999999999999,
-      34.0
+      1321.0,
+      527.3333333333334,
+      567.0,
+      57.0
     ],
     "streamBadgeBox_C": [
-      1643.1399999999999,
-      618.6666666666667,
-      244.85999999999999,
-      34.0
+      1321.0,
+      752.6666666666667,
+      567.0,
+      57.0
     ],
     "streamBadgeText_A": [
-      1651.1399999999999,
-      168.0,
-      228.85999999999999,
-      34.0
+      1329.0,
+      302.0,
+      551.0,
+      57.0
     ],
     "streamBadgeText_B": [
-      1651.1399999999999,
-      393.33333333333337,
-      228.85999999999999,
-      34.0
+      1329.0,
+      527.3333333333334,
+      551.0,
+      57.0
     ],
     "streamBadgeText_C": [
-      1651.1399999999999,
-      618.6666666666667,
-      228.85999999999999,
-      34.0
-    ],
-    "streamRateText_A": [
-      1643.1399999999999,
-      230.0,
-      244.85999999999999,
-      20.0
-    ],
-    "streamRateText_B": [
-      1643.1399999999999,
-      455.33333333333337,
-      244.85999999999999,
-      20.0
-    ],
-    "streamRateText_C": [
-      1643.1399999999999,
-      680.6666666666667,
-      244.85999999999999,
-      20.0
+      1329.0,
+      752.6666666666667,
+      551.0,
+      57.0
     ],
     "streamReasonText_A": [
-      1643.1399999999999,
-      168.0,
-      244.85999999999999,
-      20.0
+      24.0,
+      846.0,
+      0.0,
+      49.0
     ],
     "streamReasonText_B": [
-      1643.1399999999999,
-      393.33333333333337,
-      244.85999999999999,
-      20.0
+      24.0,
+      903.0,
+      0.0,
+      49.0
     ],
     "streamReasonText_C": [
-      1643.1399999999999,
-      704.6666666666667,
-      244.85999999999999,
-      40.0
+      24.0,
+      960.0,
+      1872.0,
+      49.0
     ],
     "streamStaleText_A": [
-      1321.0,
-      244.0,
-      314.14,
-      40.0
+      24.0,
+      846.0,
+      1872.0,
+      49.0
     ],
     "streamStaleText_B": [
-      1321.0,
-      469.33333333333337,
-      314.14,
-      40.0
+      24.0,
+      903.0,
+      1872.0,
+      49.0
     ],
     "streamStaleText_C": [
-      1321.0,
-      694.6666666666667,
-      314.14,
-      40.0
-    ],
-    "streamWindowText_A": [
-      1321.0,
-      288.0,
-      314.14,
-      20.0
-    ],
-    "streamWindowText_B": [
-      1321.0,
-      513.3333333333334,
-      314.14,
-      20.0
-    ],
-    "streamWindowText_C": [
-      1321.0,
-      738.6666666666667,
-      314.14,
-      20.0
+      24.0,
+      960.0,
+      0.0,
+      49.0
     ],
     "thumb_B": [
       24.0,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
     ],
     "thumb_C": [
       668.5,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
     ],
     "tileCaptionText_A": [
       32.0,
-      671.4,
+      613.8,
       0.0,
-      20.0
+      49.0
     ],
     "tileCaptionText_B": [
       32.0,
-      793.0,
-      135.0,
-      20.0
+      775.0,
+      329.0,
+      49.0
     ],
     "tileCaptionText_C": [
       676.5,
-      793.0,
-      207.0,
-      20.0
+      775.0,
+      503.0,
+      49.0
     ],
     "tileImage_A": [
       24.0,
-      160.0,
+      170.0,
       1273.0,
-      538.4
+      498.8
     ],
     "tileImage_B": [
       24.0,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
     ],
     "tileImage_C": [
       668.5,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
     ],
     "tileNoFrameText_A": [
       32.0,
-      419.0,
+      394.0,
       1257.0,
-      20.0
+      49.0
     ],
     "tileNoFrameText_B": [
       32.0,
-      757.4,
+      702.8,
       612.5,
-      20.0
+      49.0
     ],
     "tileNoFrameText_C": [
       676.5,
-      757.4,
+      702.8,
       612.5,
-      20.0
+      49.0
     ],
     "tileNoFrame_A": [
       24.0,
-      160.0,
+      170.0,
       1273.0,
-      538.4
+      498.8
     ],
     "tileNoFrame_B": [
       24.0,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
     ],
     "tileNoFrame_C": [
       668.5,
-      714.4,
+      684.8,
       628.5,
-      105.60000000000001
+      145.2
+    ],
+    "verdictRow_A": [
+      24.0,
+      846.0,
+      1872.0,
+      49.0
+    ],
+    "verdictRow_B": [
+      24.0,
+      903.0,
+      1872.0,
+      49.0
+    ],
+    "verdictRow_C": [
+      24.0,
+      960.0,
+      1872.0,
+      49.0
     ]
   },
   "font_pixels": {
-    "cardText_system_cpu_percent": 18,
-    "cardWindowNote_": 18,
-    "cardWindowNote_system_cpu_percent": 18,
-    "deviceBadgeText": 26,
-    "eventCountRow": 18,
-    "stalenessText": 18,
-    "streamActivityText_A": 18,
-    "streamActivityText_B": 18,
-    "streamActivityText_C": 18,
-    "streamAgeText_A": 34,
-    "streamAgeText_B": 34,
-    "streamAgeText_C": 34,
-    "streamBacklogText_A": 18,
-    "streamBacklogText_B": 18,
-    "streamBacklogText_C": 18,
-    "streamBadgeText_A": 18,
-    "streamBadgeText_B": 18,
-    "streamBadgeText_C": 18,
-    "streamRateText_A": 18,
-    "streamRateText_B": 18,
-    "streamRateText_C": 18,
-    "streamReasonText_A": 18,
-    "streamReasonText_B": 18,
-    "streamReasonText_C": 18,
-    "streamStaleText_A": 18,
-    "streamStaleText_B": 18,
-    "streamStaleText_C": 18,
-    "streamWindowText_A": 18,
-    "streamWindowText_B": 18,
-    "streamWindowText_C": 18,
-    "tileCaptionText_A": 18,
-    "tileCaptionText_B": 18,
-    "tileCaptionText_C": 18,
-    "tileNoFrameText_A": 18,
-    "tileNoFrameText_B": 18,
-    "tileNoFrameText_C": 18
+    "appTitle": 44,
+    "cameraName_A": 48,
+    "cameraName_B": 48,
+    "cameraName_C": 48,
+    "cameraState_A": 44,
+    "cameraState_B": 44,
+    "cameraState_C": 44,
+    "deviceBadgeText": 44,
+    "errorText": 44,
+    "explainOpenButtonText": 44,
+    "recordedFootageText": 44,
+    "streamAgeText_A": 56,
+    "streamAgeText_B": 56,
+    "streamAgeText_C": 56,
+    "streamBadgeText_A": 44,
+    "streamBadgeText_B": 44,
+    "streamBadgeText_C": 44,
+    "streamReasonText_A": 44,
+    "streamReasonText_B": 44,
+    "streamReasonText_C": 44,
+    "streamStaleText_A": 44,
+    "streamStaleText_B": 44,
+    "streamStaleText_C": 44,
+    "tileCaptionText_A": 44,
+    "tileCaptionText_B": 44,
+    "tileCaptionText_C": 44,
+    "tileNoFrameText_A": 44,
+    "tileNoFrameText_B": 44,
+    "tileNoFrameText_C": 44
   },
   "frames_settled": 0,
   "geometry_unavailable": [],
   "glyph_pixels": {
-    "attractLoader": 5232378,
-    "cardExplainMouse_A": 487388,
-    "cardExplainMouse_B": 488554,
-    "cardExplainMouse_C": 488554,
-    "cardLeftColumn_A": 242408,
-    "cardLeftColumn_B": 243036,
-    "cardLeftColumn_C": 243036,
-    "cardRightColumn_A": 188754,
-    "cardRightColumn_B": 189243,
-    "cardRightColumn_C": 189243,
-    "cardText_system_cpu_percent": 19560,
-    "cardWindowNote_": 19560,
-    "cardWindowNote_system_cpu_percent": 19560,
-    "card_A": 487388,
-    "card_B": 488554,
-    "card_C": 488554,
-    "deviceBadgeText": 17160,
-    "drawerLoader": 2649093,
-    "eventCountRow": 59760,
-    "explainButtonMouse_cpu": 6120,
-    "explainButtonMouse_gpu": 6256,
-    "explainButtonMouse_metrics": 10064,
-    "explainButtonMouse_tracking": 10744,
-    "explainButtonMouse_utilisation": 12376,
-    "explainButtonMouse_yolo": 6664,
-    "explainButtonMouse_zone": 7480,
-    "explainButton_cpu": 6120,
-    "explainButton_gpu": 6256,
-    "explainButton_metrics": 10064,
-    "explainButton_tracking": 10744,
-    "explainButton_utilisation": 12376,
-    "explainButton_yolo": 6664,
-    "explainButton_zone": 7480,
-    "heroTile": 28364,
-    "liveScreen": 5232378,
-    "stalenessText": 13600,
-    "streamActivityText_A": 50240,
-    "streamActivityText_B": 50240,
-    "streamActivityText_C": 50240,
-    "streamAgeText_A": 47728,
-    "streamAgeText_B": 47728,
-    "streamAgeText_C": 47728,
-    "streamBacklogText_A": 19560,
-    "streamBacklogText_B": 19560,
-    "streamBacklogText_C": 19560,
-    "streamBadgeBox_A": 33252,
-    "streamBadgeBox_B": 33252,
-    "streamBadgeBox_C": 33252,
-    "streamBadgeText_A": 31076,
-    "streamBadgeText_B": 31076,
-    "streamBadgeText_C": 31076,
-    "streamRateText_A": 19560,
-    "streamRateText_B": 19560,
-    "streamRateText_C": 19560,
-    "streamReasonText_A": 19560,
-    "streamReasonText_B": 19560,
-    "streamReasonText_C": 39120,
-    "streamStaleText_A": 50240,
-    "streamStaleText_B": 50240,
-    "streamStaleText_C": 50240,
-    "streamWindowText_A": 25120,
-    "streamWindowText_B": 25120,
-    "streamWindowText_C": 25120,
-    "thumb_B": 94082,
-    "thumb_C": 93995,
+    "appTitle": 30559,
+    "attractLoader": 5279249,
+    "cameraName_A": 45792,
+    "cameraName_B": 46004,
+    "cameraName_C": 46640,
+    "cameraState_A": 22344,
+    "cameraState_B": 22344,
+    "cameraState_C": 20384,
+    "cardColumn_A": 437724,
+    "cardColumn_B": 438858,
+    "cardColumn_C": 438858,
+    "cardExplainMouse_A": 487154,
+    "cardExplainMouse_B": 486006,
+    "cardExplainMouse_C": 487160,
+    "card_A": 487154,
+    "card_B": 486006,
+    "card_C": 487160,
+    "deviceBadgeText": 35762,
+    "drawerLoader": 1597264,
+    "errorText": 282339,
+    "explainOpenButton": 111248,
+    "explainOpenButtonText": 80948,
+    "explainOpenMouse": 111248,
+    "heroTile": 2538362,
+    "liveScreen": 5279249,
+    "recordedFootageText": 125636,
+    "streamAgeText_A": 142884,
+    "streamAgeText_B": 142884,
+    "streamAgeText_C": 142884,
+    "streamBadgeBox_A": 129276,
+    "streamBadgeBox_B": 129276,
+    "streamBadgeBox_C": 129276,
+    "streamBadgeText_A": 125628,
+    "streamBadgeText_B": 125628,
+    "streamBadgeText_C": 125628,
+    "streamReasonText_A": 0,
+    "streamReasonText_B": 0,
+    "streamReasonText_C": 48825,
+    "streamStaleText_A": 63372,
+    "streamStaleText_B": 64755,
+    "streamStaleText_C": 0,
+    "thumb_B": 364530,
+    "thumb_C": 364240,
     "tileCaptionText_A": 0,
-    "tileCaptionText_B": 10800,
-    "tileCaptionText_C": 16560,
-    "tileImage_A": 28364,
-    "tileImage_B": 94082,
-    "tileImage_C": 93995,
-    "tileNoFrameText_A": 4336,
-    "tileNoFrameText_B": 4435,
-    "tileNoFrameText_C": 4348,
-    "tileNoFrame_A": 28364,
-    "tileNoFrame_B": 94082,
-    "tileNoFrame_C": 93995
+    "tileCaptionText_B": 64484,
+    "tileCaptionText_C": 98588,
+    "tileImage_A": 2538362,
+    "tileImage_B": 364530,
+    "tileImage_C": 364240,
+    "tileNoFrameText_A": 246372,
+    "tileNoFrameText_B": 120050,
+    "tileNoFrameText_C": 120050,
+    "tileNoFrame_A": 2538362,
+    "tileNoFrame_B": 364530,
+    "tileNoFrame_C": 364240,
+    "verdictRow_A": 63372,
+    "verdictRow_B": 64755,
+    "verdictRow_C": 48825
   },
   "glyph_scale": [
     2.0,
@@ -671,7 +512,7 @@
   ],
   "height": 1080,
   "image_dpr": 1.0,
-  "items_seen": 79,
+  "items_seen": 58,
   "json_path": null,
   "mode": "seed",
   "opened_during_read": [],
@@ -679,27 +520,36 @@
   "pixel_height": 2160,
   "pixel_width": 3840,
   "png_path": "docs\\qualification\\m3-capture\\200pct.png",
-  "qobject_child_count": 85,
+  "qobject_child_count": 71,
   "qobject_hits": [
+    "recordedFootageText",
+    "appTitle",
     "deviceBadgeText",
     "heroTile",
-    "tileNoFrameText_A",
-    "eventCountRow"
+    "tileNoFrameText_A"
   ],
   "qobject_missed": [
     "card_A",
     "card_B",
     "card_C",
+    "cameraName_A",
+    "cameraName_B",
+    "cameraName_C",
+    "cameraState_A",
+    "cameraState_B",
+    "cameraState_C",
     "streamAgeText_A",
     "streamAgeText_B",
     "streamAgeText_C",
     "streamStaleText_A",
-    "streamStaleText_C",
-    "streamWindowText_A",
-    "streamBacklogText_A",
-    "streamRateText_A",
+    "streamStaleText_B",
     "streamBadgeText_A",
+    "streamBadgeText_B",
+    "streamBadgeText_C",
     "streamReasonText_C",
+    "verdictRow_A",
+    "verdictRow_B",
+    "verdictRow_C",
     "thumb_B",
     "thumb_C",
     "tileCaptionText_B",
@@ -720,36 +570,29 @@
   "settle_polls": 1,
   "settled": true,
   "strings": {
-    "cardText_system_cpu_percent": "no CPU sample yet",
-    "cardWindowNote_": "measured unavailable",
-    "cardWindowNote_system_cpu_percent": "measured unavailable",
+    "appTitle": "Intel Edge AI Roadshow",
+    "cameraName_A": "Camera A",
+    "cameraName_B": "Camera B",
+    "cameraName_C": "Camera C",
+    "cameraState_A": "active",
+    "cameraState_B": "active",
+    "cameraState_C": "failed",
     "deviceBadgeText": "device: CPU",
-    "eventCountRow": "zone_occupancy unavailable    candidate_transfer unavailable    candidate_return unavailable",
-    "stalenessText": "telemetry unavailable",
-    "streamActivityText_A": "analysis fps 13.44 fps  \u00b7  frame age p50 11.7 s  p95 12.3 s",
-    "streamActivityText_B": "analysis fps 13.56 fps  \u00b7  frame age p50 10.7 s  p95 11.4 s",
-    "streamActivityText_C": "analysis fps 13.50 fps  \u00b7  frame age p50 11.1 s  p95 11.9 s",
+    "errorText": "",
+    "explainOpenButtonText": "what the boxes mean",
+    "recordedFootageText": "Recorded footage \u2022 live inference",
     "streamAgeText_A": "11.7 s",
     "streamAgeText_B": "10.7 s",
     "streamAgeText_C": "11.1 s",
-    "streamBacklogText_A": "backlog 187 frames",
-    "streamBacklogText_B": "backlog 173 frames",
-    "streamBacklogText_C": "backlog 180 frames",
     "streamBadgeText_A": "CPU",
     "streamBadgeText_B": "CPU",
     "streamBadgeText_C": "no device is running",
-    "streamRateText_A": "analysis 13.44 fps",
-    "streamRateText_B": "analysis 13.56 fps",
-    "streamRateText_C": "analysis 13.50 fps",
     "streamReasonText_A": "",
     "streamReasonText_B": "",
-    "streamReasonText_C": "route transition to generation 1 was not... +2291 more",
-    "streamStaleText_A": "STALE - this picture is 11.7 s old; the limit is 2 s",
-    "streamStaleText_B": "STALE - this picture is 10.7 s old; the limit is 2 s",
-    "streamStaleText_C": "STALE - this picture is 11.1 s old; the limit is 2 s",
-    "streamWindowText_A": "window: 256 analysed frames",
-    "streamWindowText_B": "window: 256 analysed frames",
-    "streamWindowText_C": "window: 256 analysed frames",
+    "streamReasonText_C": "Camera C: route transition to generation 1 was not... +2291 more",
+    "streamStaleText_A": "Camera A: STALE - this picture is 11.7 s old; the limit is 2 s",
+    "streamStaleText_B": "Camera B: STALE - this picture is 10.7 s old; the limit is 2 s",
+    "streamStaleText_C": "",
     "tileCaptionText_A": "",
     "tileCaptionText_B": "Camera B \u00b7 CPU",
     "tileCaptionText_C": "Camera C \u00b7 not confirmed",
@@ -758,69 +601,47 @@
     "tileNoFrameText_C": "no frame from Camera C yet"
   },
   "text_property": {
+    "appTitle": true,
     "attractLoader": false,
+    "cameraName_A": true,
+    "cameraName_B": true,
+    "cameraName_C": true,
+    "cameraState_A": true,
+    "cameraState_B": true,
+    "cameraState_C": true,
+    "cardColumn_A": false,
+    "cardColumn_B": false,
+    "cardColumn_C": false,
     "cardExplainMouse_A": false,
     "cardExplainMouse_B": false,
     "cardExplainMouse_C": false,
-    "cardLeftColumn_A": false,
-    "cardLeftColumn_B": false,
-    "cardLeftColumn_C": false,
-    "cardRightColumn_A": false,
-    "cardRightColumn_B": false,
-    "cardRightColumn_C": false,
-    "cardText_system_cpu_percent": true,
-    "cardWindowNote_": true,
-    "cardWindowNote_system_cpu_percent": true,
     "card_A": false,
     "card_B": false,
     "card_C": false,
     "deviceBadgeText": true,
     "drawerLoader": false,
-    "eventCountRow": true,
-    "explainButtonMouse_cpu": false,
-    "explainButtonMouse_gpu": false,
-    "explainButtonMouse_metrics": false,
-    "explainButtonMouse_tracking": false,
-    "explainButtonMouse_utilisation": false,
-    "explainButtonMouse_yolo": false,
-    "explainButtonMouse_zone": false,
-    "explainButton_cpu": false,
-    "explainButton_gpu": false,
-    "explainButton_metrics": false,
-    "explainButton_tracking": false,
-    "explainButton_utilisation": false,
-    "explainButton_yolo": false,
-    "explainButton_zone": false,
+    "errorText": true,
+    "explainOpenButton": false,
+    "explainOpenButtonText": true,
+    "explainOpenMouse": false,
     "heroTile": false,
     "liveScreen": false,
-    "stalenessText": true,
-    "streamActivityText_A": true,
-    "streamActivityText_B": true,
-    "streamActivityText_C": true,
+    "recordedFootageText": true,
     "streamAgeText_A": true,
     "streamAgeText_B": true,
     "streamAgeText_C": true,
-    "streamBacklogText_A": true,
-    "streamBacklogText_B": true,
-    "streamBacklogText_C": true,
     "streamBadgeBox_A": false,
     "streamBadgeBox_B": false,
     "streamBadgeBox_C": false,
     "streamBadgeText_A": true,
     "streamBadgeText_B": true,
     "streamBadgeText_C": true,
-    "streamRateText_A": true,
-    "streamRateText_B": true,
-    "streamRateText_C": true,
     "streamReasonText_A": true,
     "streamReasonText_B": true,
     "streamReasonText_C": true,
     "streamStaleText_A": true,
     "streamStaleText_B": true,
     "streamStaleText_C": true,
-    "streamWindowText_A": true,
-    "streamWindowText_B": true,
-    "streamWindowText_C": true,
     "thumb_B": false,
     "thumb_C": false,
     "tileCaptionText_A": true,
@@ -834,74 +655,55 @@
     "tileNoFrameText_C": true,
     "tileNoFrame_A": false,
     "tileNoFrame_B": false,
-    "tileNoFrame_C": false
+    "tileNoFrame_C": false,
+    "verdictRow_A": false,
+    "verdictRow_B": false,
+    "verdictRow_C": false
   },
   "truncated": [],
   "unreachable": [],
   "visible": {
+    "appTitle": true,
     "attractLoader": true,
+    "cameraName_A": true,
+    "cameraName_B": true,
+    "cameraName_C": true,
+    "cameraState_A": true,
+    "cameraState_B": true,
+    "cameraState_C": true,
+    "cardColumn_A": true,
+    "cardColumn_B": true,
+    "cardColumn_C": true,
     "cardExplainMouse_A": true,
     "cardExplainMouse_B": true,
     "cardExplainMouse_C": true,
-    "cardLeftColumn_A": true,
-    "cardLeftColumn_B": true,
-    "cardLeftColumn_C": true,
-    "cardRightColumn_A": true,
-    "cardRightColumn_B": true,
-    "cardRightColumn_C": true,
-    "cardText_system_cpu_percent": true,
-    "cardWindowNote_": false,
-    "cardWindowNote_system_cpu_percent": false,
     "card_A": true,
     "card_B": true,
     "card_C": true,
     "deviceBadgeText": true,
     "drawerLoader": true,
-    "eventCountRow": true,
-    "explainButtonMouse_cpu": true,
-    "explainButtonMouse_gpu": true,
-    "explainButtonMouse_metrics": true,
-    "explainButtonMouse_tracking": true,
-    "explainButtonMouse_utilisation": true,
-    "explainButtonMouse_yolo": true,
-    "explainButtonMouse_zone": true,
-    "explainButton_cpu": true,
-    "explainButton_gpu": true,
-    "explainButton_metrics": true,
-    "explainButton_tracking": true,
-    "explainButton_utilisation": true,
-    "explainButton_yolo": true,
-    "explainButton_zone": true,
+    "errorText": false,
+    "explainOpenButton": true,
+    "explainOpenButtonText": true,
+    "explainOpenMouse": true,
     "heroTile": true,
     "liveScreen": true,
-    "stalenessText": true,
-    "streamActivityText_A": true,
-    "streamActivityText_B": true,
-    "streamActivityText_C": true,
+    "recordedFootageText": true,
     "streamAgeText_A": true,
     "streamAgeText_B": true,
     "streamAgeText_C": true,
-    "streamBacklogText_A": true,
-    "streamBacklogText_B": true,
-    "streamBacklogText_C": true,
     "streamBadgeBox_A": true,
     "streamBadgeBox_B": true,
     "streamBadgeBox_C": true,
     "streamBadgeText_A": true,
     "streamBadgeText_B": true,
     "streamBadgeText_C": true,
-    "streamRateText_A": true,
-    "streamRateText_B": true,
-    "streamRateText_C": true,
     "streamReasonText_A": false,
     "streamReasonText_B": false,
     "streamReasonText_C": true,
     "streamStaleText_A": true,
     "streamStaleText_B": true,
-    "streamStaleText_C": true,
-    "streamWindowText_A": true,
-    "streamWindowText_B": true,
-    "streamWindowText_C": true,
+    "streamStaleText_C": false,
     "thumb_B": true,
     "thumb_C": true,
     "tileCaptionText_A": false,
@@ -915,7 +717,10 @@
     "tileNoFrameText_C": true,
     "tileNoFrame_A": true,
     "tileNoFrame_B": true,
-    "tileNoFrame_C": true
+    "tileNoFrame_C": true,
+    "verdictRow_A": true,
+    "verdictRow_B": true,
+    "verdictRow_C": true
   },
   "walk_complete": true,
   "walk_failures": [],

@@ -1,21 +1,46 @@
-// Main.qml - the booth screen.
+// Main.qml - the booth screen, sized to be read from three metres. **M4 Task 1.**
 //
-// 1920 x 1080 logical canvas. ~68% video / 32% metrics across, and 12% header /
-// 66% main / 22% pipeline+controls down, per the design's section 9. Every one of those
-// numbers comes from `Theme`, which reads `app/theme.py`; there is no pixel count in this
-// file.
+// ## What changed, and why it is a removal rather than a font size
 //
-// What is deliberately always visible:
+// M3's readability review measured the screen at 3 m and found that **nothing on it cleared
+// 16 arcmin**, the ISO 9241-3 minimum for comfortable sustained reading: the frame-age
+// headline was 8.5', and every 18 px line was below the acuity floor. The arithmetic is
+// unforgiving: at 3 m a character needs ~14 mm of cap height, which on the stated booth
+// panel (`app/theme.py`) is a ~44 px Arial - **2.4x** the 18 px this screen shipped. Three
+// cameras' worth of 44 px text does not fit beside the pictures at the old density, so the
+// always-visible screen **lost rows** instead of gaining lines:
 //
-//   - "Recorded footage \u2022 live inference", top left, unconditional.
-//   - The confirmed device badge, which reads "pending" until an inference has proved a
-//     placement and "failed - no device is running" once the route has given up.
-//   - The error line, whenever there is one. It is never cleared implicitly.
+//   moved into the presenter drawer (`PresenterDrawer.qml`), where a presenter looks
+//   closely: **per-camera backlog, analysis rate, frame-age window, activity line, device
+//   utilisation figure and telemetry averaging window; the event counts; the `status:` and
+//   `telemetry fresh` lines; the six-stage pipeline strip; the reduction note (it is stated
+//   verbatim there, and the header copy was elided mid-word); and the seven 18 px `?` keys,
+//   whose surface is the drawer and whose touch entry point is now one 44 px button.**
 //
-// What is deliberately NOT here: a GPU or NPU utilisation number. Utilisation is not
-// measurable on this machine and a machine-wide peak is not attributable to this process,
-// so those two cards read "Utilization unavailable" and are visibly disabled. See
-// ComputeCard.qml.
+//   removed outright: **`PipelineStrip.qml`.** Twelve 18 px labels cannot be legible at 3 m
+//   and the stage list does not fit the drawer's width without eliding; the topology is
+//   stated in words in the drawer instead.
+//
+// What is left on the always-visible screen is what a passer-by is entitled to read: the
+// mandatory recorded-footage label, the confirmed-device badge, three live pictures each
+// captioned with its own camera and device, each camera's frame age as the largest figure
+// on the screen, its device badge, and one verdict line per camera carrying the staleness
+// sentence or the camera's own stated failure reason.
+//
+// ## The geometry
+//
+// 1920 x 1080 logical canvas, unchanged. 13% header / 66% main / 21% footer, and 68% video
+// / 32% metrics - the main band's 66% and the video column's 68% are the design's section 9
+// proportions and are unchanged; the header gained 1% and the footer lost 1% because the
+// footer now holds three verdict lines instead of the pipeline strip and the control bar.
+//
+// No pixel count is in this file: every size and spacing is a token from `app/theme.py`.
+//
+// ## What is deliberately still always visible
+//
+// The error line, whenever there is one. It is never cleared implicitly, and it is 44 px
+// like everything else: an error that disappears, or that nobody can read, is an error
+// nobody saw.
 
 import QtQuick
 import QtQuick.Window
@@ -29,15 +54,9 @@ Window {
     color: Theme.TEXT_ON_PANEL
     title: "Intel Edge AI Roadshow - " + bridgeUi.recordedFootageLabel
 
-    // The pinned explanation panel. Escape closes it; a click on a card's "?" pins it.
-    // Long copy must never obscure the hero, so it sits over the metrics column.
-    property string pinnedExplanationKey: ""
-    readonly property string pinnedExplanationText: pinnedExplanationKey.length > 0
-        ? bridgeUi.explain(pinnedExplanationKey) : ""
-
     // **The presenter drawer (M3 Task 5).** A display state, like attract mode: the drawer
     // is an overlay anchored to the window's right edge, so opening it cannot reflow the
-    // hero, the tiles, the badges or the staleness line. `bridgeUi.drawerWidth` is the
+    // hero, the tiles, the badges or the verdict lines. `bridgeUi.drawerWidth` is the
     // width, from `app/theme.py`, so no pixel count lives in this file.
     property bool drawerOpen: false
 
@@ -54,21 +73,12 @@ Window {
         // Task 4's attract mode hides this rectangle; the attract render asserts it is not
         // visible, which is what makes "no live number is shown" a checkable claim.
         objectName: "liveScreen"
-        // **Hidden while attract mode is up (M3 Task 4).** Attract mode must show no live
-        // number, and the only way to be sure of that is for the live screen not to be on
-        // screen at all. The overlay below shows recorded, dated headlines instead, and
-        // this binding restores the live screen the moment attract is left - it is derived
-        // from the one flag attract mode owns, so nothing had to be saved and restored.
         visible: !bridge.attract_active
-        // The window's own background. Distinct from every text colour: this fill was
-        // once `Theme.TEXT_ON_PANEL` by accident, and the first render came back with
-        // 842178 near-white pixels - a light screen with dark text, which is legible and
-        // completely wrong for a booth (measured on the offscreen render).
         color: Theme.BG
 
         // The three bands, as fractions of the height that is actually available.
         //
-        // **Not** `CANVAS_HEIGHT * fraction`: that is 1080 * (0.12 + 0.66 + 0.22) = 1080
+        // **Not** `CANVAS_HEIGHT * fraction`: that is 1080 * (0.13 + 0.66 + 0.21) = 1080
         // of band, plus 2 * MARGIN and 2 * GAP of chrome, which is 1128 px in a 1080 px
         // canvas. The first offscreen render lost the bottom of the control bar off the
         // screen (measured: the "status:" line clipped at the canvas edge), which is the
@@ -85,112 +95,180 @@ Window {
             spacing: Theme.GAP
 
             // =====================================================================
-            // Header - 12% of the available height
+            // Header - 13% of the available height
             // =====================================================================
             Item {
                 width: parent.width
                 height: screen.headerBand
 
-                Row {
+                Column {
                     anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: Theme.SPACING.lg
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    spacing: Theme.SPACING.sm
 
-                    // THE MANDATORY LABEL. Unconditional, never inside a conditional.
+                    Item {
+                        width: parent.width
+                        height: labelBox.height
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: Theme.SPACING.lg
+
+                            // THE MANDATORY LABEL. Unconditional, never inside a conditional.
+                            Rectangle {
+                                id: labelBox
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: recordedFootageText.implicitWidth + Theme.MARGIN
+                                height: recordedFootageText.implicitHeight
+                                        + Theme.SPACING.sm * 2
+                                radius: Theme.RADIUS
+                                color: Theme.BG_PANEL_DEEP
+                                border.color: Theme.ACCENT
+                                border.width: 2
+
+                                Text {
+                                    id: recordedFootageText
+                                    // **Named (M4).** Until this task the mandatory label
+                                    // had an `id` and no `objectName`, so the harness - which
+                                    // reads `objectName`s - could not see the one string the
+                                    // spec requires to be unconditional. A label nobody can
+                                    // measure is a label nobody is checking.
+                                    objectName: "recordedFootageText"
+                                    anchors.centerIn: parent
+                                    text: bridgeUi.recordedFootageLabel
+                                    color: Theme.TEXT_ON_PANEL
+                                    font.family: Theme.FONT_FAMILY
+                                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                                    font.bold: true
+                                }
+                            }
+
+                            Text {
+                                id: appTitleText
+                                objectName: "appTitle"
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Intel Edge AI Roadshow"
+                                color: Theme.TEXT_ON_PANEL
+                                font.family: Theme.FONT_FAMILY
+                                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                                font.bold: true
+                            }
+                        }
+
+                        Row {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: Theme.SPACING.md
+
+                            // **The touch entry point to the explanation surface.** M1's
+                            // lesson was that a booth machine is often touch-only and a
+                            // hover-only affordance is unreachable there, so the drawer needs
+                            // a button as well as F1. One button, not seven 18 px keys: the
+                            // keys are all inside the drawer, and at 3 m a 44 px entry point
+                            // is reachable while a 45 px-wide `cpu` chip was not.
+                            Rectangle {
+                                objectName: "explainOpenButton"
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: explainOpenText.implicitWidth + Theme.SPACING.md
+                                height: explainOpenText.implicitHeight
+                                        + Theme.SPACING.sm * 2
+                                radius: Theme.RADIUS
+                                color: window.drawerOpen ? Theme.ACCENT : Theme.BG_PANEL_DEEP
+                                border.color: Theme.BORDER
+                                border.width: 2
+
+                                Text {
+                                    id: explainOpenText
+                                    objectName: "explainOpenButtonText"
+                                    anchors.centerIn: parent
+                                    text: "what the boxes mean"
+                                    color: window.drawerOpen
+                                        ? Theme.TEXT_ON_ACCENT : Theme.COLOR_NEUTRAL
+                                    font.family: Theme.FONT_FAMILY
+                                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                                }
+
+                                MouseArea {
+                                    objectName: "explainOpenMouse"
+                                    anchors.fill: parent
+                                    onClicked: window.drawerOpen = true
+                                }
+                            }
+
+                            Rectangle {
+                                id: routeBadge
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: routeText.implicitWidth + Theme.MARGIN
+                                height: routeText.implicitHeight + Theme.SPACING.sm * 2
+                                radius: Theme.RADIUS
+                                // Green only when a placement is confirmed. "pending" and
+                                // "failed" are the neutral and the bad colour respectively,
+                                // and both are also words.
+                                color: bridgeUi.deviceConfirmed
+                                    ? Theme.COLOR_GOOD : Theme.BG_PANEL_DEEP
+                                border.color: bridge.route_state === "failed"
+                                    ? Theme.COLOR_BAD
+                                    : (bridgeUi.deviceConfirmed
+                                        ? Theme.COLOR_GOOD : Theme.BORDER)
+                                border.width: 2
+
+                                Text {
+                                    id: routeText
+                                    // The one nameable handle on the device badge. It exists
+                                    // so a test can read the **QML-bound** string after
+                                    // `set_route` rather than reading the bridge's Python
+                                    // property - the badge was `constant=True` with no notify
+                                    // signal, so the Python side updated and the screen never
+                                    // did, and only a read of the bound text can tell the two
+                                    // apart.
+                                    objectName: "deviceBadgeText"
+                                    anchors.centerIn: parent
+                                    text: "device: " + bridgeUi.deviceBadge
+                                    color: bridgeUi.deviceConfirmed
+                                        ? Theme.TEXT_ON_ACCENT : Theme.COLOR_NEUTRAL
+                                    font.family: Theme.FONT_FAMILY
+                                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                                    font.bold: true
+                                }
+                            }
+                        }
+                    }
+
+                    // The error line, whenever there is one. Visible whenever there is an
+                    // error, and never cleared implicitly: an error that disappears on the
+                    // next good frame is an error nobody saw.
                     Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: recordedLabelText.implicitWidth + Theme.MARGIN
-                        height: recordedLabelText.implicitHeight + Theme.SPACING.md
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        height: errorText.implicitHeight + Theme.SPACING.sm * 2
+                        visible: bridge.error_message.length > 0
                         radius: Theme.RADIUS
                         color: Theme.BG_PANEL_DEEP
-                        border.color: Theme.ACCENT
+                        border.color: Theme.COLOR_BAD
                         border.width: 2
 
                         Text {
-                            id: recordedLabelText
-                            anchors.centerIn: parent
-                            text: bridgeUi.recordedFootageLabel
-                            color: Theme.TEXT_ON_PANEL
+                            id: errorText
+                            objectName: "errorText"
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: Theme.SPACING.sm
+                            anchors.rightMargin: Theme.SPACING.sm
+                            text: bridge.error_message
+                            color: Theme.COLOR_BAD
                             font.family: Theme.FONT_FAMILY
-                            font.pixelSize: Theme.TYPE_LABEL
-                            font.bold: true
+                            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                            elide: Text.ElideRight
                         }
-                    }
-
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Intel Edge AI Roadshow"
-                        color: Theme.TEXT_ON_PANEL
-                        font.family: Theme.FONT_FAMILY
-                        font.pixelSize: Theme.TYPE_HEADLINE
-                        font.bold: true
-                    }
-                }
-
-                // Right of the header: the route badge and the reduction note.
-                Column {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: Theme.SPACING.xs
-
-                    Rectangle {
-                        id: routeBadge
-                        anchors.right: parent.right
-                        width: routeText.implicitWidth + Theme.MARGIN
-                        height: routeText.implicitHeight + Theme.SPACING.sm * 2
-                        radius: Theme.RADIUS
-                        // Green only when a placement is confirmed. "pending" and
-                        // "failed" are the neutral and the bad colour respectively, and
-                        // both are also words.
-                        color: bridgeUi.deviceConfirmed ? Theme.COLOR_GOOD : Theme.BG_PANEL_DEEP
-                        border.color: bridge.route_state === "failed"
-                            ? Theme.COLOR_BAD
-                            : (bridgeUi.deviceConfirmed ? Theme.COLOR_GOOD : Theme.BORDER)
-                        border.width: 2
-
-                        Text {
-                            id: routeText
-                            // The one nameable handle on the device badge. It exists so a
-                            // test can read the **QML-bound** string after `set_route`
-                            // rather than reading the bridge's Python property - the
-                            // badge was `constant=True` with no notify signal, so the
-                            // Python side updated and the screen never did, and only a
-                            // read of the bound text can tell the two apart.
-                            objectName: "deviceBadgeText"
-                            anchors.centerIn: parent
-                            text: "device: " + bridgeUi.deviceBadge
-                            color: bridgeUi.deviceConfirmed
-                                ? Theme.TEXT_ON_ACCENT : Theme.COLOR_NEUTRAL
-                            font.family: Theme.FONT_FAMILY
-                            font.pixelSize: Theme.TYPE_LABEL
-                            font.bold: true
-                        }
-                    }
-
-                    // The reduction note. **Elided to a bound, because it is a sentence and a half and
-                    // the header is 12% of the canvas.** The first render left it
-                    // unbounded and it ran across the whole screen, over the mandatory
-                    // label and off both edges (measured: the note's text starts at x=0
-                    // while its right-anchored column begins at x=1032, so the two
-                    // overlap in the middle). The full text is one click away on the
-                    // `zone` explanation button.
-                    Text {
-                        id: scopeNoteText
-                        anchors.right: parent.right
-                        width: Math.min(implicitWidth,
-                                        screen.width * Theme.VIDEO_WIDTH_FRACTION * 0.42)
-                        horizontalAlignment: Text.AlignRight
-                        text: bridge.scope_note
-                        color: Theme.COLOR_NEUTRAL
-                        font.family: Theme.FONT_FAMILY
-                        font.pixelSize: Theme.TYPE_DETAIL
-                        elide: Text.ElideRight
                     }
                 }
             }
 
             // =====================================================================
-            // Main - 66%:  hero + two thumbnails on the left, cards on the right
+            // Main - 66%:  hero + two thumbnails on the left, cameras on the right
             // =====================================================================
             Item {
                 width: parent.width
@@ -222,23 +300,15 @@ Window {
                         id: hero
                         // **A name on the hero**, so a test can read *which camera it is
                         // showing* as a property rather than inferring it from which tile
-                        // happens to be largest. Without it, a hero hardcoded to camera A
-                        // and a hero following `route_stream` are indistinguishable from
-                        // the scene graph: both leave a `tileImage_A` and a `tileImage_C`
-                        // somewhere on the screen. Measured - that was a surviving mutant.
+                        // happens to be largest.
                         objectName: "heroTile"
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
-                        // The hero takes all but the thumbnail row's height.
                         height: parent.height
-                              - (heroColumn.otherStreams.length > 0 ? thumbRow.height + Theme.GAP : 0)
+                              - (heroColumn.otherStreams.length > 0
+                                 ? thumbRow.height + Theme.GAP : 0)
                         hero: true
-                        // **The bound stream**, which is `DEFAULT_ROUTE_STREAM` ("A")
-                        // until something moves it - a presenter selecting a camera, or
-                        // `UiBridge.set_route_stream`. The badge, the picture and the
-                        // overlay boxes all follow this one value, so nothing on this
-                        // surface can describe a different camera than the one shown.
                         streamId: bridge.route_stream
                         drawOverlay: true
                         explainKey: "yolo"
@@ -251,7 +321,11 @@ Window {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        height: visible ? parent.height * 0.16 : 0
+                        // **A token, not `0.16` inline (M4).** The row has to hold a
+                        // `TYPE_BOOTH_DETAIL` caption bar, and at 16 % a 660 px band gave a
+                        // 105 px thumbnail where the 44 px caption alone was more than half
+                        // of the picture.
+                        height: visible ? parent.height * Theme.THUMB_ROW_FRACTION : 0
 
                         Row {
                             anchors.fill: parent
@@ -281,8 +355,6 @@ Window {
                                     // `confirmed: ('GPU.0',)` and whose picture above the
                                     // caption was real. Nothing about that screenshot says
                                     // the caption is wrong.
-                                    // `bridge.stream_confirmed_labels` joins the tuple in
-                                    // Python, where it is a tuple.
                                     caption: "Camera " + modelData + " \u00b7 "
                                              + (bridge.stream_confirmed_labels[modelData] !== undefined
                                                 && bridge.stream_confirmed_labels[modelData].length > 0
@@ -295,7 +367,14 @@ Window {
                     }
                 }
 
-                // -- metrics column, 32% -----------------------------------------
+                // -- one block per CAMERA, 32% ------------------------------------
+                //
+                // **What a passer-by reads from the aisle**: which camera, whether it is
+                // running, how old its picture is, and where it is running. Three rows per
+                // camera at the legibility ladder, and nothing else - the backlog, the
+                // rate, the window, the activity line and the utilisation figure are in
+                // `PresenterDrawer.qml`, because six rows at 44 px is 280 px per camera and
+                // three cameras of that do not fit a 660 px band.
                 Column {
                     anchors.left: heroColumn.right
                     anchors.leftMargin: Theme.GAP
@@ -306,13 +385,11 @@ Window {
 
                     // -- one card per CAMERA, not per device (M2 Task 5) -------------
                     //
-                    // The card is about a stream: its own confirmed device, its own frame
-                    // age with the window that age is taken over, its own backlog and
-                    // analysis rate, and its own stated reason. Three cameras therefore
-                    // produce three cards, and the `Repeater` builds one per stream the
-                    // supervisor actually owns rather than three fixed ones - a supervisor
-                    // with one stream draws one card, and one with four draws four, so a
-                    // card can never exist for a camera that is not there.
+                    // Three cameras therefore produce three cards, and the `Repeater`
+                    // builds one per stream the supervisor actually owns rather than three
+                    // fixed ones - a supervisor with one stream draws one card, and one with
+                    // four draws four, so a card can never exist for a camera that is not
+                    // there.
                     //
                     // **`modelData`, not an index.** `streamId` is the model's own value, so
                     // a card reads its own record and not `modelData` from a shared
@@ -334,254 +411,104 @@ Window {
                             // `NaN`, `Math.max` passed the `NaN` straight through, and the
                             // cards were **all zero-height and invisible** - the offscreen
                             // render came back with a completely empty metrics column and
-                            // no QML warning at all, because a `NaN` geometry is legal. The
-                            // model's own length is always in scope.
+                            // no QML warning at all, because a `NaN` geometry is legal.
                             //
-                            // **The gaps come out of the height, not out of nowhere. M3 Task
-                            // 2.** `parent.height / n` ignores the `Column`'s `spacing`, so the
-                            // cards claimed the full 660 px band **plus** two 16 px gaps: 692
-                            // px of content in 660 px of space. Measured before the fix -
-                            // `card_C` bottom **852** against a main band that ends at **820**,
-                            // i.e. the last card drew **32 px into the footer**. A `Column`
-                            // does not clip, so nothing complained and the harness's `overflow`
-                            // could not see it either, because nothing clips. Now:
-                            // `(660 - 16 * 2) / 3 = 209.33` per card, and the column ends
-                            // exactly on the band.
+                            // **The gaps come out of the height, not out of nowhere. M3
+                            // Task 2.** `parent.height / n` ignores the `Column`'s
+                            // `spacing`, so the cards claimed the full band **plus** two
+                            // gaps: 32 px into the footer, drawn anyway because a `Column`
+                            // does not clip. Now `(660 - 16 * 2) / 3 = 209.33` per card and
+                            // the column ends exactly on the band.
                             //
-                            // **The floor is `0`, not `Theme.TYPE_NUMERAL`.** Task 2 first wrote
-                            // `Math.max(Theme.TYPE_NUMERAL, ...)`, which is a guard against a
-                            // zero or negative height - and it **reintroduces the same overrun it
-                            // had just fixed** at any camera count where the band cannot give
-                            // each card 56 px: `n = 10` gives `(660 - 144) / 10 = 51.6`, the
-                            // floor raises all ten cards to 56, and the column claims
-                            // **704 px in a 660 px band - 44 px into the footer**, silently, with
-                            // nothing clipping. Latent at three cameras; a defect at ten. The
-                            // divisor is already guarded against a zero-length model by
-                            // `Math.max(1, ...)`, so the floor only has to stop a negative
-                            // height, and `0` does that.
+                            // **The floor is `0`, not `Theme.TYPE_NUMERAL`.** A type size as
+                            // the floor raises every card to that height and the column then
+                            // claims more than its band at any camera count the band cannot
+                            // supply a numeral for.
                             height: Math.max(0, (parent.height
                                                  - Theme.GAP * Math.max(0, bridge.stream_ids.length - 1))
                                                 / Math.max(1, bridge.stream_ids.length))
-                            explainKey: "cpu"
-                            onExplainRequested: key => window.pinnedExplanationKey = key
+                            onExplainRequested: window.drawerOpen = true
                         }
                     }
                 }
             }
 
             // =====================================================================
-            // Footer - 22%: pipeline strip, event counts, error line, controls
+            // Footer - 21%: one verdict line per camera, in words
             // =====================================================================
+            //
+            // **Why the sentence is here and not on the card.** At `TYPE_BOOTH_DETAIL` the
+            // staleness sentence is 918 px wide; the metrics column's inner width is 567,
+            // so on the card it wrapped to two lines and pushed the card past its band.
+            // Full width it is one line, at the largest size on the screen after the age,
+            // and it still carries the camera's name and the same age the numeral shows.
             Item {
                 width: parent.width
                 height: screen.footerBand
 
                 Column {
-                    anchors.fill: parent
-                    spacing: Theme.GAP
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    spacing: Theme.SPACING.sm
 
-                    PipelineStrip {
-                        id: pipeline
-                        width: parent.width
-                        height: Theme.TYPE_LABEL + Theme.SPACING.lg
-                    }
+                    Repeater {
+                        model: bridge.stream_ids
 
-                    Item {
-                        width: parent.width
-                        height: parent.height - pipeline.height - controlBar.height
-                               - Theme.GAP * 2
+                        delegate: Row {
+                            required property string modelData
+                            objectName: "verdictRow_" + modelData
+                            width: parent.width
+                            spacing: Theme.SPACING.sm
 
-                        // -- business events --------------------------------------
-                        Row {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.SPACING.md
+                            // This camera's record, or a **cold record** with no verdict -
+                            // never `undefined`, which would make every binding on it read
+                            // `undefined` and render as nothing.
+                            readonly property var record:
+                                bridge.stream_cards_by_id[modelData] !== undefined
+                                ? bridge.stream_cards_by_id[modelData]
+                                : ({ "staleness": "", "reason_display": "" })
 
                             Text {
-                                text: "events:"
-                                color: Theme.COLOR_NEUTRAL
-                                font.family: Theme.FONT_FAMILY
-                                font.pixelSize: Theme.TYPE_LABEL
-                            }
-
-                            // One Text rather than a Repeater of three.
-                            //
-                            // The row is three small numbers that change together, so a
-                            // single binding is simpler and is readable as a whole - and
-                            // unlike the Repeater's delegates it carries an `objectName` a
-                            // test can actually find, so a regression that makes the row say
-                            // something wrong is visible rather than assumed.
-                            Text {
-                                objectName: "eventCountRow"
-                                // Gated on **frames analysed**, not on the route. A
-                                // confirmed placement is established from the worker's
-                                // route, which arrives before any frame has been analysed -
-                                // so gating on `device_confirmed` left a real window, route
-                                // confirmed and zero frames analysed, in which this row
-                                // printed three hard zeros for an event machine that had not
-                                // run a single frame.
+                                id: staleText
+                                objectName: "streamStaleText_" + modelData
+                                // **The word, not only the number**, and the camera's name
+                                // in front of it: this line sits in a different band from
+                                // the card, so it has to say which camera it is about.
                                 //
-                                // A kind the bridge has never heard of reads 0 **once
-                                // something could have counted one**, and "unavailable"
-                                // before that. The earlier wording called a bare 0 "a real
-                                // count: the machine decided there were none", which is only
-                                // true once the machine has looked at something.
-                                readonly property var kinds: ["zone_occupancy",
-                                                             "candidate_transfer",
-                                                             "candidate_return"]
-                                readonly property bool countedSomethingYet:
-                                    bridge.frames_analysed > 0
-                                text: kinds.map(k => k + " " + (
-                                          !countedSomethingYet ? "unavailable"
-                                          : (bridge.event_counts[k] !== undefined
-                                             ? bridge.event_counts[k] : 0)
-                                      )).join("    ")
-                                color: Theme.TEXT_ON_PANEL
+                                // **A camera with a stated failure reason shows the reason
+                                // instead.** One verdict line per camera fits at 44 px; two
+                                // do not, and the reason is the more specific statement. The
+                                // age and the card's warning border still carry the
+                                // staleness, and the reason line names the camera too.
+                                visible: record.staleness !== ""
+                                         && record.reason_display === ""
+                                width: visible ? parent.width : 0
+                                text: visible ? "Camera " + modelData + ": " + record.staleness
+                                              : ""
+                                color: Theme.COLOR_WARN
                                 font.family: Theme.FONT_FAMILY
-                                font.pixelSize: Theme.TYPE_DETAIL
+                                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                                font.bold: true
+                                elide: Text.ElideRight
                             }
-                        }
 
-                        // -- the error line ---------------------------------------
-                        // Visible whenever there is an error, and never cleared
-                        // implicitly: an error that disappears on the next good frame is
-                        // an error nobody saw.
-                        Rectangle {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: errorText.implicitWidth + Theme.MARGIN
-                            height: errorText.implicitHeight + Theme.SPACING.sm * 2
-                            visible: bridge.error_message.length > 0
-                            radius: Theme.RADIUS
-                            color: Theme.BG_PANEL_DEEP
-                            border.color: Theme.COLOR_BAD
-                            border.width: 2
-
+                            // This camera's own stated reason, **already cut and already
+                            // saying so** - `reason_display` carries `... +N more`. The
+                            // complete message stays published as `record.reason` and is
+                            // readable in the drawer, which prints it in full.
                             Text {
-                                id: errorText
-                                anchors.centerIn: parent
-                                width: Math.min(implicitWidth, Theme.CANVAS_WIDTH * 0.4)
-                                text: bridge.error_message
+                                objectName: "streamReasonText_" + modelData
+                                visible: !staleText.visible && record.reason_display !== ""
+                                width: visible ? parent.width : 0
+                                text: visible
+                                      ? "Camera " + modelData + ": " + record.reason_display : ""
                                 color: Theme.COLOR_BAD
                                 font.family: Theme.FONT_FAMILY
-                                font.pixelSize: Theme.TYPE_DETAIL
+                                font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                                 elide: Text.ElideRight
                             }
                         }
-                    }
-
-                    // -- control bar ---------------------------------------------
-                    Rectangle {
-                        id: controlBar
-                        width: parent.width
-                        height: Theme.TYPE_LABEL + Theme.SPACING.lg
-                        radius: Theme.RADIUS
-                        color: Theme.BG_PANEL
-
-                        Row {
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.MARGIN
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.SPACING.lg
-
-                            Text {
-                                text: "status: " + (bridge.status_message.length > 0
-                                                      ? bridge.status_message
-                                                      : "running")
-                                color: Theme.COLOR_NEUTRAL
-                                font.family: Theme.FONT_FAMILY
-                                font.pixelSize: Theme.TYPE_DETAIL
-                            }
-
-                            Text {
-                                // Named so a test can read the rendered string; a bridge
-                                // property being correct does not mean the screen is.
-                                objectName: "stalenessText"
-                                text: bridge.staleness.length > 0
-                                    ? "telemetry " + bridge.staleness
-                                    : "telemetry unavailable"
-                                color: Theme.COLOR_NEUTRAL
-                                font.family: Theme.FONT_FAMILY
-                                font.pixelSize: Theme.TYPE_DETAIL
-                            }
-                        }
-
-                        Row {
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.MARGIN
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.SPACING.sm
-
-                            // The "?" buttons pin an explanation. All six keys are here,
-                            // so every required explanation is reachable from the screen
-                            // itself rather than from a presenter's memory.
-                            Repeater {
-                                model: bridgeUi.explanationKeys
-
-                                delegate: Rectangle {
-                                    required property string modelData
-                                    // **Named so a test can reach the button and click it.**
-                                    // The M1 defect was a `?` panel whose call did not
-                                    // exist; a button a test cannot find is a button whose
-                                    // deadness is invisible, which is exactly how that
-                                    // defect survived.
-                                    objectName: "explainButton_" + modelData
-                                    width: helpLabel.implicitWidth + Theme.SPACING.md
-                                    height: Theme.TYPE_DETAIL + Theme.SPACING.sm * 2
-                                    radius: Theme.RADIUS
-                                    color: window.pinnedExplanationKey === modelData
-                                           ? Theme.ACCENT : Theme.BG_PANEL_DEEP
-                                    border.color: Theme.BORDER
-                                    border.width: 1
-
-                                    Text {
-                                        id: helpLabel
-                                        anchors.centerIn: parent
-                                        text: modelData
-                                        color: Theme.COLOR_NEUTRAL
-                                        font.family: Theme.FONT_FAMILY
-                                        font.pixelSize: Theme.TYPE_DETAIL
-                                    }
-
-                                    MouseArea {
-                                        objectName: "explainButtonMouse_" + modelData
-                                        anchors.fill: parent
-                                        onClicked: window.pinnedExplanationKey =
-                                            (window.pinnedExplanationKey === modelData
-                                             ? "" : modelData)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // -- the pinned explanation panel -------------------------------
-                // Over the metrics column, never over the hero: a long explanation must
-                // not obscure the picture.
-                Rectangle {
-                    visible: window.pinnedExplanationText.length > 0
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    width: parent.width * Theme.VIDEO_WIDTH_FRACTION * 0.9
-                    height: Math.min(pinnedText.implicitHeight + Theme.MARGIN * 2,
-                                     parent.height)
-                    color: Theme.BG_PANEL
-                    radius: Theme.RADIUS
-                    border.color: Theme.ACCENT
-                    border.width: 2
-
-                    Text {
-                        id: pinnedText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: Theme.MARGIN
-                        text: window.pinnedExplanationText
-                        color: Theme.TEXT_ON_PANEL
-                        font.family: Theme.FONT_FAMILY
-                        font.pixelSize: Theme.TYPE_DETAIL
-                        wrapMode: Text.WordWrap
                     }
                 }
             }
@@ -589,7 +516,7 @@ Window {
     }
 
     // =================================================================================
-    // Attract mode (M3 Task 4)
+    // Attract mode (M3 Task 4) - and its type, like the live screen's, from the ladder
     // =================================================================================
     //
     // **The one screen whose whole purpose is to show no number it cannot date.** The live
@@ -598,11 +525,15 @@ Window {
     // `bridge.attract_headlines`, a constant list of recorded measurements, each rendered
     // **with the date it was recorded and the committed file it came from**.
     //
+    // **M4: the idle screen is read from the aisle too.** The overlay's type was
+    // `TYPE_HEADLINE` / `TYPE_LABEL` / `TYPE_DETAIL` - 40 / 26 / 18 px - and 18 px is below
+    // the acuity floor at 3 m. A booth with nobody at it is exactly when a passer-by reads
+    // it, so these sizes come from the same ladder as the live screen.
+    //
     // The overlay is a `Loader` with `active: bridge.attract_active` and an inline
     // `Component`, so when attract mode is off these items **do not exist in the scene
-    // graph at all**. That keeps the booth screen's font census (and every committed
-    // capture) exactly what it was, and it means the idle surface cannot change the live
-    // one by merely existing.
+    // graph at all**. That keeps the live screen's font census (and every committed
+    // capture) exactly what it is.
     Loader {
         id: attractLoader
         // Named so the render can assert the overlay **loaded**, not merely that it was
@@ -633,7 +564,7 @@ Window {
                     text: bridge.attract_title
                     color: Theme.TEXT_ON_PANEL
                     font.family: Theme.FONT_FAMILY
-                    font.pixelSize: Theme.TYPE_HEADLINE
+                    font.pixelSize: Theme.TYPE_BOOTH_NUMERAL
                     font.bold: true
                 }
 
@@ -645,7 +576,7 @@ Window {
                     text: bridge.attract_recorded_label
                     color: Theme.COLOR_WARN
                     font.family: Theme.FONT_FAMILY
-                    font.pixelSize: Theme.TYPE_LABEL
+                    font.pixelSize: Theme.TYPE_BOOTH_LABEL
                     font.bold: true
                 }
 
@@ -664,7 +595,7 @@ Window {
                             text: modelData.text
                             color: Theme.TEXT_ON_PANEL
                             font.family: Theme.FONT_FAMILY
-                            font.pixelSize: Theme.TYPE_DETAIL
+                            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                             wrapMode: Text.WordWrap
                             horizontalAlignment: Text.AlignHCenter
                         }
@@ -678,7 +609,7 @@ Window {
                             text: "recorded " + modelData.date + "  \u00b7  " + modelData.source
                             color: Theme.COLOR_NEUTRAL
                             font.family: Theme.FONT_FAMILY
-                            font.pixelSize: Theme.TYPE_DETAIL
+                            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                         }
                     }
                 }
@@ -692,7 +623,7 @@ Window {
     //
     // **An overlay, never a member of the layout `Column`.** It is anchored to the window's
     // right edge and spans the full height, so opening it cannot move the hero, the tiles,
-    // the badges or the staleness line - `tests/test_ui_contract.py` asserts the positions
+    // the badges or the verdict lines - `tests/test_ui_contract.py` asserts the positions
     // are identical before and after, item by item. Its width comes from
     // `bridgeUi.drawerWidth`, which is `app/theme.py`'s token, so no pixel count is here.
     //
@@ -712,7 +643,7 @@ Window {
         source: "PresenterDrawer.qml"
     }
 
-    // Escape closes the pinned panel and the presenter drawer, and nothing else.
+    // Escape closes the presenter drawer, and nothing else.
     //
     // A `Shortcut` rather than `Keys.onEscapePressed`: `Window` is not an `Item`, so the
     // attached `Keys` property cannot bind to it and Qt reports `Could not attach Keys
@@ -721,10 +652,7 @@ Window {
     Shortcut {
         objectName: "escapeShortcut"
         sequence: "Escape"
-        onActivated: {
-            window.pinnedExplanationKey = ""
-            window.drawerOpen = false
-        }
+        onActivated: window.drawerOpen = false
     }
 
     // The drawer's keyboard entry point. Spec section 9's presenter mode: a presenter can
