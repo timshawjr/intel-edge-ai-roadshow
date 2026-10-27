@@ -276,6 +276,34 @@ READ_POLL_SECONDS: Final[float] = 0.05
 #: terminated. One CPU inference on this machine is 21 ms; 5 s is ~200 of them.
 STOP_GRACE_SECONDS: Final[float] = 5.0
 
+#: How long `_retire` spends discarding what a retiring queue still holds before it is
+#: closed. **A ceiling, not a wait**: the loop returns as soon as the pipe and the
+#: feeder's buffer are empty, which on the healthy path is the first read. It exists so
+#: that a queue whose feeder will not drain - a surviving feeder, a queue a platform will
+#: not read - cannot turn a teardown into an unbounded wait.
+#:
+#: Measured on this machine at the 2.0 s deadline, 20 transitions, 52 drain calls
+#: (`_discard_pending` timed around its own body): 20 calls discarded anything, **22-31
+#: frames** each for the retired input queues on the timeout path, and the whole drain cost
+#: **p50 15.2 ms, max 23.8 ms, 0.73 s over 20 transitions**. No call came close to the
+#: ceiling.
+RETIRE_DRAIN_SECONDS: Final[float] = 0.5
+
+#: How long a single read in `_retire`'s drain waits. Two milliseconds because the read
+#: exists to find a frame whose write is in flight, and on this platform the pipe handle
+#: is signalled immediately in that state; the timeout is only paid when the queue is
+#: genuinely empty, once per retired queue.
+RETIRE_POLL_SECONDS: Final[float] = 0.002
+
+#: How long `_retire` waits for a closed queue's feeder thread to see the sentinel and
+#: return. It is what makes it safe to forget the queue: the atexit finaliser only hangs on
+#: a feeder thread that is still blocked, so the ledger entry is dropped only after the
+#: thread is confirmed gone (see `_retire`). **A grace, not a guarantee**: in one of the
+#: probe's runs at the 2.0 s deadline the walk ended with one queue still inside this wait,
+#: and `stop()`'s sweep released it. That is why the entry is dropped on the evidence of a
+#: dead thread and not on the fact that a drain was attempted.
+RETIRE_FEEDER_GRACE_SECONDS: Final[float] = 0.2
+
 #: How often `await_transition` re-reads the streams while it waits. 10 ms, because a
 #: `Condition.wait` on this platform has a measured ~15 ms floor (see
 #: `BoundedFrameQueue.get`), so a finer poll would cost the same wall-clock time and
@@ -704,9 +732,11 @@ class Supervisor(QObject):
                 generation=self._generation,
             )
 
-        #: Every queue created and not yet retired, across generations and streams. See
-        #: `_retire` - this exists because a queue dropped without `cancel_join_thread()`
-        #: hangs the interpreter at exit.
+        #: Every queue created and **not yet released**, across generations and streams -
+        #: live ones included, because a queue that is live at `stop()` has to be reached
+        #: by the final sweep. `_retire` drops an entry only once its feeder thread is
+        #: confirmed gone, so what stays here is exactly what `multiprocessing`'s atexit
+        #: finaliser could still block on. See `_retire`.
         self._retired_queues: list[Any] = []
         self._collector: MetricCollector | None = None
         #: The most recent `samples()` result, kept so a run summary can be built after
@@ -1415,10 +1445,11 @@ class Supervisor(QObject):
         with self._lock:
             for _stream, _process, in_queue, out_queue in claimed:
                 self._retire(in_queue, out_queue)
-            # A final sweep over everything this supervisor ever created and never
-            # retired. Without it a queue that was still live at `stop()` - which is
-            # every stream that was running - would be handed to `multiprocessing`'s
-            # atexit finaliser with its feeder thread still attached.
+            # A final sweep over everything still in the ledger. It used to be every queue
+            # this supervisor had ever created; `_retire` now drops an entry as soon as its
+            # feeder is gone, so what is left is what has not been released - and every
+            # one of those still gets `cancel_join_thread()`, which is the atexit
+            # protection. A ledger that emptied during the run is not a skipped sweep.
             self._retire(*tuple(self._retired_queues))
         collector = self._collector
         if collector is not None:
@@ -1426,29 +1457,75 @@ class Supervisor(QObject):
         self._collector = None
 
     def _retire(self, *queues: Any) -> None:
-        """Abandon queues without waiting for their feeder threads.
+        """Release queues: discard what they still hold, close them, forget them.
 
-        **Every queue this supervisor has ever created is registered, and every one of
-        them is cancelled here - including the ones an earlier generation created, and
-        including the ones belonging to streams this call is not about.** That last
-        clause is why the ledger is append-only and the cancellation is of the *arguments*
-        only: with three streams, cancelling "the previous generation's queues" as a
-        single shared slot would have torn down a live Camera B because Camera C moved.
+        **Every queue this supervisor has created and not yet released is registered in
+        `_retired_queues`, and every one of them is cancelled here - including the ones an
+        earlier generation created, and including the ones belonging to streams this call
+        is not about.** That last clause is why the ledger exists and why the cancellation
+        is of the *arguments* only: with three streams, cancelling "the previous
+        generation's queues" as a single shared slot would have torn down a live Camera B
+        because Camera C moved.
 
-        The original hang this method exists for was measured, not hypothesised: a
-        respawn dropped the old pair on the floor without closing it, and
-        `multiprocessing`'s own atexit finaliser then ran `_finalize_join` on a queue
-        whose feeder thread was blocked forever in `Connection._send_bytes` trying to
-        flush a 6.2 MB frame into a pipe whose reader (the dead worker) had gone.
-        Reproduced: the test suite finished with `OK` and the interpreter then never
-        exited; `faulthandler.dump_traceback_later` showed
+        ## The hang this method exists for, which is not the leak it was mistaken for
+
+        The original hang was measured, not hypothesised: a respawn dropped the old pair
+        on the floor without closing it, and `multiprocessing`'s own atexit finaliser then
+        ran `_finalize_join` on a queue whose feeder thread was blocked forever in
+        `Connection._send_bytes` trying to flush a 6.2 MB frame into a pipe whose reader
+        (the dead worker) had gone. Reproduced: the test suite finished with `OK` and the
+        interpreter then never exited; `faulthandler.dump_traceback_later` showed
         `multiprocessing/queues.py:219 _finalize_join -> Thread.join` in
         `_run_finalizers`, with two feeder threads parked in `connection.py:293
         _send_bytes`.
 
-        `cancel_join_thread()` says "do not wait for that flush", which is what retiring a
-        transport means. Nothing is lost by it: the frames still in a retired queue are
-        frames addressed to a worker that no longer exists.
+        `cancel_join_thread()` says "do not wait for that flush", and that fixed the hang.
+        **It did not release anything**, and the two were conflated for two milestones. A
+        `multiprocessing.Queue` whose feeder is blocked still holds, in `_buffer`, every
+        object handed to `put` that the feeder has not sent - and because the queue was
+        appended to this ledger and never removed, the queue, its buffer and the blocked
+        feeder thread were all kept alive for the life of the process.
+
+        **The ledger is the way in, not the thing that holds the memory, and that is
+        measured.** `tools/leak_probe.py` empties `_transitions` and this list, collects, and
+        re-reads RSS: on the unfixed code, after 50 transitions at the product's 2.0 s
+        deadline, that released **nothing** - the remainder was **+154.1 MiB of a +153.7 MiB
+        total**. Dropping the list cannot free the frames, because the feeder thread owns
+        the buffer; only draining the queue can. That is why the fix is a drain and a
+        bounded wait, and pruning is only the accounting that follows it.
+
+        That is also why the leak **inverted with the deadline.** Same walk, same machine,
+        fresh process: 30 s deadline **+8.2 MiB**, 0 of 50 transitions timed out; 2.0 s
+        deadline **+153.7 MiB**, 25 of 50 timed out. A 2 s deadline kills a worker that is
+        still compiling, so nothing drains the pipe, and a retired input queue keeps the
+        frames offered while it was starting: measured **22-31 frames** per queue (2 s of a
+        15 fps feed). A 30 s deadline lets the worker drain them and the same queue retires
+        empty.
+
+        ## What it does now, in the order that matters
+
+        1. `cancel_join_thread()` - the atexit protection, unchanged and still first.
+        2. **Discard what the queue still holds** (`_discard_pending`). Those frames are
+           addressed to a worker that no longer exists; the docstring on `_signal_stop`
+           already says abandoning them costs nothing and no counter changes, because a
+           frame that has left the bounded queue has left the supervisor's accounting.
+        3. `close()` - which appends the feeder's sentinel *behind* the remaining buffer.
+        4. Wait **a bounded** `RETIRE_FEEDER_GRACE_SECONDS` for the feeder to see the
+           sentinel and return. It is no longer blocked, because step 2 emptied the pipe.
+        5. **Forget the queue - only if that thread is confirmed gone.** A closed queue
+           whose feeder has exited has nothing left for `multiprocessing`'s atexit
+           finaliser to join, so dropping the reference is safe; a queue whose feeder
+           survives is **left in the ledger**, and `stop()`'s final sweep cancels it again.
+           That is the whole of the pruning rule: released means the feeder is gone, not
+           means we tried.
+
+        Step 5 is why the ledger can be both the atexit registry and bounded. It is still
+        read by `stop()`'s re-entry guard and by `stop()`'s final sweep; neither becomes
+        unreachable, because a queue that has not been released stays in it.
+
+        Every call site detaches the pair from its stream before calling this
+        (`_apply_devices`, `_restart`, `stop`), and `stop()`'s sweep runs after every stream
+        has been claimed, so a queue a worker is still reading is never closed here.
         """
         with self._lock:
             known = list(self._retired_queues)
@@ -1458,14 +1535,96 @@ class Supervisor(QObject):
                 if all(candidate is not existing for existing in known):
                     known.append(candidate)
             self._retired_queues = known
+        released: list[Any] = []
         for candidate in queues:
             if candidate is None:
                 continue
             try:
                 candidate.cancel_join_thread()
+            except Exception:  # noqa: BLE001 - teardown
+                pass
+            self._discard_pending(candidate)
+            try:
                 candidate.close()
             except Exception:  # noqa: BLE001 - teardown
                 pass
+            if self._feeder_gone(candidate):
+                released.append(candidate)
+        if released:
+            dropped = {id(queue_obj) for queue_obj in released}
+            with self._lock:
+                self._retired_queues = [queue_obj for queue_obj in self._retired_queues
+                                        if id(queue_obj) not in dropped]
+
+    @staticmethod
+    def _discard_pending(retired: Any) -> int:
+        """Throw away everything a retiring queue still holds, and count it.
+
+        **The frames in a retired input queue are addressed to a worker that no longer
+        exists**, so discarding them is the only correct disposition; they are not results
+        and cannot be delivered. Reading them is what unblocks the queue's feeder thread:
+        it is parked in `Connection._send_bytes` on a pipe the dead child was the reader
+        of, and each read here is the read that never happened.
+
+        ## `get(timeout=...)`, not `get_nowait()`, and this is measured
+
+        `get_nowait()` is the obvious choice and it **does not work here**. On Windows a
+        queue is a message-mode named pipe, and `get_nowait()` asks `PeekNamedPipe` whether
+        any bytes are available. A frame whose write is still in flight reports **zero**
+        bytes available, so `get_nowait()` answers "empty" while the feeder is parked
+        mid-message - and the queue is then closed with the feeder still blocked, which is
+        exactly the retention this method exists to remove. Measured on this machine: an
+        early version used `get_nowait()`, and of eight retired queues **four kept a live
+        blocked feeder with the sentinel still behind it**, each holding the frame it could
+        not finish writing. The four that succeeded were the ones whose last write happened
+        to have completed - a race, not a rule.
+
+        `get(timeout=...)` polls the pipe handle instead (`Connection.poll(timeout)` falls
+        back to `wait([self], timeout)`), which *is* signalled for a partial message, and
+        its read completes the message. Measured: **6 of 6 trials** drained all eight frames
+        and the feeder exited within 300 ms. The timeout is `RETIRE_POLL_SECONDS` so an idle
+        queue costs two milliseconds rather than blocking.
+
+        Returns the number of items discarded. Nothing here is counted against `drops`,
+        `frames_invalidated` or `discarded_results`: those populations have definitions of
+        their own and none of them is "a frame abandoned with the transport".
+        """
+        deadline = time.perf_counter() + RETIRE_DRAIN_SECONDS
+        discarded = 0
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0.0:
+                return discarded
+            try:
+                retired.get(timeout=min(RETIRE_POLL_SECONDS, remaining))
+            except queue.Empty:
+                thread = getattr(retired, "_thread", None)
+                buffered = (thread is not None and thread.is_alive()
+                            and bool(getattr(retired, "_buffer", ())))
+                if not buffered:
+                    return discarded
+                continue
+            except (OSError, EOFError, ValueError):
+                # Closed under us, or a pipe whose other end is gone. Nothing left to
+                # read; the feeder's own error path deals with the rest.
+                return discarded
+            discarded += 1
+
+    @staticmethod
+    def _feeder_gone(retired: Any) -> bool:
+        """Whether a closed queue's feeder thread has returned.
+
+        `True` for a queue whose feeder never started (a results queue nobody put to from
+        this process), which is the common case for the outbound half of a pair. Otherwise
+        it gives the thread `RETIRE_FEEDER_GRACE_SECONDS` to see the sentinel `close()`
+        appended, and answers with what it observed rather than what it hoped.
+        """
+        thread = getattr(retired, "_thread", None)
+        if thread is None or thread is threading.current_thread():
+            return True
+        if thread.is_alive():
+            thread.join(timeout=RETIRE_FEEDER_GRACE_SECONDS)
+        return not thread.is_alive()
 
     def _reap_worker(self, stream_id: str, process: Any, out_queue: Any,
                  timeout_s: float = STOP_GRACE_SECONDS) -> bool:
@@ -1678,6 +1837,11 @@ class Supervisor(QObject):
         in_queue = context.Queue()
         out_queue = context.Queue()
         with self._lock:
+            # **Registered while they are still live**, not when they are retired: a queue
+            # that is live at `stop()` is reached by the final sweep through this list, and
+            # a queue that is never registered would be handed to `multiprocessing`'s
+            # atexit finaliser with its feeder thread attached. `_retire` drops the entry
+            # once the feeder is gone; until then it belongs here.
             self._retired_queues.append(in_queue)
             self._retired_queues.append(out_queue)
             stream = self._streams[stream_id]

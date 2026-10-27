@@ -46,7 +46,11 @@ never be reached - so pinning both the count and the state is what makes the loo
 visible.
 """
 
+import gc
+import multiprocessing as mp
 import os
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -2150,6 +2154,345 @@ class RetiringThreadHandover(unittest.TestCase):
         self.assertEqual(published, [],
                          "the normal case must stay silent; a reason published on every "
                          "retire is a reason nobody reads")
+
+
+def _rss() -> int:
+    """This process's resident set, in bytes.
+
+    Used only for "did retiring these queues give the memory back", and always as a
+    difference around a known allocation in the same process. It is **not** a per-run leak
+    figure - `tools/leak_probe.py` is what measures that, in a fresh process on a clean
+    machine.
+    """
+    import psutil
+
+    return int(psutil.Process().memory_info().rss)
+
+
+def _buffered(queue_obj) -> list:
+    """What a `multiprocessing.Queue`'s feeder has accepted and not yet sent.
+
+    Private on purpose, and the only way to ask this question: `qsize()` is negative and
+    meaningless on an unbounded queue (it is `maxsize - semaphore`, and `maxsize` is 0), and
+    the retained memory is exactly this deque plus the frame being sent.
+    """
+    return list(getattr(queue_obj, "_buffer", ()))
+
+
+def _frames_in_queue(queue_obj) -> int:
+    return sum(1 for item in _buffered(queue_obj) if isinstance(item, FramePacket))
+
+
+def _feeder_thread(queue_obj):
+    return getattr(queue_obj, "_thread", None)
+
+
+def _feeder_thread_ids() -> set[int]:
+    """The `QueueFeederThread`s alive **right now**, by identity.
+
+    A test must compare this against a snapshot taken when it started, not against the
+    empty set: `unittest` runs every module in one process, and a feeder from an earlier
+    test can legitimately still be winding down. Asserting `== set()` passes in isolation
+    and fails in the suite for a reason that has nothing to do with the test - which is
+    exactly what happened the first time these tests ran in the full suite.
+    """
+    return {id(thread) for thread in threading.enumerate()
+            if thread.name == "QueueFeederThread"}
+
+
+def _queue_feeder_alive(queue_obj) -> bool:
+    """Whether this specific queue's feeder thread is still running."""
+    thread = _feeder_thread(queue_obj)
+    return thread is not None and thread.is_alive()
+
+
+class RetiredQueueRelease(unittest.TestCase):
+    """M4 Task 3: a queue retired on the timeout path is released, not retained.
+
+    **The finding this class is built around inverts with the deadline**, and that is the
+    clue rather than an inconvenience. M2 measured 15.5 MiB total over 50 warm transitions
+    at a 30 s deadline and **182.4 MiB, 175.3 MiB of it unexplained, at the product's real
+    2.0 s deadline**. A shorter deadline means more transitions time out; a transition that
+    times out kills a worker that is still compiling, and a worker that is still compiling
+    has read nothing.
+
+    So the failing object is not the worker and not the process: it is the
+    `multiprocessing.Queue` the supervisor retired. Its feeder thread is parked in
+    `Connection._send_bytes` on a pipe whose reader is gone, and every frame it has not
+    sent is still in the queue's own buffer. `cancel_join_thread()` - the fix for the
+    **atexit hang**, a different problem - stopped the interpreter waiting for that thread
+    and left every byte of it in place, held by `_retired_queues`, which was append-only
+    and never pruned.
+
+    Three tests, and they are deliberately different instruments:
+
+    - `test_retiring_a_queue_that_still_holds_frames_releases_them` builds that state
+      directly - a real spawn-context queue, frames in it, no reader - and asks whether
+      `_retire` gives the memory back. Deterministic, no timing, no worker.
+    - `test_a_transition_that_times_out_accounts_for_every_queue` drives the **real timeout
+      path** through `begin_transition`/`await_transition`, repeated, and asserts that the
+      only queues in the ledger are the live ones. This is the path a presenter hits.
+    - `test_the_interpreter_still_exits_when_a_retired_queue_cannot_be_drained` keeps the
+      **atexit protection**: a queue whose feeder survives retirement must still be
+      cancelled, and the process must still terminate. It constructs the fault by making
+      the drain unable to release the queue, because that is the only way to see the
+      protection once the drain normally succeeds.
+    """
+
+    def setUp(self):
+        self._supervisors: list[Supervisor] = []
+        self._feeders: list[_Feeder] = []
+        self._queues: list = []
+
+    def tearDown(self):
+        for feeder in self._feeders:
+            feeder.stop()
+        for supervisor in self._supervisors:
+            try:
+                supervisor.stop()
+            except Exception:  # noqa: BLE001 - teardown must not mask the real failure
+                pass
+
+    def _supervisor(self, **kwargs) -> Supervisor:
+        supervisor = Supervisor(**kwargs)
+        self._supervisors.append(supervisor)
+        return supervisor
+
+    def _queue_with_unread_frames(self, *, frames: int = 10, size=(240, 320)):
+        """A real spawn-context queue holding frames nothing will read.
+
+        This is the state `_retire` is handed on the timeout path: the worker is gone, so
+        the pipe fills, the feeder thread parks in `_send_bytes`, and every frame that has
+        not been sent stays in the queue's buffer. `spawn` rather than `fork` because spawn
+        is the context the supervisor uses and the one this machine runs.
+        """
+        context = mp.get_context("spawn")
+        queue_obj = context.Queue()
+        self._queues.append(queue_obj)
+        for index in range(frames):
+            queue_obj.put(_frame(index, size=size))
+        deadline = time.perf_counter() + 10.0
+        while len(_buffered(queue_obj)) < frames - 1 and time.perf_counter() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(len(_buffered(queue_obj)), frames - 1,
+                         "the fault was not constructed: the feeder did not park with "
+                         f"{frames - 1} frames buffered, buffer is "
+                         f"{len(_buffered(queue_obj))}")
+        self.assertTrue(_feeder_thread(queue_obj).is_alive(),
+                        "the fault was not constructed: the feeder is not parked")
+        return queue_obj
+
+    def test_retiring_a_queue_that_still_holds_frames_releases_them(self):
+        """The mechanism, measured with no worker, no deadline and no timing.
+
+        Ten queues of ten 240x320 frames. **On the unfixed code this exact construction
+        retained 23.6 MiB of host RSS** - 90 buffered `FramePacket`s holding 19.8 MiB of
+        image data, plus the frame each feeder was still writing - and left ten blocked
+        feeder threads and ten ledger entries (measured on this machine, one run). After the
+        fix nothing is retained, the threads are gone and the ledger is empty; the RSS bound
+        below is the same claim in bytes.
+        """
+        supervisor = self._supervisor(device_ids=("CPU", "GPU", "NPU"))
+        gc.collect()
+        start = _rss()
+        feeders_before = _feeder_thread_ids()
+        queues = [self._queue_with_unread_frames(frames=10) for _ in range(10)]
+        self.assertEqual(len(supervisor._retired_queues), 0,
+                         "nothing has been retired yet, so the ledger must be empty")
+
+        for queue_obj in queues:
+            supervisor._retire(queue_obj)
+        gc.collect()
+
+        self.assertEqual(
+            supervisor._retired_queues, [],
+            "a retired queue whose feeder is gone must be dropped from the ledger; it "
+            f"still holds {len(supervisor._retired_queues)} queue(s)")
+        for queue_obj in queues:
+            self.assertEqual(_frames_in_queue(queue_obj), 0,
+                             "a retired queue still holds frames addressed to a worker "
+                             "that no longer exists")
+            self.assertEqual(len(_buffered(queue_obj)), 0,
+                             "a retired queue's feeder buffer was not drained")
+            thread = _feeder_thread(queue_obj)
+            self.assertFalse(thread is not None and thread.is_alive(),
+                             "a retired queue's feeder thread is still blocked, so the "
+                             "queue, its pipe and its frames are all still retained")
+        self.assertEqual(_feeder_thread_ids() - feeders_before, set(),
+                         "a feeder thread created by this test survived retirement")
+
+        growth = _rss() - start
+        self.assertLess(
+            growth, 10 * 2**20,
+            f"retiring ten queues holding 10 frames each grew RSS by "
+            f"{growth / 2**20:.1f} MiB; the frames were released, so this is retention")
+
+    def test_a_transition_that_times_out_accounts_for_every_queue(self):
+        """The real timeout path, repeated, and the ledger must hold only live queues.
+
+        **A test on the confirming path does not test this.** Every repeat here moves
+        camera B and/or C onto a device whose worker has to spawn, and the 0.5 s deadline
+        is over before the new worker can read anything - the state a presenter's 2.0 s
+        deadline produces 24 times in 50 toggles (M2.3). The deadline is short to make the
+        test cost seconds instead of minutes; **it is the same path, not a different one**.
+
+        The decisive assertion is not RSS - allocator reuse makes a small RSS difference
+        unreadable in a suite - it is that **the only queues in the ledger are the queues
+        the live streams are using right now**. A leak is a queue in that list that no
+        stream owns.
+        """
+        reason = _require_devices("CPU", "GPU", "NPU")
+        if reason:
+            self.skipTest(reason)
+        supervisor = self._supervisor(device_ids=("CPU", "GPU", "NPU"))
+        feeder = _Feeder(supervisor, fps=15.0).start()
+        self._feeders.append(feeder)
+
+        supervisor.start()
+        first = supervisor.begin_transition(dict(SPEC_S5_TABLE[0][1]))
+        warm = supervisor.await_transition(first, timeout_s=60.0)
+        self.assertTrue(warm.acknowledged,
+                        f"the warm-up must confirm, or nothing here is a transition: "
+                        f"{warm.bounded_by} after {warm.elapsed_s:.3f} s")
+
+        def live_queue_ids() -> set[int]:
+            with supervisor._lock:
+                return {id(queue_obj)
+                        for stream in supervisor._streams.values()
+                        for queue_obj in (stream.in_queue, stream.out_queue)
+                        if queue_obj is not None}
+
+        start = _rss()
+        timed_out = 0
+        # **The same target every repeat, and that is not laziness.** A timeout recovers
+        # every unconfirmed stream to the route it was on before the toggle, so asking for
+        # the same row again always moves the same streams back off it - while walking the
+        # four rows can land on a restatement of the route recovery just restored, which
+        # confirms immediately and is not a transition. The row is spec section 5's fourth
+        # (three streams on the CPU) coming from its first (CPU / GPU / NPU), which is one
+        # of the four combinations the booth actually shows.
+        target = dict(SPEC_S5_TABLE[3][1])
+        for index in range(8):
+            transition_id = supervisor.begin_transition(dict(target))
+            outcome = supervisor.await_transition(transition_id, timeout_s=0.5)
+            if not outcome.acknowledged:
+                timed_out += 1
+            ledger = [id(queue_obj) for queue_obj in supervisor._retired_queues]
+            self.assertEqual(
+                len(ledger), len(set(ledger)),
+                "a queue is registered twice in the ledger, so pruning would have to "
+                "know about aliases")
+            self.assertEqual(
+                set(ledger), live_queue_ids(),
+                f"after repeat {index + 1}, the ledger holds "
+                f"{len(ledger) - len(live_queue_ids())} queue(s) that no live stream "
+                f"owns - every retired queue is a queue whose frames are still in it")
+        self.assertEqual(timed_out, 8,
+                         "every repeat must actually time out, or this test is not on "
+                         f"the timeout path: {8 - timed_out} confirmed inside 0.5 s")
+
+        growth = _rss() - start
+        self.assertLess(
+            growth, 32 * 2**20,
+            f"eight timed-out transitions grew RSS by {growth / 2**20:.1f} MiB. The bound "
+            f"is a backstop, not the proof: the proof is the ledger above")
+
+        # The queues the streams own **before** `stop()` detaches them: after it they are
+        # `None`, so this is the only moment their feeders can be asked about by identity.
+        with supervisor._lock:
+            owned = [queue_obj
+                     for stream in supervisor._streams.values()
+                     for queue_obj in (stream.in_queue, stream.out_queue)
+                     if queue_obj is not None]
+        self.assertEqual(len(owned), 6,
+                         f"three streams own two queues each; found {len(owned)}")
+        supervisor.stop()
+        self.assertEqual(supervisor._retired_queues, [],
+                         "stop() left a retired queue behind; its feeder is what "
+                         "multiprocessing's atexit finaliser would wait for")
+        for queue_obj in owned:
+            self.assertFalse(
+                _queue_feeder_alive(queue_obj),
+                "a queue this stream was still using has a feeder thread running after "
+                "stop(); that thread is what the atexit finaliser would join")
+        # `stop()`'s re-entry guard reads the same ledger. With the ledger empty at rest the
+        # guard takes its early return, and that must still be a *clean* early return: no
+        # second teardown, no grace wait, and nothing left behind.
+        started = time.perf_counter()
+        supervisor.stop()
+        self.assertLess(time.perf_counter() - started, 1.0,
+                        "a second stop() on an already-stopped supervisor re-ran the "
+                        "teardown; the ledger's re-entry guard is not being taken")
+
+    def test_the_interpreter_still_exits_when_a_retired_queue_cannot_be_drained(self):
+        """The atexit protection, in a real interpreter, with the drain deliberately broken.
+
+        **The hang was real and measured**, so it gets a test that would notice its return.
+        A queue whose feeder thread is blocked in `Connection._send_bytes` makes
+        `_finalize_join` at exit wait for ever; `cancel_join_thread()` is the only thing
+        that prevents it, and it is also why a ledger entry must never be dropped early.
+
+        A drain that succeeds removes the very condition that hangs, so it cannot exercise
+        the protection. This test therefore makes `_discard_pending` a no-op - the worst
+        case, a queue that retirement could not release - and requires **both** that the
+        queue stays in the ledger (nothing was released, so nothing may be forgotten) and
+        that the interpreter still exits. If `cancel_join_thread()` is removed from
+        `_retire`, this test hangs and fails on its timeout.
+        """
+        script = "\n".join([
+            "import multiprocessing as mp",
+            "import os, time",
+            "os.environ['QT_QPA_PLATFORM'] = 'offscreen'",
+            "import numpy as np",
+            "from app.contracts.frame import FramePacket",
+            "from app.supervisor.runner import Supervisor",
+            "",
+            "def frame(i):",
+            "    return FramePacket(session_id='s', scenario_id='retail_sanity',",
+            "                       stream_id='A', frame_id=i, source_pts=i / 30.0,",
+            "                       source_loop_id=0, captured_at=i / 30.0,",
+            "                       decoded_at=i / 30.0, width=320, height=240,",
+            "                       image=np.zeros((240, 320, 3), np.uint8))",
+            "",
+            "q = mp.get_context('spawn').Queue()",
+            "for i in range(8):",
+            "    q.put(frame(i))",
+            "deadline = time.perf_counter() + 10.0",
+            "while len(q._buffer) < 7 and time.perf_counter() < deadline:",
+            "    time.sleep(0.005)",
+            "assert len(q._buffer) == 7, len(q._buffer)",
+            "assert q._thread.is_alive()",
+            "",
+            "supervisor = Supervisor(device_ids=('CPU',))",
+            "# The fault: a retirement that cannot release the queue. This is the shape",
+            "# the pre-fix `_retire` left every timed-out queue in.",
+            "Supervisor._discard_pending = staticmethod(lambda retired: 0)",
+            "supervisor._retire(q)",
+            "print('ledger', len(supervisor._retired_queues), flush=True)",
+            "print('joincancelled', q._joincancelled, flush=True)",
+            "supervisor.stop()",
+            "print('DONE', flush=True)",
+        ])
+        env = dict(os.environ)
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        started = time.perf_counter()
+        completed = subprocess.run([sys.executable, "-c", script],
+                                   capture_output=True, text=True, timeout=120,
+                                   cwd=str(REPO_ROOT), env=env)
+        elapsed = time.perf_counter() - started
+        output = completed.stdout + completed.stderr
+        self.assertEqual(completed.returncode, 0, output)
+        self.assertIn("DONE", completed.stdout,
+                      f"the interpreter never reached the end of the script:\n{output}")
+        # The queue could not be drained, so it must still be in the ledger and must have
+        # been cancelled. Both halves are the protection: cancelled is what stops the
+        # atexit join, retained is what keeps the queue reachable for the final sweep.
+        self.assertIn("ledger 1", completed.stdout, output)
+        self.assertIn("joincancelled True", completed.stdout, output)
+        self.assertLess(elapsed, 90.0,
+                        f"the process needed {elapsed:.1f} s to exit after a retirement "
+                        f"it could not release, which is the atexit hang coming back")
 
 
 class RouteTransition(unittest.TestCase):

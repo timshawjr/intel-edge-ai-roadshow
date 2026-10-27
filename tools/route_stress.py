@@ -736,14 +736,17 @@ def run_stress(*, transitions: int = 50, timeout_s: float = GATE_SECONDS,
         supervisor._transitions.clear()  # noqa: SLF001
         supervisor._retired_queues.clear()  # noqa: SLF001
     gc.collect()
-    # **RSS is read here, before any further Qt pumping.** Pumping the event queue
-    # allocates - every queued `state_changed` carries a whole `RoutePlan` - and that
-    # allocation would land inside the very figure being used to say whether the retained
-    # records explain the growth. An earlier version pumped first and produced a
-    # `leak_bytes_after_release` above `leak_bytes` roughly one run in five, which is
-    # physically impossible for a release and was purely this.
-    objects_after_release = len(gc.get_objects())
+    # **RSS is read here, before any further Qt pumping or any further census.** Pumping
+    # the event queue allocates - every queued `state_changed` carries a whole `RoutePlan` -
+    # and `gc.get_objects()` allocates a list of every tracked object, which on a suite
+    # process is tens of thousands of pointers. Either allocation lands inside the very
+    # figure used to say whether the retained records explain the growth. An earlier version
+    # pumped first and produced a `leak_bytes_after_release` above `leak_bytes` roughly one
+    # run in five; the census was still doing it afterwards. Measured on this machine: one
+    # `len(gc.get_objects())` over 9 852 tracked objects raised RSS by **176 KiB and never
+    # gave it back** (five consecutive calls, plateau at 176 KiB).
     leak_after_release = _rss() - rss_start
+    objects_after_release = len(gc.get_objects())
 
     elapsed_samples = tuple(sample.elapsed_s for sample in samples)
     setup_samples = tuple(sample.setup_s for sample in samples)

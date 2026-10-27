@@ -161,23 +161,41 @@ class RouteStressInTheSuite(unittest.TestCase):
         result = self.result
 
         # **The retention is named, so a growth is not read as a leak.** `_transitions`
-        # gains one record per toggle and `_retired_queues` two queues per spawn, and both
-        # grow by design: a cap would drop an open record and turn a legitimate
-        # `await_transition` into `ValueError`.
+        # gains one record per toggle and grows by design: a cap would drop an open record
+        # and turn a legitimate `await_transition` into `ValueError`.
         self.assertEqual(result.retained_transitions_end
                          - result.retained_transitions_start, 6,
                          "one transition record per toggle, kept")
-        self.assertGreater(result.retained_queues_end - result.retained_queues_start, 0,
-                           "retired queues are kept too, for the same reason")
+        # **And the queues are NOT retained, which is the M4 Task 3 property.** They used
+        # to be counted here as design growth because the ledger was append-only: the M2
+        # run ended with 156-204 closed queues held for the life of the process, and on the
+        # timeout path each held up to 2 s of frames addressed to a dead worker. After the
+        # fix a retired queue is released, so the ledger holds exactly the live pair per
+        # stream (two queues each) and at most one queue still inside the release grace.
+        live_slots = 2 * len(result.per_stream)
+        self.assertLessEqual(
+            result.retained_queues_end, live_slots + 2,
+            f"the run ended with {result.retained_queues_end} queues in the ledger for "
+            f"{live_slots} live queue slots; a retired queue is released once its feeder "
+            f"is gone, so a count that grows per toggle is the M2 leak coming back")
+        self.assertLessEqual(
+            result.retained_queues_end, result.retained_queues_start + 2,
+            f"the ledger grew from {result.retained_queues_start} to "
+            f"{result.retained_queues_end} queues across six toggles; retired queues are "
+            f"released, not kept")
 
     def test_the_retained_records_were_actually_released(self):
         """The hard half of the retention claim, and the half that is measurable.
 
         RSS cannot show that records were released — Python's allocator keeps freed
         arenas — so "the retention explains the growth" would be an *explanation* and not a
-        measurement. **Live object count is the measurement.** Emptied, then collected:
-        measured 54689 → 50107 over the 50-toggle run, and 4582 objects fewer, which is
-        one `_Transition` plus its mappings plus two `mp.Queue` objects per toggle.
+        measurement. **Live object count is the measurement**: emptied, then collected, and
+        the count must fall by more than one object.
+
+        **The queues are no longer part of this**: a retired queue is released during the
+        run (M4 Task 3), so at the moment the record is emptied the ledger holds only the
+        live pairs. What the count releases is the transition records and their mappings,
+        which is why this asserts a count rather than naming a queue.
 
         This is separate from the RSS direction because the two fail independently: the
         count can fall while RSS does not move, and RSS can fall by more than the count
@@ -188,23 +206,43 @@ class RouteStressInTheSuite(unittest.TestCase):
         self.assertLess(
             result.objects_after_release, result.objects_before_release,
             f"emptying {result.retained_transitions_end} transition records and "
-            f"{result.retained_queues_end} retired queues released no live objects "
+            f"{result.retained_queues_end} live queue slots released no live objects "
             f"({result.objects_before_release} -> {result.objects_after_release}); the "
             f"records were not actually released")
-        # And enough of them, not one: six toggles retain six records and twelve queues.
+        # And enough of them, not one: six toggles retain six transition records, each
+        # carrying its own mappings and tuples.
         self.assertGreater(
             result.objects_before_release - result.objects_after_release, 100,
             f"only {result.objects_before_release - result.objects_after_release} objects "
-            f"were released for six toggles' worth of retained records and queues")
+            f"were released for six toggles' worth of retained transition records")
 
     def test_nothing_grows_that_the_retained_records_do_not_account_for(self):
         """The RSS half of the leak claim, stated so it can fail.
 
         Two statements, and both must hold for any value of `leak_bytes`:
 
-        1. **Emptying the retained records and collecting never made RSS worse.** That is
-           the direction that says the retention explains the growth. Measured on
-           2026-10-03 with six toggles: `leak_bytes` 8192 and
+        1. **Emptying the retained records and collecting never made RSS materially
+           worse.** That is the direction that says the retention explains the growth. The
+           tolerance is **8 MiB**, and it is a measurement of the instrument rather than a
+           relaxation of the property:
+
+           - What this asserts on is the **difference between two RSS readings**, and after
+             M4 Task 3 the retention it empties is **seven `_Transition` records** — the
+             retired queues are released during the run. Freeing seven small mappings cannot
+             be expected to move RSS down, so at this scale the difference is page noise in
+             either direction. Measured in this session: **0 inversions in 6 isolated runs**,
+             and **1 inversion in 2 full-suite runs**, by **+1.4 MB**, with *both* readings
+             negative (the process was giving memory back, and the "release" gave slightly
+             less).
+           - The instrument contributes to it: `len(gc.get_objects())` allocates a list of
+             every tracked object. Measured: **176 KiB, retained**, for a census of 9 852
+             objects; the suite's process tracks ~50 000. `run_stress` now reads RSS before
+             that census, which removes that part, and this tolerance covers the rest.
+           - **A real retention is tens of MiB, not one**: measured before the fix, the
+             ledger held **154.1 MiB** that emptying it released none of. The tolerance is
+             5% of that, so the regression this guards cannot hide inside it.
+
+           Measured on 2026-10-03 with six toggles: `leak_bytes` 8192 and
            `leak_bytes_after_release` **-12345344** — the process gave back 12.3 MB, so
            the growth was not a leak at all and the retention was never the thing holding
            it. RSS here carries the OpenVINO runtime and the allocator's high-water mark,
@@ -213,15 +251,17 @@ class RouteStressInTheSuite(unittest.TestCase):
         2. **RSS did not grow without bound**, measured against the process's own size:
            six toggles must not double it. An absolute byte budget would be a claim about
            this machine's allocator rather than about the supervisor; the ratio is the
-           property.
+           property. **This half is unchanged and strict.**
         """
         result = self.result
 
+        tolerance = 8 * 2**20
         self.assertLessEqual(
-            result.leak_bytes_after_release, result.leak_bytes,
+            result.leak_bytes_after_release, result.leak_bytes + tolerance,
             f"emptying the retained records and collecting took RSS from "
             f"{result.leak_bytes} B of growth to {result.leak_bytes_after_release} B, "
-            f"which is backwards: releasing memory cannot cost memory")
+            f"which is backwards by more than the {tolerance} B this measurement can "
+            f"resolve: releasing memory cannot cost memory beyond the allocator's noise")
         self.assertLess(
             result.leak_bytes, result.rss_start,
             f"RSS grew by {result.leak_bytes} B over {result.transitions} transitions on "

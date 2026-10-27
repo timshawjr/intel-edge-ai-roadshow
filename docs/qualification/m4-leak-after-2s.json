@@ -1,0 +1,452 @@
+{
+  "timeout_s": 2.0,
+  "transitions": 50,
+  "rss_start": 98832384,
+  "rss_end": 87973888,
+  "leak_bytes": -10858496,
+  "unexplained_bytes": -12599296,
+  "live_objects": 49883,
+  "samples": [
+    {
+      "index": 0,
+      "elapsed_s": 1.901487,
+      "bounded_by": "confirmed",
+      "rss_before": 99115008,
+      "rss_after": 93962240,
+      "rss_delta": -5152768
+    },
+    {
+      "index": 1,
+      "elapsed_s": 4.272687,
+      "bounded_by": "timeout",
+      "rss_before": 93962240,
+      "rss_after": 88166400,
+      "rss_delta": -5795840
+    },
+    {
+      "index": 2,
+      "elapsed_s": 1.907047,
+      "bounded_by": "confirmed",
+      "rss_before": 88166400,
+      "rss_after": 97603584,
+      "rss_delta": 9437184
+    },
+    {
+      "index": 3,
+      "elapsed_s": 4.243569,
+      "bounded_by": "timeout",
+      "rss_before": 97603584,
+      "rss_after": 88416256,
+      "rss_delta": -9187328
+    },
+    {
+      "index": 4,
+      "elapsed_s": 1.300392,
+      "bounded_by": "confirmed",
+      "rss_before": 88416256,
+      "rss_after": 93818880,
+      "rss_delta": 5402624
+    },
+    {
+      "index": 5,
+      "elapsed_s": 4.199061,
+      "bounded_by": "timeout",
+      "rss_before": 93822976,
+      "rss_after": 86814720,
+      "rss_delta": -7008256
+    },
+    {
+      "index": 6,
+      "elapsed_s": 2.032315,
+      "bounded_by": "confirmed",
+      "rss_before": 86814720,
+      "rss_after": 98136064,
+      "rss_delta": 11321344
+    },
+    {
+      "index": 7,
+      "elapsed_s": 4.244162,
+      "bounded_by": "timeout",
+      "rss_before": 98136064,
+      "rss_after": 88051712,
+      "rss_delta": -10084352
+    },
+    {
+      "index": 8,
+      "elapsed_s": 1.369395,
+      "bounded_by": "confirmed",
+      "rss_before": 88051712,
+      "rss_after": 93954048,
+      "rss_delta": 5902336
+    },
+    {
+      "index": 9,
+      "elapsed_s": 4.225805,
+      "bounded_by": "timeout",
+      "rss_before": 93954048,
+      "rss_after": 87846912,
+      "rss_delta": -6107136
+    },
+    {
+      "index": 10,
+      "elapsed_s": 1.915636,
+      "bounded_by": "confirmed",
+      "rss_before": 88080384,
+      "rss_after": 97800192,
+      "rss_delta": 9719808
+    },
+    {
+      "index": 11,
+      "elapsed_s": 4.238387,
+      "bounded_by": "timeout",
+      "rss_before": 97800192,
+      "rss_after": 87322624,
+      "rss_delta": -10477568
+    },
+    {
+      "index": 12,
+      "elapsed_s": 1.264788,
+      "bounded_by": "confirmed",
+      "rss_before": 87322624,
+      "rss_after": 93868032,
+      "rss_delta": 6545408
+    },
+    {
+      "index": 13,
+      "elapsed_s": 4.203656,
+      "bounded_by": "timeout",
+      "rss_before": 93868032,
+      "rss_after": 88150016,
+      "rss_delta": -5718016
+    },
+    {
+      "index": 14,
+      "elapsed_s": 1.879632,
+      "bounded_by": "confirmed",
+      "rss_before": 88150016,
+      "rss_after": 97697792,
+      "rss_delta": 9547776
+    },
+    {
+      "index": 15,
+      "elapsed_s": 4.25239,
+      "bounded_by": "timeout",
+      "rss_before": 97697792,
+      "rss_after": 87560192,
+      "rss_delta": -10137600
+    },
+    {
+      "index": 16,
+      "elapsed_s": 1.291639,
+      "bounded_by": "confirmed",
+      "rss_before": 87560192,
+      "rss_after": 93913088,
+      "rss_delta": 6352896
+    },
+    {
+      "index": 17,
+      "elapsed_s": 4.211928,
+      "bounded_by": "timeout",
+      "rss_before": 93913088,
+      "rss_after": 86941696,
+      "rss_delta": -6971392
+    },
+    {
+      "index": 18,
+      "elapsed_s": 1.882004,
+      "bounded_by": "confirmed",
+      "rss_before": 86941696,
+      "rss_after": 98119680,
+      "rss_delta": 11177984
+    },
+    {
+      "index": 19,
+      "elapsed_s": 4.273286,
+      "bounded_by": "timeout",
+      "rss_before": 98119680,
+      "rss_after": 88498176,
+      "rss_delta": -9621504
+    },
+    {
+      "index": 20,
+      "elapsed_s": 1.271266,
+      "bounded_by": "confirmed",
+      "rss_before": 88498176,
+      "rss_after": 94486528,
+      "rss_delta": 5988352
+    },
+    {
+      "index": 21,
+      "elapsed_s": 4.231291,
+      "bounded_by": "timeout",
+      "rss_before": 94486528,
+      "rss_after": 86667264,
+      "rss_delta": -7819264
+    },
+    {
+      "index": 22,
+      "elapsed_s": 1.862451,
+      "bounded_by": "confirmed",
+      "rss_before": 86667264,
+      "rss_after": 97587200,
+      "rss_delta": 10919936
+    },
+    {
+      "index": 23,
+      "elapsed_s": 4.231404,
+      "bounded_by": "timeout",
+      "rss_before": 97587200,
+      "rss_after": 87781376,
+      "rss_delta": -9805824
+    },
+    {
+      "index": 24,
+      "elapsed_s": 1.269082,
+      "bounded_by": "confirmed",
+      "rss_before": 87781376,
+      "rss_after": 93954048,
+      "rss_delta": 6172672
+    },
+    {
+      "index": 25,
+      "elapsed_s": 4.208055,
+      "bounded_by": "timeout",
+      "rss_before": 93954048,
+      "rss_after": 86683648,
+      "rss_delta": -7270400
+    },
+    {
+      "index": 26,
+      "elapsed_s": 1.969412,
+      "bounded_by": "confirmed",
+      "rss_before": 86683648,
+      "rss_after": 98066432,
+      "rss_delta": 11382784
+    },
+    {
+      "index": 27,
+      "elapsed_s": 4.246588,
+      "bounded_by": "timeout",
+      "rss_before": 98066432,
+      "rss_after": 88403968,
+      "rss_delta": -9662464
+    },
+    {
+      "index": 28,
+      "elapsed_s": 1.324592,
+      "bounded_by": "confirmed",
+      "rss_before": 88403968,
+      "rss_after": 94560256,
+      "rss_delta": 6156288
+    },
+    {
+      "index": 29,
+      "elapsed_s": 4.226109,
+      "bounded_by": "timeout",
+      "rss_before": 94560256,
+      "rss_after": 87203840,
+      "rss_delta": -7356416
+    },
+    {
+      "index": 30,
+      "elapsed_s": 1.892797,
+      "bounded_by": "confirmed",
+      "rss_before": 87203840,
+      "rss_after": 97775616,
+      "rss_delta": 10571776
+    },
+    {
+      "index": 31,
+      "elapsed_s": 4.269657,
+      "bounded_by": "timeout",
+      "rss_before": 97775616,
+      "rss_after": 87658496,
+      "rss_delta": -10117120
+    },
+    {
+      "index": 32,
+      "elapsed_s": 1.299125,
+      "bounded_by": "confirmed",
+      "rss_before": 87658496,
+      "rss_after": 94068736,
+      "rss_delta": 6410240
+    },
+    {
+      "index": 33,
+      "elapsed_s": 4.198016,
+      "bounded_by": "timeout",
+      "rss_before": 94068736,
+      "rss_after": 87232512,
+      "rss_delta": -6836224
+    },
+    {
+      "index": 34,
+      "elapsed_s": 1.846316,
+      "bounded_by": "confirmed",
+      "rss_before": 87232512,
+      "rss_after": 97837056,
+      "rss_delta": 10604544
+    },
+    {
+      "index": 35,
+      "elapsed_s": 4.240906,
+      "bounded_by": "timeout",
+      "rss_before": 97837056,
+      "rss_after": 87977984,
+      "rss_delta": -9859072
+    },
+    {
+      "index": 36,
+      "elapsed_s": 1.351414,
+      "bounded_by": "confirmed",
+      "rss_before": 87977984,
+      "rss_after": 94294016,
+      "rss_delta": 6316032
+    },
+    {
+      "index": 37,
+      "elapsed_s": 4.231872,
+      "bounded_by": "timeout",
+      "rss_before": 94294016,
+      "rss_after": 88150016,
+      "rss_delta": -6144000
+    },
+    {
+      "index": 38,
+      "elapsed_s": 1.857139,
+      "bounded_by": "confirmed",
+      "rss_before": 88150016,
+      "rss_after": 98299904,
+      "rss_delta": 10149888
+    },
+    {
+      "index": 39,
+      "elapsed_s": 4.231593,
+      "bounded_by": "timeout",
+      "rss_before": 98299904,
+      "rss_after": 87449600,
+      "rss_delta": -10850304
+    },
+    {
+      "index": 40,
+      "elapsed_s": 1.363334,
+      "bounded_by": "confirmed",
+      "rss_before": 87449600,
+      "rss_after": 93933568,
+      "rss_delta": 6483968
+    },
+    {
+      "index": 41,
+      "elapsed_s": 4.217228,
+      "bounded_by": "timeout",
+      "rss_before": 93933568,
+      "rss_after": 87199744,
+      "rss_delta": -6733824
+    },
+    {
+      "index": 42,
+      "elapsed_s": 1.871652,
+      "bounded_by": "confirmed",
+      "rss_before": 87199744,
+      "rss_after": 98123776,
+      "rss_delta": 10924032
+    },
+    {
+      "index": 43,
+      "elapsed_s": 4.230422,
+      "bounded_by": "timeout",
+      "rss_before": 98123776,
+      "rss_after": 86962176,
+      "rss_delta": -11161600
+    },
+    {
+      "index": 44,
+      "elapsed_s": 1.357889,
+      "bounded_by": "confirmed",
+      "rss_before": 86962176,
+      "rss_after": 94494720,
+      "rss_delta": 7532544
+    },
+    {
+      "index": 45,
+      "elapsed_s": 4.198209,
+      "bounded_by": "timeout",
+      "rss_before": 94494720,
+      "rss_after": 87793664,
+      "rss_delta": -6701056
+    },
+    {
+      "index": 46,
+      "elapsed_s": 1.870403,
+      "bounded_by": "confirmed",
+      "rss_before": 87793664,
+      "rss_after": 97898496,
+      "rss_delta": 10104832
+    },
+    {
+      "index": 47,
+      "elapsed_s": 4.228937,
+      "bounded_by": "timeout",
+      "rss_before": 97898496,
+      "rss_after": 88051712,
+      "rss_delta": -9846784
+    },
+    {
+      "index": 48,
+      "elapsed_s": 1.2911,
+      "bounded_by": "confirmed",
+      "rss_before": 88051712,
+      "rss_after": 93700096,
+      "rss_delta": 5648384
+    },
+    {
+      "index": 49,
+      "elapsed_s": 4.195485,
+      "bounded_by": "timeout",
+      "rss_before": 93700096,
+      "rss_after": 87973888,
+      "rss_delta": -5726208
+    }
+  ],
+  "designed_bytes": 1740800,
+  "rss_after_release": 86233088,
+  "live_objects_start": 50363,
+  "retained_transitions_start": 1,
+  "retained_transitions_end": 51,
+  "retained_queues_start": 6,
+  "retained_queues_end": 6,
+  "retained_queues_after_stop": 0,
+  "timeouts": 25,
+  "elapsed_min_s": 1.2647881000011694,
+  "elapsed_p50_s": 3.113899699998001,
+  "elapsed_p95_s": 4.261887149998074,
+  "elapsed_max_s": 4.273285600000236,
+  "rss_delta_p50": -5435392,
+  "rss_delta_p95": 11063705,
+  "rss_delta_max": 11382784,
+  "stop_s": 0.16618279999966035,
+  "wall_s": 151.2673916000058,
+  "machine": {
+    "clean": true,
+    "our_pids": [
+      7056,
+      8124,
+      8552,
+      8572,
+      9508,
+      13648,
+      16912,
+      18012,
+      18268
+    ],
+    "python_pids": [
+      7056,
+      8124,
+      18012,
+      18268
+    ],
+    "competing_pids": [],
+    "detail": "no Python process outside this run's process tree"
+  },
+  "feeds_frames": 5979
+}

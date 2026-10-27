@@ -1,0 +1,451 @@
+{
+  "timeout_s": 30.0,
+  "transitions": 50,
+  "rss_start": 100315136,
+  "rss_end": 108892160,
+  "leak_bytes": 8577024,
+  "unexplained_bytes": -3919872,
+  "live_objects": 50834,
+  "samples": [
+    {
+      "index": 0,
+      "elapsed_s": 1.847193,
+      "bounded_by": "confirmed",
+      "rss_before": 100884480,
+      "rss_after": 94986240,
+      "rss_delta": -5898240
+    },
+    {
+      "index": 1,
+      "elapsed_s": 4.620132,
+      "bounded_by": "confirmed",
+      "rss_before": 94986240,
+      "rss_after": 100737024,
+      "rss_delta": 5750784
+    },
+    {
+      "index": 2,
+      "elapsed_s": 2.457998,
+      "bounded_by": "confirmed",
+      "rss_before": 100737024,
+      "rss_after": 98639872,
+      "rss_delta": -2097152
+    },
+    {
+      "index": 3,
+      "elapsed_s": 4.10818,
+      "bounded_by": "confirmed",
+      "rss_before": 98639872,
+      "rss_after": 98742272,
+      "rss_delta": 102400
+    },
+    {
+      "index": 4,
+      "elapsed_s": 1.79351,
+      "bounded_by": "confirmed",
+      "rss_before": 98746368,
+      "rss_after": 95174656,
+      "rss_delta": -3571712
+    },
+    {
+      "index": 5,
+      "elapsed_s": 4.585455,
+      "bounded_by": "confirmed",
+      "rss_before": 95174656,
+      "rss_after": 100552704,
+      "rss_delta": 5378048
+    },
+    {
+      "index": 6,
+      "elapsed_s": 2.43394,
+      "bounded_by": "confirmed",
+      "rss_before": 100556800,
+      "rss_after": 98390016,
+      "rss_delta": -2166784
+    },
+    {
+      "index": 7,
+      "elapsed_s": 4.136041,
+      "bounded_by": "confirmed",
+      "rss_before": 98390016,
+      "rss_after": 99348480,
+      "rss_delta": 958464
+    },
+    {
+      "index": 8,
+      "elapsed_s": 1.823619,
+      "bounded_by": "confirmed",
+      "rss_before": 99348480,
+      "rss_after": 95313920,
+      "rss_delta": -4034560
+    },
+    {
+      "index": 9,
+      "elapsed_s": 4.588973,
+      "bounded_by": "confirmed",
+      "rss_before": 95313920,
+      "rss_after": 101269504,
+      "rss_delta": 5955584
+    },
+    {
+      "index": 10,
+      "elapsed_s": 2.454572,
+      "bounded_by": "confirmed",
+      "rss_before": 101269504,
+      "rss_after": 100429824,
+      "rss_delta": -839680
+    },
+    {
+      "index": 11,
+      "elapsed_s": 4.083643,
+      "bounded_by": "confirmed",
+      "rss_before": 100429824,
+      "rss_after": 100282368,
+      "rss_delta": -147456
+    },
+    {
+      "index": 12,
+      "elapsed_s": 1.808234,
+      "bounded_by": "confirmed",
+      "rss_before": 100282368,
+      "rss_after": 95723520,
+      "rss_delta": -4558848
+    },
+    {
+      "index": 13,
+      "elapsed_s": 4.640029,
+      "bounded_by": "confirmed",
+      "rss_before": 95723520,
+      "rss_after": 102166528,
+      "rss_delta": 6443008
+    },
+    {
+      "index": 14,
+      "elapsed_s": 2.439225,
+      "bounded_by": "confirmed",
+      "rss_before": 102166528,
+      "rss_after": 100749312,
+      "rss_delta": -1417216
+    },
+    {
+      "index": 15,
+      "elapsed_s": 4.08301,
+      "bounded_by": "confirmed",
+      "rss_before": 100749312,
+      "rss_after": 101036032,
+      "rss_delta": 286720
+    },
+    {
+      "index": 16,
+      "elapsed_s": 1.789336,
+      "bounded_by": "confirmed",
+      "rss_before": 101036032,
+      "rss_after": 97345536,
+      "rss_delta": -3690496
+    },
+    {
+      "index": 17,
+      "elapsed_s": 4.608201,
+      "bounded_by": "confirmed",
+      "rss_before": 97345536,
+      "rss_after": 102850560,
+      "rss_delta": 5505024
+    },
+    {
+      "index": 18,
+      "elapsed_s": 2.477372,
+      "bounded_by": "confirmed",
+      "rss_before": 102850560,
+      "rss_after": 101806080,
+      "rss_delta": -1044480
+    },
+    {
+      "index": 19,
+      "elapsed_s": 4.046751,
+      "bounded_by": "confirmed",
+      "rss_before": 101806080,
+      "rss_after": 102096896,
+      "rss_delta": 290816
+    },
+    {
+      "index": 20,
+      "elapsed_s": 1.79703,
+      "bounded_by": "confirmed",
+      "rss_before": 102096896,
+      "rss_after": 98213888,
+      "rss_delta": -3883008
+    },
+    {
+      "index": 21,
+      "elapsed_s": 4.597936,
+      "bounded_by": "confirmed",
+      "rss_before": 98213888,
+      "rss_after": 103653376,
+      "rss_delta": 5439488
+    },
+    {
+      "index": 22,
+      "elapsed_s": 2.486235,
+      "bounded_by": "confirmed",
+      "rss_before": 103653376,
+      "rss_after": 101937152,
+      "rss_delta": -1716224
+    },
+    {
+      "index": 23,
+      "elapsed_s": 4.032659,
+      "bounded_by": "confirmed",
+      "rss_before": 101937152,
+      "rss_after": 102748160,
+      "rss_delta": 811008
+    },
+    {
+      "index": 24,
+      "elapsed_s": 1.757509,
+      "bounded_by": "confirmed",
+      "rss_before": 102748160,
+      "rss_after": 99958784,
+      "rss_delta": -2789376
+    },
+    {
+      "index": 25,
+      "elapsed_s": 4.657043,
+      "bounded_by": "confirmed",
+      "rss_before": 99958784,
+      "rss_after": 105771008,
+      "rss_delta": 5812224
+    },
+    {
+      "index": 26,
+      "elapsed_s": 2.498299,
+      "bounded_by": "confirmed",
+      "rss_before": 105771008,
+      "rss_after": 103329792,
+      "rss_delta": -2441216
+    },
+    {
+      "index": 27,
+      "elapsed_s": 4.068153,
+      "bounded_by": "confirmed",
+      "rss_before": 103329792,
+      "rss_after": 104251392,
+      "rss_delta": 921600
+    },
+    {
+      "index": 28,
+      "elapsed_s": 1.791962,
+      "bounded_by": "confirmed",
+      "rss_before": 104251392,
+      "rss_after": 99917824,
+      "rss_delta": -4333568
+    },
+    {
+      "index": 29,
+      "elapsed_s": 4.612768,
+      "bounded_by": "confirmed",
+      "rss_before": 99917824,
+      "rss_after": 105512960,
+      "rss_delta": 5595136
+    },
+    {
+      "index": 30,
+      "elapsed_s": 2.410795,
+      "bounded_by": "confirmed",
+      "rss_before": 105512960,
+      "rss_after": 104456192,
+      "rss_delta": -1056768
+    },
+    {
+      "index": 31,
+      "elapsed_s": 4.037015,
+      "bounded_by": "confirmed",
+      "rss_before": 104456192,
+      "rss_after": 104628224,
+      "rss_delta": 172032
+    },
+    {
+      "index": 32,
+      "elapsed_s": 1.782012,
+      "bounded_by": "confirmed",
+      "rss_before": 104628224,
+      "rss_after": 101076992,
+      "rss_delta": -3551232
+    },
+    {
+      "index": 33,
+      "elapsed_s": 4.595696,
+      "bounded_by": "confirmed",
+      "rss_before": 101076992,
+      "rss_after": 106606592,
+      "rss_delta": 5529600
+    },
+    {
+      "index": 34,
+      "elapsed_s": 2.418674,
+      "bounded_by": "confirmed",
+      "rss_before": 106606592,
+      "rss_after": 104812544,
+      "rss_delta": -1794048
+    },
+    {
+      "index": 35,
+      "elapsed_s": 4.10044,
+      "bounded_by": "confirmed",
+      "rss_before": 104812544,
+      "rss_after": 105172992,
+      "rss_delta": 360448
+    },
+    {
+      "index": 36,
+      "elapsed_s": 1.794633,
+      "bounded_by": "confirmed",
+      "rss_before": 105172992,
+      "rss_after": 102014976,
+      "rss_delta": -3158016
+    },
+    {
+      "index": 37,
+      "elapsed_s": 4.643184,
+      "bounded_by": "confirmed",
+      "rss_before": 102014976,
+      "rss_after": 107212800,
+      "rss_delta": 5197824
+    },
+    {
+      "index": 38,
+      "elapsed_s": 2.468316,
+      "bounded_by": "confirmed",
+      "rss_before": 107212800,
+      "rss_after": 105959424,
+      "rss_delta": -1253376
+    },
+    {
+      "index": 39,
+      "elapsed_s": 4.189648,
+      "bounded_by": "confirmed",
+      "rss_before": 105959424,
+      "rss_after": 106655744,
+      "rss_delta": 696320
+    },
+    {
+      "index": 40,
+      "elapsed_s": 1.857437,
+      "bounded_by": "confirmed",
+      "rss_before": 106655744,
+      "rss_after": 102658048,
+      "rss_delta": -3997696
+    },
+    {
+      "index": 41,
+      "elapsed_s": 4.610002,
+      "bounded_by": "confirmed",
+      "rss_before": 102658048,
+      "rss_after": 108511232,
+      "rss_delta": 5853184
+    },
+    {
+      "index": 42,
+      "elapsed_s": 2.474175,
+      "bounded_by": "confirmed",
+      "rss_before": 108511232,
+      "rss_after": 105852928,
+      "rss_delta": -2658304
+    },
+    {
+      "index": 43,
+      "elapsed_s": 4.052055,
+      "bounded_by": "confirmed",
+      "rss_before": 105852928,
+      "rss_after": 106287104,
+      "rss_delta": 434176
+    },
+    {
+      "index": 44,
+      "elapsed_s": 1.788686,
+      "bounded_by": "confirmed",
+      "rss_before": 106287104,
+      "rss_after": 102981632,
+      "rss_delta": -3305472
+    },
+    {
+      "index": 45,
+      "elapsed_s": 4.614917,
+      "bounded_by": "confirmed",
+      "rss_before": 102981632,
+      "rss_after": 108576768,
+      "rss_delta": 5595136
+    },
+    {
+      "index": 46,
+      "elapsed_s": 2.462565,
+      "bounded_by": "confirmed",
+      "rss_before": 108576768,
+      "rss_after": 106659840,
+      "rss_delta": -1916928
+    },
+    {
+      "index": 47,
+      "elapsed_s": 4.089877,
+      "bounded_by": "confirmed",
+      "rss_before": 106659840,
+      "rss_after": 106962944,
+      "rss_delta": 303104
+    },
+    {
+      "index": 48,
+      "elapsed_s": 1.813921,
+      "bounded_by": "confirmed",
+      "rss_before": 106962944,
+      "rss_after": 103342080,
+      "rss_delta": -3620864
+    },
+    {
+      "index": 49,
+      "elapsed_s": 4.592905,
+      "bounded_by": "confirmed",
+      "rss_before": 103342080,
+      "rss_after": 108892160,
+      "rss_delta": 5550080
+    }
+  ],
+  "designed_bytes": 12496896,
+  "rss_after_release": 96395264,
+  "live_objects_start": 50385,
+  "retained_transitions_start": 1,
+  "retained_transitions_end": 51,
+  "retained_queues_start": 6,
+  "retained_queues_end": 156,
+  "timeouts": 0,
+  "elapsed_min_s": 1.75750859999971,
+  "elapsed_p50_s": 3.265478700002859,
+  "elapsed_p95_s": 4.631075324998529,
+  "elapsed_max_s": 4.657042999999248,
+  "rss_delta_p50": -493568,
+  "rss_delta_p95": 5834752,
+  "rss_delta_max": 6443008,
+  "stop_s": 0.1511679000032018,
+  "wall_s": 166.9184529999984,
+  "machine": {
+    "clean": true,
+    "our_pids": [
+      8552,
+      8572,
+      10964,
+      11308,
+      13648,
+      14156,
+      16200,
+      16912,
+      19332
+    ],
+    "python_pids": [
+      10964,
+      14156,
+      16200,
+      19332
+    ],
+    "competing_pids": [],
+    "detail": "no Python process outside this run's process tree"
+  },
+  "feeds_frames": 6650
+}
