@@ -35,6 +35,12 @@ Window {
     readonly property string pinnedExplanationText: pinnedExplanationKey.length > 0
         ? bridgeUi.explain(pinnedExplanationKey) : ""
 
+    // **The presenter drawer (M3 Task 5).** A display state, like attract mode: the drawer
+    // is an overlay anchored to the window's right edge, so opening it cannot reflow the
+    // hero, the tiles, the badges or the staleness line. `bridgeUi.drawerWidth` is the
+    // width, from `app/theme.py`, so no pixel count lives in this file.
+    property bool drawerOpen: false
+
     // The id is lower-case on purpose: QML rejects an id beginning with an uppercase
     // letter, and `Bridge { id: Bridge }` does not load. Measured: the window came up
     // with zero root objects and the only diagnostic was `IDs cannot start with an
@@ -44,6 +50,16 @@ Window {
     Rectangle {
         id: screen
         anchors.fill: parent
+        // **Named so a test can read whether the live screen is on screen at all.** M3
+        // Task 4's attract mode hides this rectangle; the attract render asserts it is not
+        // visible, which is what makes "no live number is shown" a checkable claim.
+        objectName: "liveScreen"
+        // **Hidden while attract mode is up (M3 Task 4).** Attract mode must show no live
+        // number, and the only way to be sure of that is for the live screen not to be on
+        // screen at all. The overlay below shows recorded, dated headlines instead, and
+        // this binding restores the live screen the moment attract is left - it is derived
+        // from the one flag attract mode owns, so nothing had to be saved and restored.
+        visible: !bridge.attract_active
         // The window's own background. Distinct from every text colour: this fill was
         // once `Theme.TEXT_ON_PANEL` by accident, and the first render came back with
         // 842178 near-white pixels - a light screen with dark text, which is legible and
@@ -504,6 +520,12 @@ Window {
 
                                 delegate: Rectangle {
                                     required property string modelData
+                                    // **Named so a test can reach the button and click it.**
+                                    // The M1 defect was a `?` panel whose call did not
+                                    // exist; a button a test cannot find is a button whose
+                                    // deadness is invisible, which is exactly how that
+                                    // defect survived.
+                                    objectName: "explainButton_" + modelData
                                     width: helpLabel.implicitWidth + Theme.SPACING.md
                                     height: Theme.TYPE_DETAIL + Theme.SPACING.sm * 2
                                     radius: Theme.RADIUS
@@ -522,6 +544,7 @@ Window {
                                     }
 
                                     MouseArea {
+                                        objectName: "explainButtonMouse_" + modelData
                                         anchors.fill: parent
                                         onClicked: window.pinnedExplanationKey =
                                             (window.pinnedExplanationKey === modelData
@@ -565,14 +588,150 @@ Window {
         }
     }
 
-    // Escape closes the pinned panel and nothing else.
+    // =================================================================================
+    // Attract mode (M3 Task 4)
+    // =================================================================================
+    //
+    // **The one screen whose whole purpose is to show no number it cannot date.** The live
+    // screen above is hidden while this is up (`screen.visible: !bridge.attract_active`),
+    // so there is no live figure behind it to be misread. Everything here comes from
+    // `bridge.attract_headlines`, a constant list of recorded measurements, each rendered
+    // **with the date it was recorded and the committed file it came from**.
+    //
+    // The overlay is a `Loader` with `active: bridge.attract_active` and an inline
+    // `Component`, so when attract mode is off these items **do not exist in the scene
+    // graph at all**. That keeps the booth screen's font census (and every committed
+    // capture) exactly what it was, and it means the idle surface cannot change the live
+    // one by merely existing.
+    Loader {
+        id: attractLoader
+        // Named so the render can assert the overlay **loaded**, not merely that it was
+        // asked for: an `active` Loader whose component failed reads exactly like an empty
+        // overlay, and "no strings" must never be read as a pass.
+        objectName: "attractLoader"
+        anchors.fill: parent
+        active: bridge.attract_active
+        sourceComponent: attractOverlay
+    }
+
+    Component {
+        id: attractOverlay
+
+        Rectangle {
+            objectName: "attractOverlay"
+            anchors.fill: parent
+            color: Theme.BG
+
+            Column {
+                anchors.centerIn: parent
+                width: parent.width - Theme.MARGIN * 2
+                spacing: Theme.SPACING.lg
+
+                Text {
+                    objectName: "attractTitle"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: bridge.attract_title
+                    color: Theme.TEXT_ON_PANEL
+                    font.family: Theme.FONT_FAMILY
+                    font.pixelSize: Theme.TYPE_HEADLINE
+                    font.bold: true
+                }
+
+                // The recorded-surface label, spec section 9's wording. It is the first
+                // thing a visitor reads and it says what the figures below it are.
+                Text {
+                    objectName: "attractRecordedLabel"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: bridge.attract_recorded_label
+                    color: Theme.COLOR_WARN
+                    font.family: Theme.FONT_FAMILY
+                    font.pixelSize: Theme.TYPE_LABEL
+                    font.bold: true
+                }
+
+                Repeater {
+                    model: bridge.attract_headlines
+
+                    delegate: Column {
+                        required property var modelData
+                        required property int index
+                        width: parent.width
+                        spacing: Theme.SPACING.xs
+
+                        Text {
+                            objectName: "attractHeadline_" + index
+                            width: parent.width
+                            text: modelData.text
+                            color: Theme.TEXT_ON_PANEL
+                            font.family: Theme.FONT_FAMILY
+                            font.pixelSize: Theme.TYPE_DETAIL
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        // **The date and the source, on the same slide as the number.**
+                        // A figure here without this line would be a number nobody can
+                        // date, which is the failure this mode exists to prevent.
+                        Text {
+                            objectName: "attractHeadlineRecorded_" + index
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "recorded " + modelData.date + "  \u00b7  " + modelData.source
+                            color: Theme.COLOR_NEUTRAL
+                            font.family: Theme.FONT_FAMILY
+                            font.pixelSize: Theme.TYPE_DETAIL
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =================================================================================
+    // The presenter drawer (M3 Task 5)
+    // =================================================================================
+    //
+    // **An overlay, never a member of the layout `Column`.** It is anchored to the window's
+    // right edge and spans the full height, so opening it cannot move the hero, the tiles,
+    // the badges or the staleness line - `tests/test_ui_contract.py` asserts the positions
+    // are identical before and after, item by item. Its width comes from
+    // `bridgeUi.drawerWidth`, which is `app/theme.py`'s token, so no pixel count is here.
+    //
+    // `active: window.drawerOpen` means the drawer does not exist in the scene graph while
+    // it is closed, so it cannot change the booth screen's font census or its captures.
+    Loader {
+        id: drawerLoader
+        // Named so the render can read its **status**: a `Loader` whose component failed
+        // to load leaves an empty rectangle that every "does the drawer exist" question
+        // answers `false` to, and the failure has to be visible somewhere.
+        objectName: "drawerLoader"
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: bridgeUi.drawerWidth
+        active: window.drawerOpen
+        source: "PresenterDrawer.qml"
+    }
+
+    // Escape closes the pinned panel and the presenter drawer, and nothing else.
     //
     // A `Shortcut` rather than `Keys.onEscapePressed`: `Window` is not an `Item`, so the
     // attached `Keys` property cannot bind to it and Qt reports `Could not attach Keys
     // property to ... is not an Item` (measured). `Shortcut` works on a window, and it is
     // also the shape the design's keyboard section will grow into.
     Shortcut {
+        objectName: "escapeShortcut"
         sequence: "Escape"
-        onActivated: window.pinnedExplanationKey = ""
+        onActivated: {
+            window.pinnedExplanationKey = ""
+            window.drawerOpen = false
+        }
+    }
+
+    // The drawer's keyboard entry point. Spec section 9's presenter mode: a presenter can
+    // reach the explanations from the keyboard without a pointer.
+    Shortcut {
+        objectName: "drawerOpenShortcut"
+        sequence: "F1"
+        onActivated: window.drawerOpen = !window.drawerOpen
     }
 }

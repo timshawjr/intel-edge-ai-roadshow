@@ -105,10 +105,14 @@ class _Extents:
         self.height = int(height or 0)
 
 __all__ = [
+    "ATTRACT_HEADLINES",
+    "ATTRACT_IDLE_SECONDS",
+    "ATTRACT_TITLE",
     "CPU_UNAVAILABLE_TEXT",
     "DEFAULT_ROUTE_STREAM",
     "EXPLANATIONS",
     "FrameImageProvider",
+    "RECORDED_DEMO_LABEL",
     "RECORDED_FOOTAGE_LABEL",
     "SCOPE_NOTE_LABEL",
     "SLOT_CALLS_SAFE_IN_A_QML_BINDING",
@@ -215,6 +219,76 @@ def _shipped_scope_note() -> str:
 
 #: The reduction, in the shipped pack's own words. See `_shipped_scope_note`.
 SCOPE_NOTE_LABEL = _shipped_scope_note()
+
+
+# --------------------------------------------------------------------------------------
+# Attract mode (M3 Task 4)
+# --------------------------------------------------------------------------------------
+#
+# **Attract mode shows no number it cannot date.** The idle screen is a booth surface that
+# nobody is driving, and the failure this section exists to prevent is a live figure that
+# has quietly gone stale being read as current. So attract mode shows **recorded
+# measurements only**, each carrying the date it was recorded and the committed file it
+# came from, and the live screen is hidden while it is up - there is no live number behind
+# the overlay to be misread, and there is no path here that can render a figure without a
+# date.
+
+#: The attract slide's title. Not a measurement and not a claim.
+ATTRACT_TITLE = "Intel Edge AI Roadshow"
+
+#: Spec section 9's wording for a recorded surface, quoted rather than paraphrased.
+RECORDED_DEMO_LABEL = "Recorded demonstration \u2014 metrics are not live"
+
+#: Spec section 9: attract starts after 90 s of no presenter input. A time, like
+#: `STALE_AFTER_SECONDS`, so it lives in this module rather than in `app/theme.py`, which
+#: holds layout tokens and no metrics.
+ATTRACT_IDLE_SECONDS: float = 90.0
+
+# **Rotation is not implemented, and there is no constant pretending otherwise.** The
+# design's section 9 says the attract slides rotate every ~45 s. This implementation shows
+# **every recorded claim at once**, on one screen, each with its own date and source - which
+# is strictly stronger for the obligation this mode exists to discharge: a claim cannot be
+# read without the line that dates it, because there is no transition in which the two could
+# be separated, and no claim is off screen for 90 of every 135 s. Rotation is deferred until
+# there are more claims than fit on one screen. Stated here rather than in a commit message
+# so the next reader does not look for a timer that is not there.
+
+#: **The recorded headline claims, each with the date it was recorded and the committed
+#: file it is sourced from.** Every figure here is a measured result from a committed
+#: artefact; the dates are the measurement dates recorded in
+#: `docs/qualification/M2-qualification.md` (2026-10-03) and `M1-qualification.md`
+#: (2026-10-02).
+#:
+#: **The numbers are pinned to the measurements by `tests/test_ui_contract.py`,** which
+#: re-reads `docs/qualification/m2-headless/single-frame-latency-run1..4.json` and
+#: `allcpu-steady-120s*.json` and fails if a range here has drifted from the files it
+#: cites. A claim that is dated but whose number no longer matches its source is a
+#: confident number with nothing behind it, which is the class this project keeps finding.
+ATTRACT_HEADLINES: tuple[dict[str, str], ...] = (
+    {
+        "text": "Single-frame inference, 640x640, batch 1, 30 inferences: "
+                "CPU 22.40-22.81 ms, GPU 3.40-3.54 ms, NPU 5.21-5.74 ms. "
+                "Not a throughput claim.",
+        "date": "2026-10-03",
+        "source": "docs/qualification/M2-qualification.md",
+    },
+    {
+        "text": "Three cameras on the CPU: frame age p50 11.3-14.7 s, p95 12.3-16.0 s, "
+                "backlog 173-242 frames per stream, 0 drops, all three active.",
+        "date": "2026-10-03",
+        # **All three holds, named.** The figures are a range across three 120 s runs; a
+        # source naming only `allcpu-steady-120s.json` would not contain the upper end of
+        # its own range, so a visitor who opened the citation would find a number that
+        # disagreed with the screen.
+        "source": "docs/qualification/m2-headless/allcpu-steady-120s*.json (3 holds)",
+    },
+    {
+        "text": "Delivered event: people-in-zone presence, 2 events per clip. "
+                "NOT a people count. NOT a dwell measurement.",
+        "date": "2026-10-02",
+        "source": "docs/qualification/M1-qualification.md",
+    },
+)
 
 #: The explanations the design's section 9 requires to be reachable from hover and from a
 #: pinned panel. Values are the text; the QML shows them, this module owns them.
@@ -803,6 +877,10 @@ class UiBridge(QObject):
     #: must not move when a background thumbnail's camera delivers a frame - otherwise
     #: every camera at 15 fps re-fetched the hero's image 45 times a second.
     streamFramesChanged = Signal()
+    #: **Attract mode was entered or left. M3 Task 4.** `attract_active` is the one
+    #: property the attract overlay binds to; without this signal the Loader would be
+    #: evaluated once at `engine.load` and the idle screen would never appear.
+    attractActiveChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -864,6 +942,15 @@ class UiBridge(QObject):
         #: the bridge sees applied results, and "applied" is not the same word as
         #: "analysed". See `frames_analysed`.
         self._frames_analysed = 0
+        #: **Attract mode (M3 Task 4).** The one piece of state attract mode owns. It is a
+        #: display flag and nothing else: entering it hides the live screen and shows the
+        #: recorded headlines, and leaving it restores the live screen **exactly** because
+        #: no other field was touched. See `set_attract` and `tests/test_ui_contract.py`.
+        self._attract_active = False
+        #: The `perf_counter` reading of the last presenter input, for the idle timer. Set
+        #: at construction so a window that is never touched enters attract after the idle
+        #: interval rather than immediately.
+        self._last_activity = time.perf_counter()
 
         # Utilisation is **unavailable**, and it is unavailable for a measured reason. The
         # reasons are the strings `app/telemetry/pdh.py` publishes as
@@ -1406,12 +1493,29 @@ class UiBridge(QObject):
     def utilisation_measured_reason(self) -> str:
         """The full measured text, quoted from `app.telemetry.pdh` by reference.
 
-        This is the 922-character refusal the PDH module publishes verbatim, and it is
+        This is the 921-character refusal the PDH module publishes verbatim, and it is
         reachable from the pinned explanation panel. **Quoted rather than restated**: a
         copy in this module would be a second version of a measured string that could
         disagree with the one the measurement produced.
         """
         return self._utilisation_reason
+
+    @Property("QStringList", constant=True)
+    def explanation_keys(self) -> list[str]:
+        """The explanation keys, **the one definition both surfaces offer**.
+
+        **M3 Task 5.** The drawer's first version bound its `Repeater` to
+        `bridge.explanationKeys`. This bridge has `explanations` and `explanation()` and
+        **no** `explanationKeys`, so the model was `undefined`, the `Repeater` produced
+        **zero delegates**, and the drawer opened with no explanation buttons at all - the
+        M1 dead-affordance shape, one surface over, on the surface whose job is explaining
+        the boxes. (Measured while fixing it: a `Loader`-loaded file *can* read the ids of
+        the file that loaded it, so binding the drawer to `bridgeUi.explanationKeys` would
+        have worked too - but that is a second name for the list and it left `Bridge.qml`
+        carrying a literal that could drift from `EXPLANATIONS`. The list lives here now
+        and both surfaces read it.)
+        """
+        return list(EXPLANATIONS)
 
     @Property("QVariantMap", constant=True)
     def explanations(self) -> dict:
@@ -1619,6 +1723,65 @@ class UiBridge(QObject):
         return self._frames_analysed
 
     frames_analysed = Property(int, _get_frames_analysed, notify=framesAnalysedChanged)
+
+    # -- attract mode (M3 Task 4) ------------------------------------------------------
+    #
+    # **Attract mode owns exactly one field.** It is a display state: it hides the live
+    # screen and shows recorded, dated headlines, and it touches nothing else. That is what
+    # makes "exiting restores the state it interrupted, byte for byte" a property of the
+    # code rather than a hope - there is no other field for it to have changed.
+
+    def _get_attract_active(self) -> bool:
+        return self._attract_active
+
+    attract_active = Property(bool, _get_attract_active, notify=attractActiveChanged)
+
+    @Property(str, constant=True)
+    def attract_title(self) -> str:
+        """The attract slide's title. Not a measurement and not a claim."""
+        return ATTRACT_TITLE
+
+    @Property(str, constant=True)
+    def attract_recorded_label(self) -> str:
+        """Spec section 9's recorded-surface label, shown on every attract slide."""
+        return RECORDED_DEMO_LABEL
+
+    @Property("QVariantList", constant=True)
+    def attract_headlines(self) -> list:
+        """The recorded headline claims, each with its date and its committed source.
+
+        Constant on purpose: these are recorded measurements, not live state, so there is
+        nothing here that could go stale between two evaluations. The overlay renders each
+        claim **with its date**, which is the whole obligation of attract mode.
+        """
+        return [dict(headline) for headline in ATTRACT_HEADLINES]
+
+    def set_attract(self, active: bool) -> None:
+        """Enter (`True`) or leave (`False`) attract mode. **The only state it owns.**"""
+        wanted = bool(active)
+        if wanted == self._attract_active:
+            return
+        self._attract_active = wanted
+        self.attractActiveChanged.emit()
+
+    def attract_due(self, *, now: float | None = None) -> bool:
+        """Whether the idle interval has elapsed with no presenter input. Spec section 9.
+
+        `now` is a parameter so the decision is testable without a clock; production
+        passes nothing and the current `perf_counter` is used.
+        """
+        current = time.perf_counter() if now is None else float(now)
+        return (current - self._last_activity) >= ATTRACT_IDLE_SECONDS
+
+    def note_activity(self, *, now: float | None = None) -> None:
+        """Record presenter input: reset the idle clock and leave attract mode.
+
+        Spec section 9: "presenter (any input pauses rotation)". So any input both resets
+        the idle countdown and dismisses the attract overlay.
+        """
+        self._last_activity = time.perf_counter() if now is None else float(now)
+        self.set_attract(False)
+
 
     @Slot(str, result=str)
     def display_text(self, name: str) -> str:

@@ -62,6 +62,8 @@ synthetic supervisor, so the summary's shape is verified everywhere and the real
 only evidence about the numbers.
 """
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -71,6 +73,7 @@ import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -720,6 +723,88 @@ class CommandLine(unittest.TestCase):
         self.assertTrue(args.headless)
         self.assertFalse(args.selftest)
 
+
+
+class HeadlessStreamsFlag(unittest.TestCase):
+    """`--streams` under `--headless`: **refused with a reason, never silently dropped.**
+
+    ## The defect
+
+    `--streams` was read only by the `--windowed` branch. `--headless --streams 3`
+    therefore ran **one** stream and accepted a flag that said three, and its summary held
+    one camera's numbers under a banner that claimed three. A flag that claims something it
+    does not do is a truthfulness defect: the operator believes the run they asked for, and
+    the JSON they take away describes a different one.
+
+    ## The choice
+
+    Honour it or refuse it. The headless path builds one supervisor for one stream and its
+    summary is single-stream by construction (`run_headless` takes no `streams` argument),
+    so it is **refused with exit code 2 and a stated reason** - and `--windowed --streams 3`
+    is proved to still pass `3` through, so the refusal is scoped to the path that cannot
+    honour it.
+    """
+
+    def test_headless_refuses_a_stream_count_it_cannot_run(self):
+        from app import main as main_module
+
+        started = []
+        stderr = io.StringIO()
+        with mock.patch.object(main_module, "run_headless",
+                               lambda **kwargs: started.append(kwargs)), \
+                contextlib.redirect_stderr(stderr):
+            code = main_module.main(["--headless", "--streams", "3", "--seconds", "0.1"])
+        self.assertEqual(started, [],
+                         f"the headless run started anyway, having been asked for 3 cameras "
+                         f"and able to run 1: {started}")
+        self.assertEqual(code, 2,
+                         "a refused run must not exit 0 - that is how a flag that does "
+                         "nothing looks from the outside")
+        message = stderr.getvalue()
+        for fragment in ("--streams 3", "--headless", "one camera", "--windowed"):
+            self.assertIn(fragment, message,
+                          f"the refusal must say what was asked, what would have run and "
+                          f"which flag does honour it; it says: {message!r}")
+
+    def test_headless_still_runs_one_stream(self):
+        # The refusal is for the count it cannot honour, not for the flag existing. Asking
+        # for the one stream headless really runs must go ahead.
+        from app import main as main_module
+
+        started = []
+
+        def fake_headless(**kwargs):
+            started.append(kwargs)
+            return {"frames_analysed": 1, "device": {"state": "active"},
+                    "frames_submitted": 1, "frames_refused": 0,
+                    "frames_refused_reasons": {}, "errors": []}
+
+        stdout = io.StringIO()
+        with mock.patch.object(main_module, "run_headless", fake_headless), \
+                contextlib.redirect_stdout(stdout):
+            code = main_module.main(["--headless", "--streams", "1", "--seconds", "0.1"])
+        self.assertEqual(len(started), 1, "one stream was asked for and none ran")
+        self.assertEqual(code, 0, stdout.getvalue())
+
+    def test_the_windowed_path_still_receives_the_stream_count(self):
+        # **The other half of the claim.** A refusal in headless that also dropped the flag
+        # in windowed would be the same defect one branch over.
+        from app import main as main_module
+
+        seen = {}
+        with mock.patch.object(main_module, "run_windowed",
+                               lambda **kwargs: seen.update(kwargs) or 0):
+            code = main_module.main(["--windowed", "--streams", "3"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.get("streams"), 3,
+                         f"the windowed path received {seen.get('streams')!r} cameras after "
+                         f"being asked for 3: {seen}")
+
+    def test_the_default_is_one_stream_on_both_paths(self):
+        from app.main import build_parser
+
+        self.assertEqual(build_parser().parse_args(["--headless"]).streams, 1)
+        self.assertEqual(build_parser().parse_args(["--windowed"]).streams, 1)
 
 
 class InputAcknowledgement(unittest.TestCase):

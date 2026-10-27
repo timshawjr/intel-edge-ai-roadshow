@@ -98,6 +98,7 @@ __all__ = [
     "REGISTERED_PROVIDERS",
     "SIMULATED_PROVIDER_PREFIXES",
     "assert_no_simulation_in_release",
+    "attract_mode_permitted",
     "build_parser",
     "build_run_summary",
     "main",
@@ -183,6 +184,20 @@ def assert_no_simulation_in_release(release: bool, providers: Sequence[str]) -> 
         f"{', '.join(offenders)}. A release build must publish only measured figures "
         f"(AGENTS.md rule 14). Unregister the provider, or run without --release."
     )
+
+
+def attract_mode_permitted(*, release: bool, providers: Sequence[str]) -> bool:
+    """Whether attract mode may run, and **it cannot in a release build that simulates**.
+
+    Attract mode's whole claim is "every figure here is a recorded measurement with a
+    date". A build that registered a simulated provider could put a fabricated figure on
+    the idle screen - the one surface a passer-by reads without a presenter next to it - so
+    the release gate is re-asserted at the point attract mode would start, not only once at
+    process start. Returns `True` when permitted; raises `SystemExit` (naming the provider)
+    otherwise.
+    """
+    assert_no_simulation_in_release(release=release, providers=providers)
+    return True
 
 
 # --------------------------------------------------------------------------------------
@@ -737,7 +752,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                  source: str = "loop", session_id: str = "booth",
                  select: Mapping[str, str] | None = None,
                  fail_stream: str | None = None,
-                 streams: int = 1) -> int:
+                 streams: int = 1,
+                 release: bool = RELEASE_BY_DEFAULT) -> int:
     """The live booth. Returns the process exit code.
 
     **Device discovery happens here, before the window opens**, and it is announced:
@@ -920,6 +936,11 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     for clip in clips:
         _start_feeders(bridge, supervisor, clip)
     _start_telemetry(bridge, supervisor, application)
+    # **Attract mode (M3 Task 4).** The idle timer and the input watcher. The gate is
+    # re-asserted before attract can start, because the idle screen is the one surface a
+    # passer-by reads with no presenter next to it - see `attract_mode_permitted`.
+    _start_attract_mode(bridge, application, release=release,
+                        providers=tuple(REGISTERED_PROVIDERS) + consulted_providers())
     if select:
         # **After** `engine.load` and **after** `start()`, on its own thread. See the
         # `select` section of this function's docstring.
@@ -1420,6 +1441,67 @@ def _start_telemetry(bridge: Any, supervisor: Any, application: Any) -> None:
     timer.start(500)
 
 
+def _start_attract_mode(bridge: Any, application: Any, *, release: bool,
+                        providers: Sequence[str]) -> None:
+    """Arm the idle timer and the input watcher for attract mode. **UI thread.**
+
+    Spec section 9: attract mode starts after **90 s** with no presenter input, and any
+    input dismisses it. Both halves are wired here:
+
+    - a 1 Hz `QTimer` asks the bridge whether the idle interval has elapsed
+      (`UiBridge.attract_due`) and, when it has, enters attract mode - after re-asserting
+      the release gate, so a build that registered a simulated provider cannot put a
+      fabricated figure on the idle screen;
+    - an application-level event filter calls `UiBridge.note_activity` on the events that
+      mean a person is there - a key press, a mouse press, a wheel, a touch. That both
+      resets the idle countdown and leaves attract mode, which is the spec's "presenter
+      (any input pauses rotation)".
+
+    The watcher and the timer are parented to `application`, so they live exactly as long
+    as the window does and nothing has to be joined on the way out.
+    """
+    from PySide6.QtCore import QEvent, QObject, QTimer
+
+    #: The events that mean "a person is at the booth". A timer firing is not one of them,
+    #: which is why the idle clock is not reset by the telemetry tick.
+    activity_events = frozenset({
+        QEvent.Type.KeyPress,
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.Wheel,
+        QEvent.Type.TouchBegin,
+    })
+
+    class _ActivityWatcher(QObject):
+        def eventFilter(self, watched: Any, event: Any) -> bool:
+            try:
+                if event.type() in activity_events:
+                    bridge.note_activity()
+            except Exception:  # noqa: BLE001 - an input watcher must never crash a booth
+                pass
+            return False
+
+    watcher = _ActivityWatcher(application)
+    application.installEventFilter(watcher)
+
+    def tick() -> None:
+        if not bridge.attract_due():
+            return
+        # Raises `SystemExit` in a release build with a simulated provider. Qt swallows an
+        # exception raised inside a slot, so it is caught and stated on the error line
+        # rather than disappearing - the same obligation `_report_slot_failure` discharges
+        # for the bridge's own slots.
+        try:
+            attract_mode_permitted(release=release, providers=providers)
+        except SystemExit as exc:
+            bridge.set_error(str(exc))
+            return
+        bridge.set_attract(True)
+
+    timer = QTimer(application)
+    timer.timeout.connect(tick)
+    timer.start(1000)
+
+
 def _publish_derived_metrics(bridge: Any, supervisor: Any,
                              previous: dict[str, float]) -> None:
     """Push the analysis rate and frame-age percentiles to the bridge, on the UI thread.
@@ -1656,6 +1738,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     if args.headless:
+        # **`--streams` is refused in headless, not silently ignored.** The flag used to be
+        # read only by the `--windowed` branch, so `--headless --streams 3` ran **one**
+        # stream while accepting a flag that says three - which is also why headless
+        # reported the same frame count whether asked for 1 or 3 cameras. A flag that
+        # claims something it does not do is a truthfulness defect, so it is refused with a
+        # stated reason rather than quietly dropped.
+        if int(args.streams or 1) != 1:
+            print(
+                f"--streams {args.streams} is not supported by --headless: the headless run "
+                f"builds one supervisor for one stream and its summary is single-stream, so "
+                f"accepting this flag would run one camera while claiming {args.streams}. "
+                f"Use --windowed for the multi-camera layout, or omit --streams.",
+                file=sys.stderr, flush=True)
+            return 2
         try:
             summary = run_headless(device=args.device, seconds=args.seconds,
                                    source=args.source, scenario_id=args.scenario)
@@ -1689,7 +1785,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_windowed(device=args.device, scenario=args.scenario,
                             source=args.source, select=selection,
                             fail_stream=args.fail_stream,
-                            streams=max(1, int(args.streams or 1)))
+                            streams=max(1, int(args.streams or 1)),
+                            release=bool(args.release))
 
     return 0
 

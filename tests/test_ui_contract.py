@@ -2615,6 +2615,1120 @@ sys.exit(0)
 '''
 
 
+# ======================================================================================
+# M3 Task 4 (attract mode) and Task 5 (the presenter drawer)
+# ======================================================================================
+
+class AttractModeState(unittest.TestCase):
+    """The bridge's attract-mode state, asserted in Python. No window, no hardware.
+
+    The screen test (`AttractModeOnTheScreen`) proves what reaches the display; this proves
+    the properties attract mode rests on: that every headline is dated and sourced, that
+    the numbers match the committed measurements they cite, and that attract mode owns
+    exactly one field and touches nothing else.
+    """
+
+    def _seeded(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        bridge.set_streams(["A", "B", "C"])
+        for sid in ("A", "B", "C"):
+            bridge.apply_route({"stream": sid, "requested": "CPU", "confirmed": ["CPU"],
+                                "state": "active", "fell_back": False, "errors": []})
+            bridge.set_stream_metrics(sid, age_p50_ms=11319.0, age_p95_ms=12286.0,
+                                      backlog=187, analysis_fps=13.5, window_samples=256)
+        bridge.set_metrics(system_cpu_percent=58.0, ai_fps=14.9)
+        return bridge
+
+    def test_every_headline_is_dated_and_sourced_to_a_committed_file(self):
+        from app.inference.pinned import REPO_ROOT as PIN_ROOT
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        def resolves(source: str) -> list:
+            """The committed paths a source names. A range may cite several files."""
+            path = source.split(" (", 1)[0]
+            matches = sorted(PIN_ROOT.glob(path)) if "*" in path else [PIN_ROOT / path]
+            return [match for match in matches if match.exists()]
+
+        self.assertTrue(ATTRACT_HEADLINES, "attract mode with no headline shows a title only")
+        for headline in ATTRACT_HEADLINES:
+            self.assertRegex(headline["date"], r"^\d{4}-\d{2}-\d{2}$",
+                             f"a headline must carry the date it was recorded: {headline}")
+            source = headline["source"]
+            self.assertTrue(source, f"a headline must name its source: {headline}")
+            self.assertTrue(resolves(source),
+                            f"the source {source!r} does not exist in the repository, so the "
+                            f"figure on screen cites nothing: {headline}")
+
+    def test_the_headline_numbers_match_the_committed_measurements_they_cite(self):
+        """**A dated figure whose number has drifted from its source is still a lie.**
+
+        The headline ranges are re-derived here from the committed JSON files, so a claim
+        that keeps its date while its numbers move fails rather than shipping.
+        """
+        import json
+
+        from app.inference.pinned import REPO_ROOT as PIN_ROOT
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        def _range(values, digits):
+            return f"{min(values):.{digits}f}-{max(values):.{digits}f}"
+
+        latency_dir = PIN_ROOT / "docs" / "qualification" / "m2-headless"
+        runs = [json.loads((latency_dir / f"single-frame-latency-run{n}.json").read_text(
+            encoding="utf-8")) for n in range(1, 5)]
+        by_row = [{row["row"]: row for row in run["rows"]} for run in runs]
+        for device in ("CPU", "GPU", "NPU"):
+            want = _range([round(rows[device]["latency_ms_p50"], 2) for rows in by_row], 2)
+            self.assertIn(want, ATTRACT_HEADLINES[0]["text"],
+                          f"the {device} single-frame range in the headline must be {want}, "
+                          f"recomputed from the four committed runs: {ATTRACT_HEADLINES[0]}")
+
+        holds = [json.loads((latency_dir / name).read_text(encoding="utf-8"))
+                 for name in ("allcpu-steady-120s.json", "allcpu-steady-120s-hold2.json",
+                              "allcpu-steady-120s-hold3.json")]
+        p50 = _range([round(hold["frame_age_p50_ms"] / 1000.0, 1) for hold in holds], 1)
+        p95 = _range([round(hold["frame_age_p95_ms"] / 1000.0, 1) for hold in holds], 1)
+        backlogs = [entry["backlog"] for hold in holds for entry in hold["per_stream"]]
+        backlog = f"{min(backlogs)}-{max(backlogs)}"
+        for want in (p50, p95, backlog):
+            self.assertIn(want, ATTRACT_HEADLINES[1]["text"],
+                          f"the three-hold headline must carry {want}, recomputed from the "
+                          f"three committed holds: {ATTRACT_HEADLINES[1]}")
+        # **The words, not only the numbers.** "0 drops" and "all three active" are claims
+        # about the same three holds, and a headline that keeps its numbers while one of
+        # these stops being true is the same defect as a drifted range.
+        self.assertEqual(sum(entry["drops"] for hold in holds for entry in hold["per_stream"]), 0,
+                         "the headline says 0 drops; the committed holds record some")
+        self.assertIn("0 drops", ATTRACT_HEADLINES[1]["text"])
+        self.assertEqual([entry["state"] for hold in holds for entry in hold["per_stream"]],
+                         ["active"] * 9,
+                         "the headline says all three active in every hold")
+        self.assertIn("all three active", ATTRACT_HEADLINES[1]["text"])
+
+    def test_the_single_frame_headline_states_its_conditions_not_only_its_numbers(self):
+        """The conditions are part of the claim: 30 inferences, 640x640, batch 1.
+
+        A latency range without them is a number a visitor cannot compare with anything -
+        and it is a number a later run with a different input size would silently invalidate.
+        """
+        import json
+
+        from app.inference.pinned import REPO_ROOT as PIN_ROOT
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        run = json.loads((PIN_ROOT / "docs" / "qualification" / "m2-headless"
+                          / "single-frame-latency-run1.json").read_text(encoding="utf-8"))
+        text = ATTRACT_HEADLINES[0]["text"]
+        self.assertIn(f"{run['num_requests_per_row']} inferences", text,
+                      f"the run measured {run['num_requests_per_row']} per row: {text}")
+        shape = run["input_shape"]
+        self.assertEqual(shape[0], 1, f"the run was batch {shape[0]}, not 1")
+        self.assertIn(f"{shape[2]}x{shape[3]}", text,
+                      f"the input was {shape[2]}x{shape[3]}: {text}")
+        self.assertIn("batch 1", text)
+        # And the fourth row is not folded into the three devices as if it were one: the
+        # fallback's own numbers are a separate run and are not on the slide.
+        self.assertEqual(sorted(row["row"] for row in run["rows"]),
+                         ["CPU", "CPU-fallback-baseline", "GPU", "NPU"],
+                         "the committed run's rows are not the four this test assumes")
+
+    def test_the_delivered_event_headline_is_what_the_m1_record_states(self):
+        """**"2 events per clip" is a measurement, and the M1 report is where it lives.**
+
+        Parsed from the record's own event block rather than trusted: two `zone_occupancy`
+        events, one per person track. A headline that keeps its date while the count moves
+        would cite a file that no longer says what the slide says.
+        """
+        from app.inference.pinned import REPO_ROOT as PIN_ROOT
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        record = (PIN_ROOT / "docs" / "qualification" / "M1-qualification.md").read_text(
+            encoding="utf-8")
+        event_lines = [line for line in record.splitlines()
+                       if line.strip().startswith("kind=zone_occupancy")]
+        self.assertEqual(len(event_lines), 2,
+                         f"the M1 record now lists {len(event_lines)} zone_occupancy events: "
+                         f"{event_lines}")
+        self.assertIn("events 2", record, "the M1 record no longer states the event count")
+        text = ATTRACT_HEADLINES[2]["text"]
+        self.assertIn("2 events per clip", text, text)
+        self.assertIn("people-in-zone presence", text, text)
+        self.assertIn("NOT a people count", text, text)
+        self.assertIn("NOT a dwell measurement", text, text)
+        # And the count on the slide is the count in the record, not a coincidence of prose.
+        self.assertIn(f"events {len(event_lines)}", record)
+
+    def test_attract_mode_shows_no_live_reading(self):
+        # The seeded live value is 58.0%. It must not appear in any recorded headline, and
+        # the headlines must be the module constant - not something derived from live state.
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        bridge = self._seeded()
+        self.assertEqual(bridge.display_text("system_cpu_percent"), "58.0%", bridge.metric_text)
+        bridge.set_attract(True)
+        self.assertEqual([dict(h) for h in bridge.attract_headlines],
+                         [dict(h) for h in ATTRACT_HEADLINES])
+        for headline in bridge.attract_headlines:
+            self.assertNotIn("58.0%", headline["text"], headline)
+
+    def test_entering_and_leaving_attract_touches_nothing_else(self):
+        # **Byte for byte.** The whole instance state is compared, not a hand-picked subset:
+        # attract mode owns exactly `_attract_active`, so entering and leaving it must leave
+        # every other field identical.
+        bridge = self._seeded()
+
+        def state():
+            return {key: value for key, value in bridge.__dict__.items()
+                    if key != "_attract_active"}
+
+        before = state()
+        bridge.set_attract(True)
+        self.assertTrue(bridge.attract_active)
+        self.assertEqual(state(), before,
+                         "entering attract mode changed something other than its own flag")
+        bridge.set_attract(False)
+        self.assertFalse(bridge.attract_active)
+        self.assertEqual(state(), before,
+                         "leaving attract mode did not restore the state it interrupted")
+
+    def test_the_idle_policy_is_ninety_seconds_and_any_input_resets_it(self):
+        from app.ui.bridge import ATTRACT_IDLE_SECONDS, UiBridge
+
+        self.assertEqual(ATTRACT_IDLE_SECONDS, 90.0, "spec section 9's idle interval")
+        bridge = UiBridge()
+        bridge._last_activity = 1000.0
+        self.assertFalse(bridge.attract_due(now=1000.0 + 89.9))
+        self.assertTrue(bridge.attract_due(now=1000.0 + 90.0))
+        # Any input leaves attract mode and restarts the countdown.
+        bridge.set_attract(True)
+        bridge.note_activity(now=2000.0)
+        self.assertFalse(bridge.attract_active,
+                         "presenter input must dismiss the attract overlay")
+        self.assertFalse(bridge.attract_due(now=2000.0 + 89.0))
+        self.assertTrue(bridge.attract_due(now=2000.0 + 90.0))
+
+    def test_attract_mode_is_refused_in_a_release_build_with_a_simulated_provider(self):
+        # Attract mode is the one surface a passer-by reads with no presenter next to it, so
+        # the release gate is re-asserted where attract would start.
+        from app.main import attract_mode_permitted
+
+        with self.assertRaises(SystemExit) as caught:
+            attract_mode_permitted(release=True, providers=("simulated_cpu_metrics",))
+        self.assertIn("simulated_cpu_metrics", str(caught.exception),
+                      "the refusal must name the provider it refused")
+        self.assertTrue(attract_mode_permitted(release=False,
+                                               providers=("simulated_cpu_metrics",)),
+                        "a developer's own machine may simulate; the default is the release "
+                        "gate")
+        self.assertTrue(attract_mode_permitted(release=True, providers=("psutil",)))
+
+
+#: The live items whose positions must be identical with the drawer open and closed.
+#: **Named explicitly, and compared one by one**, because "nothing threw" is not the claim
+#: the brief asks for - it asks that the hero, the badges, the tiles and the staleness line
+#: do not move, item by item.
+_DRAWER_STABLE_ITEMS = (
+    # the hero
+    "heroTile",
+    # the header badge
+    "deviceBadgeText",
+    # the two thumbnails, and all three pictures
+    "thumb_B", "thumb_C",
+    "tileImage_A", "tileImage_B", "tileImage_C",
+    "tileCaptionText_A", "tileCaptionText_B", "tileCaptionText_C",
+    # **the three badges** - one per camera, each stating that camera's confirmed device
+    "streamBadgeBox_A", "streamBadgeBox_B", "streamBadgeBox_C",
+    "streamBadgeText_A", "streamBadgeText_B", "streamBadgeText_C",
+    # the per-stream age, staleness sentence, window, backlog and rate
+    "streamAgeText_A", "streamAgeText_B", "streamAgeText_C",
+    "streamStaleText_A", "streamStaleText_B", "streamStaleText_C",
+    "streamWindowText_A", "streamBacklogText_A", "streamRateText_A",
+    # the three cards and the event counts
+    "card_A", "card_B", "card_C",
+    "eventCountRow",
+    # **the staleness line**, and the screen it sits on
+    "stalenessText", "liveScreen",
+)
+
+#: The child for `AttractModeOnTheScreen` and `PresenterDrawerOnTheScreen`. One process,
+#: because a `QGuiApplication` is a singleton; it drives the **real** `Main.qml` and reads
+#: every string and every extent back through `tools.capture_ui`'s own reader, so there is
+#: one definition of "what is on screen" rather than a second one written for this test.
+_DRAWER_ATTRACT_SCRIPT = r'''
+import json
+import os
+import sys
+
+sys.path.insert(0, @REPO@)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QEventLoop, QTimer, QUrl, QObject, QPoint, QPointF, Qt
+from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickWindow
+from PySide6.QtTest import QTest
+
+import tools.capture_ui as harness
+import app.theme as theme_module
+from app.ui.bridge import ThemeTokens, UiBridge
+from app.ui.provider import FrameImageProvider
+
+application = QGuiApplication(sys.argv[:1])
+QFontDatabase.addApplicationFont(r"C:\Windows\Fonts\arial.ttf")
+bridge = UiBridge(application)
+engine = QQmlApplicationEngine()
+# The QML engine's own complaints, kept so a file that does not load is reported with the
+# reason rather than as a missing window.
+engine_warnings = []
+
+
+def _note_warnings(warnings):
+    for warning in warnings:
+        engine_warnings.append(str(warning.toString()))
+
+
+engine.warnings.connect(_note_warnings)
+engine.addImageProvider("frames", FrameImageProvider(bridge))
+context = engine.rootContext()
+context.setContextProperty("bridge", bridge)
+context.setContextProperty("Theme", ThemeTokens(application))
+engine.load(QUrl.fromLocalFile(os.path.join(@REPO@, "app", "ui", "Main.qml")))
+root = next((r for r in engine.rootObjects() if isinstance(r, QQuickWindow)), None)
+if root is None:
+    # **A `Main.qml` that fails to load is reported, not left to look like a harness
+    # failure.** Measured while mutation-testing this file: a QML compile error produced
+    # `StopIteration` here, no report, and the parent said "the child produced no report" -
+    # which names the last symptom and not the cause.
+    print("REPORT " + json.dumps({
+        "errors": ["Main.qml produced no window; the QML engine said: "
+                   + " | ".join(engine_warnings)],
+        "done": True, "steps": [], "affordances": {},
+        "drawer": {"explanation_texts": {}}, "attract": {}}))
+    sys.stdout.flush()
+    sys.exit(5)
+
+# **The window is sized explicitly, and this line is the whole difference between a
+# measurement and a joke.** Measured: without it `Main.qml` came up **1x1**, every item's
+# extent was `(0, 0, 0, 0)`, every click landed on nothing and every `font.pixelSize` read
+# `-1` - so the first version of this child "clicked" eight buttons that could not be
+# clicked and read a census of `{-1: 31}`. `tools/capture_ui.py` sets the size the same
+# way, from the canvas tokens rather than from literals.
+root.setWidth(float(theme_module.CANVAS_WIDTH))
+root.setHeight(float(theme_module.CANVAS_HEIGHT))
+
+# A **live** state, so the attract render can prove it shows none of it.
+bridge.set_streams(["A", "B", "C"])
+for _sid in ("A", "B", "C"):
+    bridge.apply_route({"stream": _sid, "requested": "CPU", "confirmed": ["CPU"],
+                        "state": "active", "fell_back": False, "errors": []})
+    bridge.set_stream_metrics(_sid, age_p50_ms=11319.0, age_p95_ms=12286.0,
+                              backlog=187, analysis_fps=13.5, window_samples=256)
+bridge.set_metrics(system_cpu_percent=58.0, ai_fps=14.9)
+
+report = {"affordances": {}, "drawer": {"explanation_texts": {}}, "attract": {},
+          "errors": [], "steps": []}
+report["window"] = [float(root.width()), float(root.height())]
+
+
+def walk():
+    names = {}
+    for name, item in harness.walk_items(root.contentItem()):
+        if item is not None:
+            names[name] = item
+    return names
+
+
+def render():
+    """Force a render before reading.
+
+    **The order is load-bearing and it is the harness's own rule**: `grabWindow()` forces a
+    render, and only then is `font.pixelSize` populated on a `Text` (measured here: without
+    a grab the census reads `-1` for everything) and only then is `truncated` decided.
+    """
+    root.grabWindow()
+    application.processEvents()
+
+
+def read():
+    render()
+    return harness.read_scene(
+        root.contentItem(),
+        window_rect=(0.0, 0.0, float(root.width()), float(root.height())))
+
+
+def click_named(name):
+    # Render first: a click is dispatched by hit-testing against the scene's current
+    # geometry, and reading geometry that was never laid out is how the first version
+    # clicked a 0x0 button in a 1x1 window and read `''` back.
+    render()
+    names = walk()
+    if name not in names:
+        raise AssertionError("no item named %r; the items are %s" % (name, sorted(names)))
+    item = names[name]
+    pos = item.mapToScene(QPointF(item.width() / 2.0, item.height() / 2.0))
+    QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier,
+                     QPoint(int(round(pos.x())), int(round(pos.y()))))
+
+
+def affordance(key):
+    return {"pinned_key": str(root.property("pinnedExplanationKey")),
+            "pinned_text": str(root.property("pinnedExplanationText")),
+            "expected": bridge.explanation(key)}
+
+
+#: **The keys, from the bridge - the one definition both surfaces read.** The footer's
+#: `?` row and the drawer's buttons are driven from this list, so the two surfaces cannot
+#: offer different sets and this child cannot silently click nothing.
+KEYS = list(bridge.explanation_keys)
+state = {"i": 0, "drawer_i": 0, "card_done": False}
+
+
+def extents(scene):
+    return {k: list(v) for k, v in scene.extents.items()}
+
+
+def census(scene):
+    """`font px -> how many items carry it **and have text on screen**`.
+
+    The filter is what makes this the census the M3 report quotes: an item whose text is
+    empty is a font that draws nothing, and counting it would make the number depend on
+    which optional lines happened to be blank.
+    """
+    counts = {}
+    for name, size in scene.font_pixels.items():
+        if scene.strings.get(name):
+            counts[size] = counts.get(size, 0) + 1
+    return counts
+
+
+def has(name):
+    """Whether `name` is in the scene graph at all.
+
+    **A `Loader`'s `status` cannot be read from PySide6 here** - measured: both
+    `property("status")` and `QMetaProperty.read` raise `RuntimeError: Can't find converter
+    for 'QQuickLoader::Status'`, so a check written against it would have been a check that
+    never ran. Presence of the loaded content is the claim that matters anyway: a Loader
+    whose component is present is a drawer that is really there, and its absence is the
+    state that reads as a blank panel.
+    """
+    return name in walk()
+
+
+def step(name):
+    report["steps"].append(name)
+
+
+def affordance_step():
+    if state["i"] < len(KEYS):
+        key = KEYS[state["i"]]
+        step("affordance:" + key)
+        click_named("explainButtonMouse_" + key)
+        report["affordances"][key] = affordance(key)
+        # Close the panel again, or it covers the next button - the pinned panel spans the
+        # metrics column and the footer's right side, which is where the buttons are.
+        root.setProperty("pinnedExplanationKey", "")
+        state["i"] += 1
+        QTimer.singleShot(150, guard(affordance_step))
+        return
+    if not state["card_done"]:
+        state["card_done"] = True
+        step("affordance:card")
+        click_named("cardExplainMouse_A")
+        report["card_affordance"] = affordance("cpu")
+        root.setProperty("pinnedExplanationKey", "")
+        QTimer.singleShot(150, guard(affordance_step))
+        return
+    QTimer.singleShot(150, guard(drawer_step))
+
+
+def drawer_step():
+    step("drawer:closed_baseline")
+    base = read()
+    report["drawer"]["base_extents"] = extents(base)
+    report["drawer"]["base_visible"] = dict(base.visible)
+    report["drawer"]["base_census"] = census(base)
+    report["drawer"]["present_before"] = has("presenterDrawer")
+    root.setProperty("drawerOpen", True)
+    QTimer.singleShot(300, guard(drawer_open_step))
+
+
+def drawer_open_step():
+    step("drawer:open")
+    opened = read()
+    report["drawer"]["strings"] = dict(opened.strings)
+    report["drawer"]["open_extents"] = extents(opened)
+    report["drawer"]["open_census"] = census(opened)
+    report["drawer"]["overflow"] = list(opened.overflow)
+    report["drawer"]["clip_sources"] = dict(opened.clip_sources)
+    report["drawer"]["present_when_open"] = has("presenterDrawer")
+    report["drawer"]["expected_scope_note"] = bridge.scope_note
+    report["drawer"]["expected_explanations"] = {
+        key: bridge.explanation(key) for key in KEYS}
+    # **The drawer's buttons must not be the footer's buttons under another name.** A
+    # click in the drawer must not pin anything in the footer's panel; that separation is
+    # the whole reason the two surfaces have different item names.
+    report["drawer"]["footer_pinned_before"] = str(root.property("pinnedExplanationKey"))
+    QTimer.singleShot(0, guard(drawer_explanation_step))
+
+
+def drawer_explanation_step():
+    step("drawer:explain:%d" % state["drawer_i"])
+    if state["drawer_i"] < len(KEYS):
+        key = KEYS[state["drawer_i"]]
+        click_named("drawerExplainMouse_" + key)
+        scene = read()
+        report["drawer"]["explanation_texts"][key] = {
+            "shown": str(scene.strings.get("drawerExplanationText")),
+            "footer_pinned": str(root.property("pinnedExplanationKey")),
+        }
+        state["drawer_i"] += 1
+        QTimer.singleShot(150, guard(drawer_explanation_step))
+        return
+    root.setProperty("drawerOpen", False)
+    QTimer.singleShot(250, guard(drawer_closed_step))
+
+
+def drawer_closed_step():
+    step("drawer:closed_again")
+    closed = read()
+    report["drawer"]["closed_extents"] = extents(closed)
+    report["drawer"]["closed_visible"] = dict(closed.visible)
+    report["drawer"]["closed_census"] = census(closed)
+    report["drawer"]["present_after_close"] = has("presenterDrawer")
+    QTimer.singleShot(150, guard(keyboard_step))
+
+
+def keyboard_step():
+    step("keyboard:open")
+    shortcut = root.findChild(QObject, "drawerOpenShortcut")
+    report["drawer"]["open_shortcut_found"] = shortcut is not None
+    if shortcut is not None:
+        shortcut.activated.emit()
+    QTimer.singleShot(250, guard(keyboard_open_step))
+
+
+def keyboard_open_step():
+    step("keyboard:opened")
+    report["drawer"]["open_after_f1"] = bool(root.property("drawerOpen"))
+    report["drawer"]["items_after_f1"] = sorted(
+        name for name in walk() if name.startswith("drawerExplainMouse_"))
+    escape = root.findChild(QObject, "escapeShortcut")
+    report["drawer"]["escape_found"] = escape is not None
+    if escape is not None:
+        escape.activated.emit()
+    QTimer.singleShot(250, guard(keyboard_closed_step))
+
+
+def keyboard_closed_step():
+    step("keyboard:closed")
+    report["drawer"]["closed_after_escape"] = not bool(root.property("drawerOpen"))
+    report["drawer"]["items_after_escape"] = sorted(
+        name for name in walk() if name.startswith("drawerExplainMouse_"))
+    QTimer.singleShot(150, guard(attract_step))
+
+
+def attract_step():
+    step("attract:baseline")
+    # **The baseline, with the drawer closed and attract mode not yet entered.** The
+    # round-trip assertion compares against this, not against the drawer-open read.
+    baseline = read()
+    report["attract"]["before_strings"] = dict(baseline.strings)
+    report["attract"]["before_visible"] = dict(baseline.visible)
+    report["attract"]["before_extents"] = extents(baseline)
+    report["attract"]["before_census"] = census(baseline)
+    report["attract"]["overlay_present_before"] = has("attractOverlay")
+    bridge.set_attract(True)
+    QTimer.singleShot(300, guard(attract_read_step))
+
+
+def attract_read_step():
+    step("attract:up")
+    scene = read()
+    report["attract"]["strings"] = dict(scene.strings)
+    report["attract"]["visible"] = dict(scene.visible)
+    report["attract"]["extents"] = extents(scene)
+    report["attract"]["overflow"] = list(scene.overflow)
+    report["attract"]["census"] = census(scene)
+    report["attract"]["overlay_present"] = has("attractOverlay")
+    report["attract"]["live_screen_visible"] = bool(scene.visible.get("liveScreen"))
+    report["attract"]["overlay_visible"] = bool(scene.visible.get("attractOverlay"))
+    report["attract"]["live_metric_text"] = bridge.display_text("system_cpu_percent")
+    bridge.set_attract(False)
+    QTimer.singleShot(300, guard(after_exit_step))
+
+
+def after_exit_step():
+    step("attract:down")
+    scene = read()
+    report["attract"]["after_exit_strings"] = dict(scene.strings)
+    report["attract"]["after_exit_visible"] = dict(scene.visible)
+    report["attract"]["after_exit_extents"] = extents(scene)
+    report["attract"]["after_exit_census"] = census(scene)
+    report["attract"]["live_screen_visible_after"] = bool(scene.visible.get("liveScreen"))
+    report["attract"]["overlay_present_after"] = has("attractOverlay")
+    report["done"] = True
+    print("REPORT " + json.dumps(report))
+    sys.stdout.flush()
+    loop.quit()
+
+
+def guard(fn):
+    """**Every** step runs through this, not only the first.
+
+    The first version wrapped the initial callback and nothing else, so an exception in
+    `drawer_open_step` was swallowed by Qt's event loop, no further step was scheduled, the
+    loop ran to its timeout and the child printed `NO REPORT` - which the parent reported
+    as "the child produced no report", naming the harness rather than the defect. A step
+    that raises now reports its own type and message, and the parent fails with that.
+    """
+    def wrapped():
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - a child failure is reported, not hidden
+            report["errors"].append("%s: %s" % (type(exc).__name__, exc))
+            report["failed_at"] = report["steps"][-1] if report["steps"] else "start"
+            report["done"] = True
+            print("REPORT " + json.dumps(report))
+            sys.stdout.flush()
+            loop.quit()
+    return wrapped
+
+
+loop = QEventLoop()
+QTimer.singleShot(200, guard(affordance_step))
+QTimer.singleShot(60000, loop.quit)
+loop.exec()
+if not report.get("done"):
+    print("NO REPORT: the child's loop ended without a step completing; the last step "
+          "started was %r" % (report["steps"][-1] if report["steps"] else "none"),
+          file=sys.stderr)
+    sys.exit(4)
+sys.exit(0)
+'''
+
+
+def _expected_steps() -> list[str]:
+    """The child's full step sequence, from the key list rather than typed out.
+
+    **This is the harness's self-check.** The parent asserts every one of these ran, in
+    order, so a report that stopped early cannot be read as a pass: the failure mode this
+    guards is a child that produced *some* JSON and was accepted because the keys the tests
+    happened to read were present.
+    """
+    steps = [f"affordance:{key}" for key in KEY_ORDER]
+    steps += ["affordance:card", "drawer:closed_baseline", "drawer:open"]
+    steps += [f"drawer:explain:{i}" for i in range(len(KEY_ORDER) + 1)]
+    steps += ["drawer:closed_again", "keyboard:open", "keyboard:opened",
+              "keyboard:closed", "attract:baseline", "attract:up", "attract:down"]
+    return steps
+
+
+#: One child, three test classes: a `QGuiApplication` is a singleton and the render is the
+#: expensive part. The first version ran it once per class - three windows, three launches,
+#: ~40 s each when a step failed - for one measurement.
+_REPORT_CACHE: dict | None = None
+
+
+def _drawer_attract_report() -> dict:
+    """Run the child once, **check it finished and that its report is not empty**, and
+    return the report. The result is cached for the other classes."""
+    global _REPORT_CACHE
+    if _REPORT_CACHE is not None:
+        return _REPORT_CACHE
+    code = _DRAWER_ATTRACT_SCRIPT.replace("@REPO@", repr(str(REPO_ROOT)))
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    with tempfile.TemporaryDirectory(prefix="roadshow-drawer-") as tmp:
+        script = Path(tmp) / "drawer_attract.py"
+        script.write_text(code, encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, str(script)], capture_output=True, text=True,
+            timeout=180, cwd=str(REPO_ROOT), env=env)
+    lines = [ln for ln in completed.stdout.splitlines() if ln.startswith("REPORT ")]
+    if not lines:
+        raise AssertionError(
+            "the drawer/attract child produced no report - it did not finish. The child "
+            "prints NO REPORT with the last step it started; both are below.\nSTDOUT:\n"
+            + completed.stdout[-3000:] + "\nSTDERR:\n" + completed.stderr[-3000:])
+    report = json.loads(lines[-1][len("REPORT "):])
+    if report.get("errors"):
+        raise AssertionError(
+            f"the child failed at {report.get('failed_at')!r}: {report['errors']}")
+    if not report.get("done"):
+        raise AssertionError("the child printed a report but never marked it done")
+    # **An empty report must never read as a pass**, so the shape is asserted here rather
+    # than left to each test: a section that arrived as `{}` would make every `.get(...)`
+    # in the classes below return `None`, and `assertIn("x", "")` on an absent string is
+    # the vacuous shape this repository keeps finding.
+    missing = [f"{section}.{key}" for section, key in (
+        ("drawer", "strings"), ("drawer", "base_extents"), ("drawer", "open_extents"),
+        ("drawer", "closed_extents"), ("drawer", "explanation_texts"),
+        ("drawer", "base_census"), ("attract", "strings"),
+        ("attract", "before_strings"), ("attract", "after_exit_strings"),
+        ("attract", "before_visible"), ("attract", "after_exit_visible"),
+        ("attract", "extents")) if not report.get(section, {}).get(key)]
+    if missing:
+        raise AssertionError(f"the child's report is empty where it must not be: {missing}")
+    if report.get("steps") != _expected_steps():
+        raise AssertionError(
+            "the child did not run every step: expected "
+            f"{_expected_steps()}, got {report.get('steps')}")
+    if len(report["affordances"]) != len(KEY_ORDER):
+        raise AssertionError(
+            f"the child clicked {len(report['affordances'])} footer buttons, not "
+            f"{len(KEY_ORDER)}: {sorted(report['affordances'])}")
+    if len(report["drawer"]["explanation_texts"]) != len(KEY_ORDER):
+        raise AssertionError(
+            f"the child clicked {len(report['drawer']['explanation_texts'])} drawer buttons, "
+            f"not {len(KEY_ORDER)}: {sorted(report['drawer']['explanation_texts'])}")
+    _REPORT_CACHE = report
+    return report
+
+
+class ExplanationAffordancesWork(unittest.TestCase):
+    """**Every explanation affordance is proved to work, not merely present.**
+
+    M1 shipped a `?` panel that called `bridgeUi.explain(...)` when `Bridge.qml` had no
+    `explain` function. The call sat behind `pinnedExplanationKey.length > 0` in a ternary,
+    QML short-circuited it, and the six explanation buttons did nothing at all - on the
+    screen whose purpose is explaining what the boxes mean. A button that is present and
+    dead is invisible until somebody clicks it, which at a booth is the worst moment.
+
+    So this clicks **each** footer button and the card's own surface, through the real
+    `Main.qml` and the real scene graph, and asserts the text that appeared is the bridge's
+    explanation for that key.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = _drawer_attract_report()
+
+    def test_every_footer_button_pins_its_own_explanation(self):
+        affordances = self.report["affordances"]
+        self.assertEqual(sorted(affordances), sorted(KEY_ORDER),
+                         f"every explanation button must have been clicked and read: "
+                         f"{sorted(affordances)}")
+        for key, result in affordances.items():
+            self.assertEqual(result["pinned_key"], key,
+                             f"clicking the {key!r} button pinned {result['pinned_key']!r}")
+            self.assertTrue(result["pinned_text"].strip(),
+                            f"clicking the {key!r} button produced no explanation text - the "
+                            f"M1 dead-affordance shape")
+            self.assertEqual(result["pinned_text"], result["expected"],
+                             f"the {key!r} panel must show the bridge's explanation for that "
+                             f"key, not another's")
+
+    def test_the_cards_own_click_pins_the_cards_explanation(self):
+        result = self.report["card_affordance"]
+        self.assertEqual(result["pinned_key"], "cpu",
+                         f"a card click must pin the card's own explanation key: {result}")
+        self.assertEqual(result["pinned_text"], result["expected"])
+        self.assertTrue(result["pinned_text"].strip())
+
+    def test_each_required_explanation_is_reachable_from_the_screen(self):
+        # The design's section 9 names six required explanations; the screen offers seven
+        # (it adds `utilisation`). Every one of them must be a button that works.
+        for key in ("yolo", "tracking", "zone", "cpu", "gpu", "metrics"):
+            self.assertIn(key, self.report["affordances"], key)
+
+
+class ExplanationKeysHaveOneDefinition(unittest.TestCase):
+    """**The key list is a property of the bridge, not a literal in a QML file.**
+
+    The drawer's `Repeater` was bound to `bridgeUi.explanationKeys` - a property of the
+    *`Bridge.qml` object*, which a file loaded by a `Loader` cannot see. The model was
+    `undefined`, the `Repeater` built **zero delegates**, and the drawer shipped with no
+    explanation buttons at all while every one of its text bindings worked. The footer kept
+    its own literal list, so the two surfaces could have offered different keys and nothing
+    would have said so.
+
+    One definition now: `app.ui.bridge.EXPLANATIONS`, exposed as `explanation_keys`, read by
+    both surfaces. This class pins it, including the absence of a second copy in QML.
+    """
+
+    def test_the_bridge_offers_every_key_it_has_an_explanation_for(self):
+        from app.ui.bridge import EXPLANATIONS, UiBridge
+
+        bridge = UiBridge()
+        self.assertEqual(list(bridge.explanation_keys), list(EXPLANATIONS),
+                         "the key list must be the explanations' own keys, in their order")
+        self.assertEqual(tuple(bridge.explanation_keys), KEY_ORDER,
+                         f"the surfaces offer {bridge.explanation_keys}; the design's six "
+                         f"plus `utilisation` are {list(KEY_ORDER)}")
+        for key in bridge.explanation_keys:
+            self.assertTrue(bridge.explanation(key).strip(),
+                            f"{key!r} is offered as a button and has no explanation text")
+
+    def test_no_qml_file_carries_a_second_copy_of_the_key_list(self):
+        # A literal key list in QML is a second definition that can drift from
+        # `EXPLANATIONS`, and drift is invisible until a presenter clicks a button whose
+        # text comes from somewhere else.
+        offenders = []
+        for path in sorted(UI_DIR.glob("*.qml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("//"):
+                    continue
+                if '"yolo"' in stripped and '"tracking"' in stripped:
+                    offenders.append(f"{path.name}:{number}: {stripped}")
+        self.assertEqual(offenders, [],
+                         f"the explanation keys are listed in QML as well as in "
+                         f"app/ui/bridge.py, so the two can disagree: {offenders}")
+
+    def test_both_surfaces_read_the_bridge_list(self):
+        from pathlib import Path as _Path
+
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        bridge_qml = (UI_DIR / "Bridge.qml").read_text(encoding="utf-8")
+        code = "\n".join(line for line in drawer.splitlines()
+                         if not line.strip().startswith("//"))
+        self.assertIn("model: bridge.explanation_keys", code,
+                      "the drawer must build its buttons from the bridge's own key list")
+        # And `Bridge.qml`, which the footer reads through, must derive the same list
+        # rather than restate it.
+        self.assertIn("bridge.explanation_keys", bridge_qml,
+                      "Bridge.qml must derive `explanationKeys` from the bridge")
+        self.assertNotIn('"yolo"', bridge_qml,
+                         "Bridge.qml still carries a literal key list")
+
+    def test_the_drawers_item_names_are_not_the_footers(self):
+        # **Surface-specific names, deliberately.** A shared name is how M1's dead panel
+        # hid: the item existed, under a name that read like the one that worked. The drawer
+        # and the footer are different surfaces and must be distinguishable in the scene.
+        drawer = (UI_DIR / "PresenterDrawer.qml").read_text(encoding="utf-8")
+        self.assertIn('"drawerExplainMouse_"', drawer,
+                      "the drawer's buttons must be named for the drawer")
+        self.assertNotIn('"explainButtonMouse_"', drawer,
+                         "the drawer reuses the footer's item name, so a test (or a "
+                         "presenter's expectation) cannot tell the two surfaces apart")
+
+
+#: The keys `Bridge.qml`'s `explanationKeys` lists, in order. Pinned here so a key that
+#: silently leaves the screen fails this test rather than shrinking the check.
+KEY_ORDER = ("yolo", "tracking", "zone", "cpu", "gpu", "utilisation", "metrics")
+
+
+class PresenterDrawerOnTheScreen(unittest.TestCase):
+    """**The drawer moves nothing, and it says the two things it has to say.**
+
+    Every assertion about position is a comparison of the **live item's own measured
+    extent** before and after the drawer opens, item by item. "Opening it did not throw" is
+    a different and much weaker claim, and it is the one that would let a drawer reflow the
+    hero while the screen still rendered.
+
+    The items compared are named in `_DRAWER_STABLE_ITEMS` and include the hero, the three
+    pictures, the three per-camera badges, the staleness line, the three cards and the event
+    counts - i.e. every part of the picture the brief names, not a sample of it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = _drawer_attract_report()
+
+    def test_opening_the_drawer_moves_nothing(self):
+        drawer = self.report["drawer"]
+        base = drawer["base_extents"]
+        opened = drawer["open_extents"]
+        moved = []
+        for name in _DRAWER_STABLE_ITEMS:
+            self.assertIn(name, base, f"{name} must be on screen for this to mean anything")
+            self.assertIn(name, opened,
+                          f"{name} disappeared when the drawer opened - the drawer must not "
+                          f"replace any part of the live layout")
+            if base[name] != opened[name]:
+                moved.append((name, base[name], opened[name]))
+        self.assertEqual(moved, [],
+                         f"opening the presenter drawer moved {len(moved)} live item(s). A "
+                         f"presenter opening the drawer mid-demo must not be able to break "
+                         f"the picture: {moved}")
+
+    def test_closing_the_drawer_puts_every_item_back_where_it_was(self):
+        # **The other half of "moves nothing".** Opening it and closing it must leave the
+        # live layout identical to the layout that existed before it was ever opened; a
+        # drawer that moves something only when it closes is still a drawer that moved it.
+        drawer = self.report["drawer"]
+        base = drawer["base_extents"]
+        closed = drawer["closed_extents"]
+        moved = [(name, base[name], closed.get(name)) for name in _DRAWER_STABLE_ITEMS
+                 if closed.get(name) != base[name]]
+        self.assertEqual(moved, [],
+                         f"{len(moved)} live item(s) did not return to their position after "
+                         f"the drawer closed: {moved}")
+        self.assertNotIn("presenterDrawer", closed,
+                         "the drawer is still in the scene graph after closing, so 'closed' "
+                         "is not a state the next open can be compared against")
+
+    def test_the_drawer_really_opened_and_its_content_is_on_screen(self):
+        # **Before asserting the content, assert the drawer is there.** An item that is not
+        # on screen reads `""`, and every "is it not empty" assertion on `""` passes - the
+        # exact vacuity this project keeps finding. Presence in the **scene graph** is the
+        # check, not the `Loader`'s status: status cannot be read from PySide6 (measured -
+        # `Can't find converter for 'QQuickLoader::Status'`), so a status-based guard would
+        # have been a guard that never ran.
+        drawer = self.report["drawer"]
+        self.assertFalse(drawer["present_before"],
+                         "the drawer was in the scene graph before it was opened")
+        self.assertTrue(drawer["present_when_open"],
+                         "opening the drawer put nothing in the scene graph - PresenterDrawer.qml "
+                         "failed to load, and an empty drawer is the M1 dead-affordance shape")
+        strings = self.report["drawer"]["strings"]
+        for name in ("drawerTitle", "drawerScopeNote",
+                     "drawerScopeReduction", "drawerUtilisationNote",
+                     "drawerExplanationText"):
+            self.assertIn(name, strings, f"{name} is not on screen: {sorted(strings)}")
+            self.assertTrue(strings[name].strip(), f"{name} is on screen but empty")
+        # The drawer's own rectangle has no `text`, so it is in `extents` and not in
+        # `strings`; asserting it by name in `extents` is the presence check that applies.
+        self.assertIn("presenterDrawer", drawer["open_extents"])
+        # **Nothing it draws is clipped away.** The drawer clips, so a button or a line that
+        # spills past its edge is reported as overflow and is only half on screen - measured,
+        # the seven buttons fill 487 px of the 566 px inner width and the report is empty.
+        self.assertEqual(drawer["overflow"], [],
+                         f"the drawer's own content overflows its clipped edge, so part of it "
+                         f"is not on screen: {drawer['overflow']}")
+        # And its own affordances are there, one per key, under names that are **not** the
+        # footer's - the two surfaces are distinguishable by name, which is how a dead one
+        # stays visible.
+        for key in KEY_ORDER:
+            self.assertIn(f"drawerExplainMouse_{key}", drawer["open_extents"],
+                          f"the drawer offers no working button for {key!r}: "
+                          f"{sorted(n for n in drawer['open_extents'] if 'Explain' in n)}")
+            self.assertIn(f"explainButtonMouse_{key}", drawer["open_extents"],
+                          f"the footer offers no working button for {key!r}")
+
+    def test_the_drawer_does_not_cover_the_picture(self):
+        """**"Moves nothing" is not the same as "obscures nothing".**
+
+        An overlay that reflows nothing can still be drawn over the hero. The drawer's left
+        edge must be at or right of the hero column's right edge, recomputed from the
+        measured extents rather than from the theme token's intent.
+        """
+        drawer = self.report["drawer"]
+        hero_x, _, hero_w, _ = drawer["open_extents"]["heroTile"]
+        thumb_x, _, thumb_w, _ = drawer["open_extents"]["thumb_B"]
+        # The hero and the thumbnails share the video column; its right edge is the larger
+        # of the two. `heroTile` and `thumb_B` are side by side, so take the far one.
+        column_right = max(hero_x + hero_w, thumb_x + thumb_w)
+        drawer_x, _, drawer_w, _ = drawer["open_extents"]["presenterDrawer"]
+        self.assertGreaterEqual(drawer_x, column_right,
+                                f"the drawer starts at x={drawer_x} and the video column ends "
+                                f"at x={column_right}: a long explanation would cover the "
+                                f"picture")
+        self.assertGreater(drawer_w, 0.0, "the drawer has no width")
+
+    def test_opening_the_drawer_shrinks_no_font(self):
+        # **The live screen's census, before and after the drawer exists.** Only the three
+        # ramp sizes may be present, and the holders of the two non-detail sizes are the
+        # same items the canvas gate names: one device badge and three age headlines. The
+        # authoritative count against the committed capture is
+        # `test_capture_ui_canvas.the_font_census_is_the_one_on_record`; this one proves the
+        # drawer moved none of it.
+        drawer = self.report["drawer"]
+        base = {int(size): count for size, count in drawer["base_census"].items()}
+        self.assertEqual(sorted(base), [18, 26, 34],
+                         f"a font size appeared on the live screen: {base}")
+        self.assertEqual(base[26], 1, f"the only 26 px item is the device badge: {base}")
+        self.assertEqual(base[34], 3, f"the only 34 px items are the age headlines: {base}")
+        self.assertEqual(drawer["closed_census"], drawer["base_census"],
+                         "the census after closing the drawer differs from before opening it")
+
+    def test_the_scope_note_is_the_packs_own_words_verbatim(self):
+        # **Compared with the pack itself, not with `bridge.scope_note`.** The bridge's
+        # property and the screen's string could agree while both were a paraphrase; only a
+        # comparison against `app/engine/retail_config.py` says the screen quotes the pack.
+        from app.engine.retail_config import retail_sanity_manifest
+
+        self.assertEqual(self.report["drawer"]["strings"]["drawerScopeNote"],
+                         retail_sanity_manifest().scope_note,
+                         "the drawer must quote app/engine/retail_config.py's scope_note, "
+                         "not a paraphrase of it")
+
+    def test_the_drawer_states_what_the_delivered_event_is(self):
+        # The pack's note says what the footage is **not**; the reduction sentence next to
+        # it has to say what the delivered event **is**, and the two have to be on the same
+        # surface, or a presenter reads only the half that is on screen.
+        reduction = self.report["drawer"]["strings"]["drawerScopeReduction"]
+        self.assertIn("people-in-zone presence", reduction, reduction)
+        self.assertIn("2 events per clip", reduction, reduction)
+
+    def test_the_drawer_states_what_the_delivered_event_is_not(self):
+        reduction = self.report["drawer"]["strings"]["drawerScopeReduction"]
+        self.assertIn("people-in-zone presence", reduction, reduction)
+        self.assertIn("NOT a people count", reduction, reduction)
+        self.assertIn("NOT a dwell measurement", reduction, reduction)
+        self.assertIn("2 events per clip", reduction, reduction)
+
+    def test_the_drawer_states_that_gpu_and_npu_utilisation_is_unavailable_and_why(self):
+        note = self.report["drawer"]["strings"]["drawerUtilisationNote"]
+        self.assertIn("unavailable", note.lower(), note)
+        self.assertIn("GPU", note, note)
+        self.assertIn("NPU", note, note)
+        self.assertIn("not attributable", note,
+                      f"the reason a machine-wide peak is not used must be on the drawer: {note}")
+
+    def test_every_drawer_button_shows_its_own_explanation(self):
+        """**Every one, not merely one.** The brief says the six affordances work; the
+        drawer offers seven, and a button that is present and dead is what M1 shipped.
+        """
+        drawer = self.report["drawer"]
+        expected = drawer["expected_explanations"]
+        for key in KEY_ORDER:
+            result = drawer["explanation_texts"].get(key)
+            self.assertIsNotNone(result, f"the drawer's {key!r} button was never clicked")
+            self.assertTrue(result["shown"].strip(),
+                            f"clicking the drawer's {key!r} button produced no explanation - "
+                            f"the M1 dead-affordance shape")
+            self.assertEqual(result["shown"], expected[key],
+                             f"the drawer's {key!r} button showed another key's explanation")
+
+    def test_the_drawers_buttons_do_not_pin_the_footers_panel(self):
+        # **The surfaces are distinguishable, and that is the point.** A drawer button that
+        # set the footer's pinned key would be setting text under the drawer - the exact
+        # defect M1's `?` panel had, one surface over.
+        drawer = self.report["drawer"]
+        for key, result in drawer["explanation_texts"].items():
+            self.assertEqual(result["footer_pinned"], "",
+                             f"the drawer's {key!r} button changed the footer's pinned "
+                             f"explanation to {result['footer_pinned']!r}")
+
+    def test_the_drawer_is_keyboard_reachable_and_escape_closes_it(self):
+        drawer = self.report["drawer"]
+        self.assertTrue(drawer["open_shortcut_found"], "no keyboard shortcut opens the drawer")
+        self.assertTrue(drawer["open_after_f1"],
+                        "activating the drawer shortcut did not open the drawer")
+        self.assertEqual(len(drawer["items_after_f1"]), len(KEY_ORDER),
+                         f"after F1 the drawer's buttons are {drawer['items_after_f1']} - the "
+                         f"drawer is open but empty")
+        self.assertTrue(drawer["escape_found"], "no Escape shortcut is on the window")
+        self.assertTrue(drawer["closed_after_escape"],
+                        "Escape must close the presenter drawer")
+        self.assertEqual(drawer["items_after_escape"], [],
+                         f"Escape closed the window but left the drawer's items in the scene: "
+                         f"{drawer['items_after_escape']}")
+
+
+class AttractModeOnTheScreen(unittest.TestCase):
+    """**Attract mode shows no number it cannot date.**
+
+    The render seeds a full live state (`system_cpu_percent` 58.0, three cameras with
+    11.3 s frame ages) and then enters attract mode. The assertions are: the live screen is
+    not visible, the overlay is and covers the window, every headline is the recorded one,
+    every headline carries the date it was recorded and the committed file it came from, no
+    live figure appears, and leaving it restores every string and every position.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = _drawer_attract_report()
+
+    def test_attract_hides_the_live_screen_and_shows_the_overlay(self):
+        attract = self.report["attract"]
+        self.assertFalse(attract["overlay_present_before"],
+                         "the attract overlay was in the scene graph before attract mode")
+        self.assertTrue(attract["overlay_present"],
+                        "attract mode put no overlay in the scene graph - it is a blank screen, "
+                        "and a blank screen also shows no live number")
+        self.assertFalse(attract["live_screen_visible"],
+                         "the live screen must not be visible in attract mode: it is the only "
+                         "way to be sure no live number is on screen")
+        self.assertTrue(attract["overlay_visible"],
+                        "the attract overlay is not visible, so attract mode shows nothing")
+        # **It covers the window.** A partially painted overlay would leave a live card
+        # showing at the edge while every assertion above still passed.
+        width, height = self.report["window"]
+        x, y, w, h = attract["extents"]["attractOverlay"]
+        self.assertEqual((x, y, w, h), (0.0, 0.0, width, height),
+                         f"the attract overlay is {x},{y},{w}x{h} in a {width}x{height} window")
+
+    def test_the_title_and_the_recorded_label_are_on_screen(self):
+        strings = self.report["attract"]["strings"]
+        self.assertEqual(strings.get("attractTitle"), "Intel Edge AI Roadshow", strings)
+        self.assertEqual(strings.get("attractRecordedLabel"),
+                         "Recorded demonstration \u2014 metrics are not live", strings)
+
+    def test_every_headline_is_a_recorded_measurement_with_its_date_and_source(self):
+        from app.ui.bridge import ATTRACT_HEADLINES
+
+        strings = self.report["attract"]["strings"]
+        self.assertTrue(ATTRACT_HEADLINES)
+        for index, headline in enumerate(ATTRACT_HEADLINES):
+            text_name = f"attractHeadline_{index}"
+            recorded_name = f"attractHeadlineRecorded_{index}"
+            self.assertIn(text_name, strings, f"{text_name} is not on screen")
+            self.assertIn(recorded_name, strings, f"{recorded_name} is not on screen")
+            self.assertEqual(strings[text_name], headline["text"])
+            # **The date and the source, on the same slide as the number.** A figure whose
+            # date is not shown is a number nobody can date, which is the failure this mode
+            # exists to prevent.
+            recorded = strings[recorded_name]
+            self.assertIn(headline["date"], recorded,
+                          f"the date {headline['date']} must be shown with the figure: {recorded}")
+            self.assertIn(headline["source"], recorded,
+                          f"the committed source must be shown with the figure: {recorded}")
+
+    def test_the_attract_overlay_overflows_nothing_of_its_own(self):
+        """**The overlay's own text fits the window.**
+
+        The read also names overflow inside the **hidden** live screen - four captions in
+        the thumbnails, whose geometry is measured while their parent is not visible. Those
+        are not drawn claims: `liveScreen.visible` is asserted `False` above, so nothing in
+        that subtree paints, and the round-trip test proves the geometry is intact once the
+        screen is visible again. What must be true is that nothing **on the overlay** spills
+        past the window, because an attract slide with clipped text is a claim cut in half.
+        """
+        attract = self.report["attract"]
+        own = [name for name in attract["overflow"] if name.startswith("attract")]
+        self.assertEqual(own, [],
+                         f"the attract overlay's own text overflows the window: {own}")
+        foreign = [name for name in attract["overflow"] if not name.startswith("attract")]
+        self.assertNotIn("attractOverlay", foreign)
+        # Recorded, not asserted away: the live subtree is where they are, and it is hidden.
+        self.assertFalse(attract["live_screen_visible"])
+
+    def test_no_live_figure_appears_in_attract_mode(self):
+        # The seeded live value is 58.0% (and 14.90 fps). Neither may appear anywhere in
+        # the attract overlay: attract mode shows recorded measurements only.
+        attract = self.report["attract"]
+        self.assertEqual(attract["live_metric_text"], "58.0%", attract)
+        overlay_text = " ".join(
+            value for name, value in attract["strings"].items()
+            if name.startswith("attract"))
+        self.assertNotIn("58.0%", overlay_text,
+                         f"a live figure reached the attract overlay: {overlay_text}")
+        self.assertNotIn("14.90 fps", overlay_text, overlay_text)
+
+    def test_leaving_attract_restores_the_live_screen_exactly(self):
+        # **Item by item, not "nothing threw".** The live screen's visibility, every string
+        # and **every measured position** must be exactly what they were before attract mode
+        # was entered - a live screen that comes back in a different place has not been
+        # restored, and only positions can say so.
+        attract = self.report["attract"]
+        self.assertTrue(attract["live_screen_visible_after"],
+                        "the live screen must be visible again after attract mode exits")
+        self.assertFalse(attract["overlay_present_after"],
+                         "the attract overlay is still in the scene graph after attract mode "
+                         "exited")
+        before = attract["before_strings"]
+        after = attract["after_exit_strings"]
+        changed = [(name, value, after.get(name))
+                   for name, value in before.items() if after.get(name) != value]
+        self.assertEqual(changed, [],
+                         f"{len(changed)} string(s) changed across an attract-mode round trip: "
+                         f"attract mode must restore the state it interrupted, byte for byte: "
+                         f"{changed[:8]}")
+        moved = [(name, rect, attract["after_exit_extents"].get(name))
+                 for name, rect in attract["before_extents"].items()
+                 if attract["after_exit_extents"].get(name) != rect]
+        self.assertEqual(moved, [],
+                         f"{len(moved)} item(s) moved across an attract-mode round trip: "
+                         f"{moved[:8]}")
+        self.assertEqual(attract["after_exit_census"], attract["before_census"],
+                         "the font census changed across an attract-mode round trip")
+
+
 class TestSuiteHygiene(unittest.TestCase):
     """Properties of the test suite itself, which nothing else can assert."""
 
