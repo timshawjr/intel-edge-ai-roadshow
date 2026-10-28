@@ -1,0 +1,1022 @@
+{
+  "tool": "tools/sustained_trials.py",
+  "measured_at": "2026-10-27T16:42:12",
+  "conditions": {
+    "seconds": 20.0,
+    "warmup_s": 3.0,
+    "repeats": 3,
+    "interleaving": "condition-major; within a condition, rounds of all devices with the order rotated one place per round",
+    "order": [
+      "rep0:CPU",
+      "rep0:GPU",
+      "rep0:NPU",
+      "rep1:GPU",
+      "rep1:NPU",
+      "rep1:CPU",
+      "rep2:NPU",
+      "rep2:CPU",
+      "rep2:GPU"
+    ],
+    "notes": {
+      "booth": "ClipSource at 15.0 fps (14.985 on this clip's frame grid) through the real Supervisor pipeline, 640x640 detector, display copy 960 px wide",
+      "source": "every source frame (~29.97 fps) through the real Supervisor pipeline - twice the booth's analysed rate, still capped by the clip",
+      "sustained": "one frame's letterboxed blob, repeated as fast as the device accepts it: `infer` on the pinned IR only, no decode, no queue"
+    },
+    "wall_s": 758.8
+  },
+  "machine": {
+    "hostname": "NUC14ProAI",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "openvino": "2026.4.0-22959-99c81491cc3-releases/2026/4",
+    "cpu_count": 8,
+    "physical_cores": 8,
+    "memory_gib": 31.5,
+    "model": "yolo11n-fp16",
+    "input_shape": [
+      1,
+      3,
+      640,
+      640
+    ],
+    "batch": 1,
+    "display_copy_max_width": 960,
+    "available_devices": [
+      "CPU",
+      "GPU",
+      "NPU"
+    ],
+    "drivers": {
+      "CPU": null,
+      "GPU": "32.0.101.6737",
+      "NPU": "32.0.100.5540"
+    }
+  },
+  "census": {
+    "clean": true,
+    "our_pids": [
+      4268,
+      8552,
+      8572,
+      12932,
+      13648,
+      14700,
+      16912
+    ],
+    "python_pids": [
+      4268,
+      14700
+    ],
+    "competing_pids": [],
+    "detail": "no Python process outside this run's process tree"
+  },
+  "results": [
+    {
+      "condition": "booth",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.005904999998165,
+      "frames": 300,
+      "throughput_fps": 14.995572557203861,
+      "latency_p50_ms": 22.52320000116015,
+      "latency_p95_ms": 29.901299996708985,
+      "latency_max_ms": 37.51349999947706,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 48.12340000353288,
+      "frame_age_p95_ms": 56.801099999574944,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 496.390625,
+      "rss_end": 538.12890625,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:71:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.00641199999518,
+      "frames": 300,
+      "throughput_fps": 14.99519254127488,
+      "latency_p50_ms": 4.407600004924461,
+      "latency_p95_ms": 5.198899998504203,
+      "latency_max_ms": 5.496499994478654,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 30.8461000022362,
+      "frame_age_p95_ms": 32.511799996427726,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 547.2890625,
+      "rss_end": 580.26953125,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:73:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.005336299996998,
+      "frames": 300,
+      "throughput_fps": 14.99599884257107,
+      "latency_p50_ms": 6.626000002142973,
+      "latency_p95_ms": 6.817499997850973,
+      "latency_max_ms": 7.291599999007303,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 33.1060999960755,
+      "frame_age_p95_ms": 34.9354999998468,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 509.0390625,
+      "rss_end": 550.4296875,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:74:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.005122899994603,
+      "frames": 300,
+      "throughput_fps": 14.996158808905939,
+      "latency_p50_ms": 4.583900001307484,
+      "latency_p95_ms": 5.244799998763483,
+      "latency_max_ms": 11.471400001028087,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 31.122899999900255,
+      "frame_age_p95_ms": 32.64540000236593,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 546.94921875,
+      "rss_end": 580.1484375,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:73:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.004708699998446,
+      "frames": 300,
+      "throughput_fps": 14.996469306250049,
+      "latency_p50_ms": 6.59569999697851,
+      "latency_p95_ms": 6.845599993539508,
+      "latency_max_ms": 7.348099999944679,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 32.56350000447128,
+      "frame_age_p95_ms": 33.96809999685502,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 508.86328125,
+      "rss_end": 550.39453125,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:74:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.007421199996315,
+      "frames": 300,
+      "throughput_fps": 14.994436164519556,
+      "latency_p50_ms": 22.59069999854546,
+      "latency_p95_ms": 29.457600001478568,
+      "latency_max_ms": 36.26330000406597,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 48.3847999930731,
+      "frame_age_p95_ms": 55.68830000265734,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 496.16796875,
+      "rss_end": 537.9609375,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:71:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.00652380000247,
+      "frames": 300,
+      "throughput_fps": 14.995108745476461,
+      "latency_p50_ms": 6.6206999981659465,
+      "latency_p95_ms": 6.853000006231014,
+      "latency_max_ms": 7.7878999945824035,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 32.9143999988446,
+      "frame_age_p95_ms": 34.60830000403803,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 508.41796875,
+      "rss_end": 549.66015625,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:74:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.00584330000129,
+      "frames": 300,
+      "throughput_fps": 14.995618805030862,
+      "latency_p50_ms": 22.536399999808054,
+      "latency_p95_ms": 32.136200003151316,
+      "latency_max_ms": 56.81029999686871,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 48.501600002055056,
+      "frame_age_p95_ms": 57.4512999955914,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 495.90234375,
+      "rss_end": 537.55859375,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:71:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "booth",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.006760900003428,
+      "frames": 300,
+      "throughput_fps": 14.994931038534508,
+      "latency_p50_ms": 4.3884999977308325,
+      "latency_p95_ms": 4.566800002066884,
+      "latency_max_ms": 4.724700003862381,
+      "latency_samples": 300,
+      "frame_age_p50_ms": 30.56549999746494,
+      "frame_age_p95_ms": 32.380999997258186,
+      "frame_age_samples": 300,
+      "drops": 0,
+      "rss_start": 547.0078125,
+      "rss_end": 580.046875,
+      "feed_fps": 14.985014985014985,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:14:person:presence:counter_band",
+        "1:73:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.029079899999488,
+      "frames": 527,
+      "throughput_fps": 26.311742857444663,
+      "latency_p50_ms": 23.801400006050244,
+      "latency_p95_ms": 26.600800003507175,
+      "latency_max_ms": 38.67940000054659,
+      "latency_samples": 527,
+      "frame_age_p50_ms": 1311.8187000000034,
+      "frame_age_p95_ms": 2346.416100001079,
+      "frame_age_samples": 527,
+      "drops": 0,
+      "rss_start": 495.66015625,
+      "rss_end": 969.90625,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:116:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.024622599994473,
+      "frames": 600,
+      "throughput_fps": 29.9631115145294,
+      "latency_p50_ms": 4.466799997317139,
+      "latency_p95_ms": 5.139400003827177,
+      "latency_max_ms": 5.626400001347065,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 29.66000000014901,
+      "frame_age_p95_ms": 30.753400002140552,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 547.43359375,
+      "rss_end": 586.7890625,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:117:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.02339000000211,
+      "frames": 600,
+      "throughput_fps": 29.96495598397358,
+      "latency_p50_ms": 6.486800004495308,
+      "latency_p95_ms": 6.707900000037625,
+      "latency_max_ms": 8.881099995051045,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 30.968899998697452,
+      "frame_age_p95_ms": 31.933199999912176,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 512.19921875,
+      "rss_end": 559.5546875,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:119:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.02452749999793,
+      "frames": 600,
+      "throughput_fps": 29.96325381460621,
+      "latency_p50_ms": 4.513400002906565,
+      "latency_p95_ms": 5.217999998421874,
+      "latency_max_ms": 5.738300002121832,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 29.434600000968203,
+      "frame_age_p95_ms": 30.57750000152737,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 547.54296875,
+      "rss_end": 586.53515625,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:117:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.024455000006128,
+      "frames": 600,
+      "throughput_fps": 29.963362298740034,
+      "latency_p50_ms": 6.5231999979005195,
+      "latency_p95_ms": 6.713700000545941,
+      "latency_max_ms": 7.170500000938773,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 31.09460000268882,
+      "frame_age_p95_ms": 32.12809999968158,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 509.17578125,
+      "rss_end": 556.51953125,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:119:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.024181200002204,
+      "frames": 532,
+      "throughput_fps": 26.567877841613893,
+      "latency_p50_ms": 23.42809999390738,
+      "latency_p95_ms": 26.08909999980824,
+      "latency_max_ms": 40.276299994729925,
+      "latency_samples": 532,
+      "frame_age_p50_ms": 1189.3911000006483,
+      "frame_age_p95_ms": 2169.4213000009768,
+      "frame_age_samples": 532,
+      "drops": 0,
+      "rss_start": 496.4453125,
+      "rss_end": 940.06640625,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:116:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.02423010000348,
+      "frames": 600,
+      "throughput_fps": 29.963698829044905,
+      "latency_p50_ms": 6.4354999994975515,
+      "latency_p95_ms": 6.649499999184627,
+      "latency_max_ms": 7.114100000762846,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 30.982900003436953,
+      "frame_age_p95_ms": 32.73319999425439,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 508.73828125,
+      "rss_end": 556.2109375,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:119:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.025179399999615,
+      "frames": 532,
+      "throughput_fps": 26.566553506132895,
+      "latency_p50_ms": 23.4954999978072,
+      "latency_p95_ms": 26.43279999756487,
+      "latency_max_ms": 42.72460000356659,
+      "latency_samples": 532,
+      "frame_age_p50_ms": 1234.338199996273,
+      "frame_age_p95_ms": 2176.006400004553,
+      "frame_age_samples": 532,
+      "drops": 0,
+      "rss_start": 496.53125,
+      "rss_end": 940.26953125,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:116:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "source",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.02373699999589,
+      "frames": 600,
+      "throughput_fps": 29.964436708298912,
+      "latency_p50_ms": 4.407400003401563,
+      "latency_p95_ms": 4.6751999980187975,
+      "latency_max_ms": 5.203499997151084,
+      "latency_samples": 600,
+      "frame_age_p50_ms": 29.475299998011906,
+      "frame_age_p95_ms": 30.556499994418118,
+      "frame_age_samples": 600,
+      "drops": 0,
+      "rss_start": 548.58984375,
+      "rss_end": 587.8515625,
+      "feed_fps": 29.97002997002997,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": null,
+      "events": [
+        "1:18:person:presence:counter_band",
+        "1:117:person:presence:counter_band"
+      ],
+      "event_counts": {
+        "zone_occupancy": 2
+      },
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.020993899997848,
+      "frames": 910,
+      "throughput_fps": 45.4522889595455,
+      "latency_p50_ms": 21.57209999859333,
+      "latency_p95_ms": 23.645000001124572,
+      "latency_max_ms": 38.58520000358112,
+      "latency_samples": 910,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 341.26171875,
+      "rss_end": 341.359375,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 21.630049999657786,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.001834300004703,
+      "frames": 6149,
+      "throughput_fps": 307.4218048090996,
+      "latency_p50_ms": 3.1088999967323616,
+      "latency_p95_ms": 3.9341999945463613,
+      "latency_max_ms": 19.683499995153397,
+      "latency_samples": 6149,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 394.56640625,
+      "rss_end": 386.55859375,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 3.0569500013371,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 0,
+      "seconds": 20.003399699999136,
+      "frames": 4928,
+      "throughput_fps": 246.35812281450401,
+      "latency_p50_ms": 4.008600000815932,
+      "latency_p95_ms": 4.327000002376735,
+      "latency_max_ms": 14.476199998171069,
+      "latency_samples": 4928,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 363.28125,
+      "rss_end": 363.56640625,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 5.498899998201523,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.00003149999975,
+      "frames": 6208,
+      "throughput_fps": 310.39951112077387,
+      "latency_p50_ms": 3.0900999990990385,
+      "latency_p95_ms": 3.8949000008869916,
+      "latency_max_ms": 6.6797999970731325,
+      "latency_samples": 6208,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 394.6171875,
+      "rss_end": 386.60546875,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 3.016449998540338,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.002936999997473,
+      "frames": 4982,
+      "throughput_fps": 249.06342503606493,
+      "latency_p50_ms": 3.9646000004722737,
+      "latency_p95_ms": 4.290600001695566,
+      "latency_max_ms": 5.616099995677359,
+      "latency_samples": 4982,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 362.83984375,
+      "rss_end": 363.09765625,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 5.570049997913884,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 1,
+      "seconds": 20.00846730000194,
+      "frames": 907,
+      "throughput_fps": 45.33080852224558,
+      "latency_p50_ms": 21.611900003335904,
+      "latency_p95_ms": 23.693299997830763,
+      "latency_max_ms": 37.39139999379404,
+      "latency_samples": 907,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 341.71484375,
+      "rss_end": 341.83203125,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 21.594599998934427,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "NPU",
+      "requested": "NPU",
+      "confirmed": [
+        "NPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.002363999999943,
+      "frames": 4978,
+      "throughput_fps": 248.87058349703136,
+      "latency_p50_ms": 3.9638999951421283,
+      "latency_p95_ms": 4.299899999750778,
+      "latency_max_ms": 9.93670000025304,
+      "latency_samples": 4978,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 363.0703125,
+      "rss_end": 363.37890625,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 5.559150002227398,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "CPU",
+      "requested": "CPU",
+      "confirmed": [
+        "CPU"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.01544279999507,
+      "frames": 908,
+      "throughput_fps": 45.36497189061556,
+      "latency_p50_ms": 21.598399995127693,
+      "latency_p95_ms": 23.700300000200514,
+      "latency_max_ms": 37.79899999790359,
+      "latency_samples": 908,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 340.984375,
+      "rss_end": 341.046875,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 21.466700003657024,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    },
+    {
+      "condition": "sustained",
+      "device": "GPU",
+      "requested": "GPU",
+      "confirmed": [
+        "GPU.0"
+      ],
+      "fell_back": false,
+      "repeat": 2,
+      "seconds": 20.0008547000034,
+      "frames": 6164,
+      "throughput_fps": 308.1868296357831,
+      "latency_p50_ms": 3.108999997493811,
+      "latency_p95_ms": 3.911699997843243,
+      "latency_max_ms": 15.711899999587331,
+      "latency_samples": 6164,
+      "frame_age_p50_ms": null,
+      "frame_age_p95_ms": null,
+      "frame_age_samples": 0,
+      "drops": null,
+      "rss_start": 393.86328125,
+      "rss_end": 385.8515625,
+      "feed_fps": null,
+      "warmup_s": 3.0,
+      "cold30_p50_ms": 3.1032999977469444,
+      "events": [],
+      "event_counts": {},
+      "errors": [],
+      "unmeasured": null
+    }
+  ],
+  "ranges": [
+    {
+      "condition": "booth",
+      "device": "CPU",
+      "summary": "14.99..15.00 fps over 20.01..20.01 s, 3 repeat(s); lat p50 22.52..22.59 p95 29.46..32.14 max 36.26..56.81 ms; age p50 48.12..48.50 p95 55.69..57.45 ms; drops 0; placement CPU"
+    },
+    {
+      "condition": "booth",
+      "device": "GPU",
+      "summary": "14.99..15.00 fps over 20.01..20.01 s, 3 repeat(s); lat p50 4.39..4.58 p95 4.57..5.24 max 4.72..11.47 ms; age p50 30.57..31.12 p95 32.38..32.65 ms; drops 0; placement GPU.0"
+    },
+    {
+      "condition": "booth",
+      "device": "NPU",
+      "summary": "15.00..15.00 fps over 20.00..20.01 s, 3 repeat(s); lat p50 6.60..6.63 p95 6.82..6.85 max 7.29..7.79 ms; age p50 32.56..33.11 p95 33.97..34.94 ms; drops 0; placement NPU"
+    },
+    {
+      "condition": "source",
+      "device": "CPU",
+      "summary": "26.31..26.57 fps over 20.02..20.03 s, 3 repeat(s); lat p50 23.43..23.80 p95 26.09..26.60 max 38.68..42.72 ms; age p50 1189.39..1311.82 p95 2169.42..2346.42 ms; drops 0; placement CPU"
+    },
+    {
+      "condition": "source",
+      "device": "GPU",
+      "summary": "29.96..29.96 fps over 20.02..20.02 s, 3 repeat(s); lat p50 4.41..4.51 p95 4.68..5.22 max 5.20..5.74 ms; age p50 29.43..29.66 p95 30.56..30.75 ms; drops 0; placement GPU.0"
+    },
+    {
+      "condition": "source",
+      "device": "NPU",
+      "summary": "29.96..29.96 fps over 20.02..20.02 s, 3 repeat(s); lat p50 6.44..6.52 p95 6.65..6.71 max 7.11..8.88 ms; age p50 30.97..31.09 p95 31.93..32.73 ms; drops 0; placement NPU"
+    },
+    {
+      "condition": "sustained",
+      "device": "CPU",
+      "summary": "45.33..45.45 fps over 20.01..20.02 s, 3 repeat(s); lat p50 21.57..21.61 p95 23.65..23.70 max 37.39..38.59 ms; age p50 unmeasured p95 unmeasured ms; drops unmeasured; placement CPU"
+    },
+    {
+      "condition": "sustained",
+      "device": "GPU",
+      "summary": "307.42..310.40 fps over 20.00..20.00 s, 3 repeat(s); lat p50 3.09..3.11 p95 3.89..3.93 max 6.68..19.68 ms; age p50 unmeasured p95 unmeasured ms; drops unmeasured; placement GPU.0"
+    },
+    {
+      "condition": "sustained",
+      "device": "NPU",
+      "summary": "246.36..249.06 fps over 20.00..20.00 s, 3 repeat(s); lat p50 3.96..4.01 p95 4.29..4.33 max 5.62..14.48 ms; age p50 unmeasured p95 unmeasured ms; drops unmeasured; placement NPU"
+    }
+  ]
+}
