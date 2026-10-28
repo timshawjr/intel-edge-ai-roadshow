@@ -1350,7 +1350,9 @@ labelled **[quoted]**.
 
 ## M4 — sustained trials and legibility
 
-Date: 2026-10-27 (Task 1, legibility at 3 m; Task 2, the input-ack matrix — M4.7)
+Date: 2026-10-27 (Task 1, legibility at 3 m; Task 2, the input-ack matrix — M4.7; Task 3, the
+timeout-path leak; Task 4, the sustained paired trials; Task 5, utilisation attribution; Task 6, the
+milestone close — each below, in the order the sections were written)
 Milestone: M4
 
 **Verdict, Task 1 — corrected. On the monitor actually attached to this machine the screen
@@ -1700,3 +1702,176 @@ Eight mutations were constructed and all eight caught. The full report is
 `.superpowers/sdd/2026-10-01-m4-sustained-trials-and-legibility/task-5-report.md`; the
 standalone account is `docs/qualification/M4-utilisation-attribution.md`.
 
+## M4 Task 3 - the 182 MiB leak at the real 2 s timeout (2026-10-27)
+
+M2 left this open and refused to close it on a hypothesis. M4 reproduced it at both deadlines, found the
+owner, fixed it, and re-ran the same walk. Instrument `tools/leak_probe.py`: 50 transitions (M2's count),
+a **fresh process** per run, the machine **asserted clean in every record**, feed **240x320 at 15 fps**
+(M2's `FEED_SIZE`, so the numbers are comparable with M2's). Records
+`docs/qualification/m4-leak-{before,after}-{2s,30s}.json`.
+
+| | 2.0 s, before | 2.0 s, after | 30 s, before | 30 s, after |
+|---|---:|---:|---:|---:|
+| transitions / timed out | 50 / **25** | 50 / **25** | 50 / 0 | 50 / 0 |
+| RSS start -> end (MiB) | 94.6 -> **248.4** | 94.3 -> **83.9** | 95.7 -> 103.8 | 95.7 -> 96.1 |
+| **total growth** | **+153.7 MiB** | **-10.4 MiB** | +8.2 MiB | +0.4 MiB |
+| retired-queue ledger | 6 -> **158** | 6 -> 6, **0 after stop()** | 6 -> 156 | 6 -> 6, **0 after stop()** |
+| unexplained remainder | **+154.1 MiB** | -12.0 MiB | -3.7 MiB | -11.9 MiB |
+| transition elapsed p50 / p95 | 3.161 / 4.207 s | 3.114 / 4.262 s | 3.265 / 4.631 s | 3.303 / 4.654 s |
+| stop() | 0.101 s | 0.166 s | 0.151 s | 0.162 s |
+
+**The shape is M2's; the byte count is not, and that is stated rather than smoothed.** M2 measured 182.4
+MiB / 175.3 MiB with 24 unacknowledged transitions and 204 ledger entries; M4 measured 153.7 / 154.1 with
+25 timeouts and 158. Different run, different machine state, same phenomenon. **The inversion is the
+finding**: a 2.0 s deadline that times out 25 of 50 transitions grew RSS at ~3 MiB per transition (running
+total +25.2 / +57.3 / +89.4 / +122.1 / +153.7 MiB at transitions 10/20/30/40/50), while a 30 s deadline
+with **zero** timeouts was flat within allocator noise (+0.9 / +1.7 / +5.0 / +6.0 / +8.2 MiB). The queue
+**count** was nearly identical in both (158 vs 156), so "more timeouts, more queues" is not the mechanism:
+the difference is **what is inside them**.
+
+**The cause, measured.** A timed-out transition retires a worker that is still compiling, so **nothing has
+read its input queue**. The queue's own feeder thread writes into a Windows named pipe whose reader is
+gone, parks in `Connection._send_bytes`, and what it has not sent stays in the queue's `_buffer`:
+**20 of 52 retire calls discarded anything, 22-31 frames per non-empty drain** - about 2 s of a 15 fps
+feed, which is the deadline - at p50 15.2 ms, 0.73 s in total. **And the ledger is the access path, not
+the owner**: the probe emptied `_transitions` and `_retired_queues` and collected, and on the unfixed 2.0 s
+run that released **nothing** (+154.1 MiB remainder against a +153.7 MiB total). **Pruning alone would have
+fixed the accounting and left the leak.** `cancel_join_thread()` solved the *atexit rendezvous* - a
+different problem - and released nothing, which is why the original fix looked complete. M2's hypothesis
+was right about the **path** and wrong about the **count and the owner**: a clean run builds the same
+number of queues.
+
+**The fix** (`app/supervisor/runner.py`): `cancel_join_thread()` first and unchanged, then **drain what the
+queue still holds**, then `close()`, then wait a bounded grace for the feeder to exit, and **drop the
+ledger entry only when that thread is confirmed gone**. A queue whose feeder survives stays registered for
+`stop()`'s sweep. Two measured choices: the drain uses `get(timeout=...)`, not `get_nowait()`, because
+`PeekNamedPipe` reports **zero bytes for a partially written message** (`get_nowait` left **4 of 8** queues
+blocked, vs **6 of 6** drained with polling); and pruning is gated on evidence, because the ledger is also
+`stop()`'s re-entry guard and its final sweep. The fix was **not paid for with speed**: transition elapsed
+p50 3.161 -> 3.114 s, p95 4.207 -> 4.262 s.
+
+**The atexit hang is still prevented, and the proof hangs when the protection is removed.**
+`tests/test_runner.py::RetiredQueueRelease::test_the_interpreter_still_exits_when_a_retired_queue_cannot_be_drained`
+forces the pre-fix shape, requires `ledger 1`, `joincancelled True` and a normal exit inside 90 s, and
+passes in ~1.4 s - **with `cancel_join_thread()` removed it hangs and is killed at 120 s**. `stop()` costs
+0.166 s after 50 timeout-heavy transitions against a 5.0 s grace.
+
+**Not claimed**: M2's exact 182.4 MiB is not reproduced to the byte; a 1080p feed was **not measured** (the
+~27x ratio is arithmetic); RSS falling 10.4 MiB is the allocator handing arenas back, not memory returned
+to the OS; and a shift-long soak is M6's. **One gate was changed and is flagged**: the pre-existing
+`test_route_stress` RSS-ratio flake now reads RSS before its own `gc.get_objects()` census (which itself
+retained 176 KiB) and carries an **8 MiB tolerance on the inversion direction only** - 5% of the 154.1 MiB
+pre-fix retention - with the strict `leak_bytes < rss_start` half untouched. Full account:
+`docs/qualification/M4-qualification.md` section 5.
+
+## M4 Task 4 - sustained paired trials, and what they actually rank (2026-10-27)
+
+**27 trials**, three conditions x three devices x three repeats, each in a **fresh process**, **interleaved
+and rotated** (rep0 CPU->GPU->NPU, rep1 GPU->NPU->CPU, rep2 NPU->CPU->GPU), **540.33 s** of measured
+window, **44 025** frames, campaign wall 758.8 s, machine asserted clean before and polled every 2 s
+during. Record `docs/qualification/m4-sustained-trials.json`; harness `tools/sustained_trials.py`.
+
+**Placement confirmed on all 27 runs** from `EXECUTION_DEVICES` read after inference (`CPU`, `GPU.0`,
+`NPU`), 7 909 readings, **zero fallbacks, zero failed frames, zero drops**.
+
+| condition | CPU | GPU | NPU |
+|---|---|---|---|
+| **booth feed, 15 fps** | 300/300, 14.99-15.00 fps | 300/300, 14.99-15.00 fps | 300/300, 15.00 fps |
+| **source rate, 29.97 fps** | **26.3-26.6 fps**, 527-532 frames, age p50 **1.19-1.31 s** | 600/600, 29.96 fps | 600/600, 29.96 fps |
+| **isolated sustained `infer`**, batch 1 | 45.4 fps | **307.4-310.4 fps** | **246.4-249.1 fps** |
+
+**AT THE BOOTH'S RATE THROUGHPUT RANKS NOTHING: it is set by the source.** All three devices deliver the
+15 fps stream, 300 of 300 frames, zero drops, every repeat; what differs is latency (p50 4.4-4.6 ms GPU,
+6.6 ms NPU, 22.5-22.6 ms CPU) and frame age (30.6-31.1 / 32.6-33.1 / 48.1-48.5 ms). At the source's own
+rate the only ordering is **CPU vs the accelerators** (the CPU falls 1.2-1.3 s behind at 26.3-26.6 fps
+while both accelerators hold 29.96 fps), which is not a GPU-vs-NPU claim either.
+
+**The only condition that ranks the two accelerators is isolated sustained inference: GPU 307.4-310.4
+against NPU 246.4-249.1 fps (1.24-1.25x), p50 3.09-3.11 against 3.96-4.01 ms, in each of the three
+interleaved repeats. The single-frame ordering did NOT invert at sustained load** - the
+integrated-Arc-shares-memory hypothesis in the brief is **refuted on this workload**, and it is written
+down as refuted.
+
+**The NPU figure quoted since M0 is cold.** In the same process and the same trial the median of the
+**first 30** inferences is **5.50-5.57 ms** against **3.96-4.01 ms** over the 20 s window (1.37-1.40x),
+while the GPU (3.02-3.10 against 3.09-3.11) and the CPU (21.47-21.63 against 21.57-21.61) show no such
+gap. The published 5.2-5.9 ms is an honest measurement of a 30-inference burst in a fresh process that
+**overstates the NPU's sustained cost by about 40%**. **Any document quoting 5.9 ms beside a sustained
+number must say which it means**; M0, M1 and M3 were not edited, and this is the correction.
+
+**The retail stream is unchanged: 2 `zone_occupancy` presence events per clip**, in all 18 pipeline
+windows across both feed rates and all three devices (36 events), plus a full pass through
+`app.main --headless` analysing 1 694 of 1 694 frames and reporting `event_counts {'zone_occupancy': 2}`.
+Track ids are **not stable across feed rates** (14/71-74 at 15 fps, 18/116-119 at 29.97); count, kind and
+zone are identical, and a future test must not pin a track id. **This is people-in-zone presence: not a
+people count, not a dwell measurement**, and shelf-to-basket remains unmet by design.
+
+**Stated limits.** `sustained` `lat_max` sits far above p95 on all three devices **and the cause is not
+identified** (reported untrimmed); the CPU `source` rows carry a 1.2-1.3 s frame age **and** +443.6 to
++474.3 MiB of RSS, which is the same backlog and **not a leak claim**; the ~6.5 ms pipeline NPU cost
+against ~4.0 ms isolated is **unexplained**; one machine, one model, one batch-1 640x640 shape, one
+OpenVINO build and one driver pair - **a driver update invalidates the blob cache and requires a re-run
+before requoting**.
+
+## M4 close - the five exit criteria, the gate set and what stays open (2026-10-27)
+
+The milestone report is **`docs/qualification/M4-qualification.md`**; matrix rows were added for the
+input-ack matrix, the timeout-path leak, the paired trials and the utilisation attribution, each marked
+`passed` only because M4 re-measured it. The legibility row from Task 1 stands unchanged.
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+Source verification: 6 PASS, 0 FAIL                              exit 0   wall 0.14 s
+
+$ .venv\Scripts\python.exe tools\preflight.py
+Summary: 17 PASS, 1 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                  exit 0   wall 4.43 s
+(the WARN is the recorded-map / hardware-identity row: stale per-boot LUIDs and three
+disagreeing identity records, both reported; the per-process utilisation row is now PASS)
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0   wall 0.98 s
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+----------------------------------------------------------------------
+Ran 1459 tests in 599.133s
+
+OK                                                               exit 0   wall 600.04 s
+```
+
+`tools/probe_telemetry.py` was **not run** by this task: it rewrites `config/telemetry_map.json` and this
+task may not change a config file. The row it feeds is PASS on the committed map.
+
+| # | M4 exit criterion | verdict |
+|---|---|---|
+| 1 | legibility measured on the **attached** monitor: 16' cap at 2 m, 3 m failure documented | **MET IN ITS DOCUMENTED FORM ONLY** - 16.8' at 2 m, **11.2' at 3 m**, x-height 12.2' / 8.1' (fails both). The 55-inch panel (22.9' / 16.6') is a **procurement requirement**, and a mutation defaulting the test to it kills five tests |
+| 2 | the four-condition input-ack matrix, tick and frame age in the same rows | **MET** - 8 windows, gate pass 8/8, stale 6/8, backlog 1 to 1 143 and age 38.5 ms to 55.2 s in the same rows as tick p95 5.6-12.6 ms |
+| 3 | the 182 MiB leak bounded and explained | **MET** - +153.7 -> **-10.4 MiB**, ledger 6->158 -> **6->0**, cause measured, 30 s case clean (+8.2 -> +0.4 MiB) |
+| 4 | sustained paired trials, conditions stated, no unsupported generalisation | **MET** - 27 trials, placement 27/27, zero fallbacks; the rows rank CPU vs accelerators on the delivered stream and GPU vs NPU only in isolation |
+| 5 | utilisation attributed per process, or refused with evidence | **MET, BY ATTRIBUTION** - GPU 0.0 -> 97.19%, NPU 0.0 -> 64.86%, probe's own pid 0.0% while the worker read 97-100%, distractor 1.42%; 62%/68% stays withdrawn |
+
+**Criterion 1 is the one to read twice.** The plan's first clause ("clears 16' of cap height at 2 m") is
+met and its second clause ("its failure at 3 m is documented") is met. **What is not met is the sentence a
+reader may want: the booth screen does not read at three metres on this machine's monitor.**
+
+**Unmet gates and open blockers after M4** (unchanged rows are unchanged; the new ones are marked):
+
+| item | status | owner |
+|---|---|---|
+| Legibility at 3 m on the attached monitor | **fails**; the 55-inch panel is a requirement with **no gate** | procurement / M6 |
+| M2's 2 s warm-transition target | **still missed** (p50 2.238 s, 37/50 at the real 2.0 s default); **not re-measured by M4** | M6 |
+| M0 gate 9's **silent** half | **open, cannot close on this machine** - all three devices execute where asked | M6 |
+| The GPU/NPU figure is the **busiest engine, not a device total** | stated meaning; a presenter comparing to Task Manager may see different numbers | presenter guide |
+| Retail shelf-to-basket | **unmet by design** - presence, 2 per clip, not a count, not dwell | design / M5 |
+| Code signing | **unmet** | M6 |
+| A second annotated frame with a non-square object | **not done**; the w/h blind spot stands | M1 follow-up / M5 |
+| A 60 s+ unattended soak | **not run**; the leak result bounds 50 transitions | M6 |
+| `config/telemetry_map.json` is stale (per-boot LUIDs) | **reported, not edited**; the runtime no longer depends on it | operator |
+| `sustained` lat_max outliers; retail track ids across feed rates; the 6.5 vs 4.0 ms NPU gap | **unexplained, recorded** | M6 |
+| The 8 MiB RSS-ratio tolerance (Task 3) | **a changed gate, flagged for review** | reviewer |
+
+**M4's own costs, named.** The suite grew 1376 -> 1459 tests across the milestone and took 600.0 s of wall
+here; four measurements each needed an idle machine (matrix 699.7 s, trials campaign 758.8 s, two leak
+conditions ~150 s each); `PipelineStrip.qml` was **deleted** and one stress-test assertion was restated
+with a bounded tolerance; and the matrix vocabulary gained a split value (`passed at 2 m, failed at 3 m`).
+None of that is a threshold lowered to make a gate green, and each is recorded where it happened.
