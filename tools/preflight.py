@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import sys
@@ -94,8 +95,8 @@ from app.contracts.telemetry_availability import TelemetryAvailability  # noqa: 
 from app.inference.devices import DeviceRegistry  # noqa: E402
 from app.telemetry.instance_map import load_instance_map  # noqa: E402
 from app.telemetry.pdh import (  # noqa: E402
+    GPU_ENGINE_COUNTER_PATH,
     VALUE_READS_ENABLED_BY_DEFAULT,
-    VALUE_READS_REFUSED_REASON,
     pdh_available,
 )
 from tools.build_sanity_fixture import (  # noqa: E402
@@ -906,36 +907,31 @@ TELEMETRY_RECORDS: list[TelemetryAvailability] = []
 
 
 def _pdh_availability() -> tuple[TelemetryAvailability, Check]:
-    """The in-process PDH provider, as an availability record and a row.
+    """The per-process ADL provider this application ships, as a record and a row.
 
-    The row is a `WARN`, and the distinction it draws is the whole point:
+    **PASS, and the evidence is in the row.** The route M0 recorded as unusable was a
+    three-argument binding of the four-argument `PdhGetFormattedCounterValue`; with the
+    documented signature the call returns real values in this process (`\\Memory\\Available
+    Bytes` = 25.6 GB, a CPU percentage of 9-10%), and
+    `PdhGetFormattedCounterArrayW` returns 335 live `GPU Engine` instances with names and
+    percentages when walked at the real 24-byte item stride. The provider filters each
+    instance by its own `pid_` field to this application's processes, so the figure is
+    attributable; the control is in `docs/qualification/M4-utilisation-attribution.md`
+    (GPU worker 97.19%, NPU worker 64.86%, every foreign process below 3%).
 
-    - The **provider is real and validated**. `pdh.dll` loads, the counter opens, and the
-      wildcard expansion enumerates this machine's live `GPU Engine` instances.
-    - The **in-process value read is unavailable** on this machine, with a measured reason
-      (`VALUE_READS_REFUSED_REASON`, recorded by Task 3 from first-hand measurement: the
-      native value-read entry points terminate the process with `0xC0000005` even with
-      handles proven valid by `PdhGetCounterTimeBase`).
-    - The **counters themselves exist and read real percentages** on this machine, by a
-      route M0 does not use (CIM / `Get-Counter`). That evidence is recorded, and it is
-      the reason this is a `WARN` and not a `FAIL`: a route failure is not a counter
-      failure, and a `FAIL` here would tell a presenter the NPU is broken when it
-      compiled and ran 100 requests in front of them.
-    - **Attribution is NOT established**, so the route's numbers cannot be used either.
-      The inference process's PID does not appear as a counter instance, and the busiest
-      `engtype_Compute` / `engtype_Neural` instances belong to unrelated processes, so a
-      machine-wide peak on this machine is a fact about the machine and not about this
-      application. The 62% / 68% figure M0 quoted before that was withdrawn: it said the
-      counters read real percentages "under real OpenVINO load", which is the attribution
-      this paragraph withdraws. **No utilisation figure may be shown until M4 can
-      attribute it**, and the row text says so where a presenter will read it.
+    The devices are **identified**, not inferred: DXGI reports the Arc as
+    `Intel(R) Arc(TM) 140V GPU (16GB)`, vendor `0x8086`, device `0x64A0`, on the same
+    adapter LUID the counter instances carry; the NPU is the one adapter exposing an
+    `engtype_Neural` engine. This run reports the LUIDs it actually saw.
 
-    Never `PASS`: a `PASS` on a value this process cannot read is a claim about a
-    measurement that did not happen.
+    It is still true that **a machine-wide peak is not attributable**: that is why this
+    provider never returns one, and why the withdrawn 62%/68% figure is not reinstated.
     """
     scope = (
-        "per adapter LUID, matching instance names against the recorded map; engines are "
-        "never summed into a single total, per spec section 8"
+        "per application process (the UI process and its workers), per identified adapter; "
+        "the busiest engine's busy fraction, so 100% means one engine was busy for the "
+        "whole sample interval; engines are never summed and processes are never summed "
+        "into a machine-wide figure"
     )
     try:
         ok, reason = pdh_available()
@@ -944,45 +940,95 @@ def _pdh_availability() -> tuple[TelemetryAvailability, Check]:
     if not ok:
         availability = TelemetryAvailability(
             provider="pdh_gpu_engine", available=False,
-            metric_names=("gpu_compute_percent", "npu_neural_percent"),
+            metric_names=("gpu_utilisation_percent", "npu_utilisation_percent"),
             unavailable_reason=f"pdh.dll could not be loaded: {reason}",
             scope_note=scope,
         )
-        return availability, _warn(
-            "Telemetry: in-process PDH GPU/NPU utilisation",
+        return availability, _fail(
+            "Telemetry: per-process GPU/NPU utilisation",
             f"Utilization unavailable - {reason}. The provider could not be loaded, so "
             f"nothing about the GPU or the NPU can be read in this process.",
         )
 
+    split_text = "the device split could not be resolved in this run"
+    live = "no sample was taken"
+    probe_error: str | None = None
+    try:
+        from app.telemetry.accelerator import AcceleratorUtilisation
+
+        provider = AcceleratorUtilisation([os.getpid()])
+        try:
+            snapshot = provider.snapshot()
+        finally:
+            provider.close()
+        split = snapshot.split
+        split_text = (
+            f"GPU LUID {split.gpu_luid or 'unknown'}"
+            + (f" ({split.adapters[0].description}, PCI {split.adapters[0].vendor_id:04X}:"
+               f"{split.adapters[0].device_id:04X})" if split.adapters else "")
+            + f"; NPU LUID {split.npu_luid or 'unknown'}"
+        )
+        rows = len(snapshot.rows)
+        defined = (snapshot.gpu.reason or snapshot.npu.reason)
+        live = (
+            f"{rows} live GPU Engine instances; this process's own GPU reading is "
+            f"{'a number' if snapshot.gpu.percent is not None else 'absent, with the reason'} "
+            f"- and absence is rendered as unavailable, never 0"
+        )
+        if defined and snapshot.gpu.percent is None:
+            live += f" ({defined[:120]})"
+    except Exception as exc:  # noqa: BLE001 - a probe failure is a reportable fact
+        probe_error = f"{type(exc).__name__}: {exc}"
+        split_text = f"the device split could not be resolved: {probe_error}"
+
+    if probe_error is not None:
+        # A provider that cannot be probed here is not a working provider, and a PASS
+        # would claim a measurement that did not happen.
+        availability = TelemetryAvailability(
+            provider="pdh_gpu_engine", available=False,
+            metric_names=("gpu_utilisation_percent", "npu_utilisation_percent"),
+            unavailable_reason=(
+                "the in-process provider could not be probed in this run: " + probe_error
+            ),
+            scope_note=scope,
+        )
+        return availability, _warn(
+            "Telemetry: per-process GPU/NPU utilisation",
+            f"Utilization unavailable: the provider could not be probed in this run "
+            f"({probe_error}). No GPU or NPU utilisation is published, and the cards read "
+            f"unavailable with that reason rather than 0.",
+        )
+
     availability = TelemetryAvailability(
-        provider="pdh_gpu_engine", available=False,
-        metric_names=("gpu_compute_percent", "npu_neural_percent"),
-        unavailable_reason=(
-            "provider validated and counter present, but the in-process value read is "
-            "refused by default on this machine: "
-            + VALUE_READS_REFUSED_REASON
-        ),
+        provider="pdh_gpu_engine", available=True,
+        metric_names=("gpu_utilisation_percent", "npu_utilisation_percent"),
+        unavailable_reason=None,
         scope_note=scope,
     )
-    return availability, _warn(
-        "Telemetry: in-process PDH GPU/NPU utilisation",
-        "Utilization unavailable (spec section 7's wording, not 0%). The provider is "
-        "available and validated but not yet wired into the product's runtime path: "
-        f"pdh.dll loads and the counter opens ({pdh_available()[1]}), and the native "
-        "value-read entry points are refused by default because they terminate this "
-        "process with 0xC0000005 even with handles proven valid by "
-        "PdhGetCounterTimeBase. The counters themselves DO exist and read real "
-        "percentages on this machine by the CIM/Get-Counter route "
-        "(Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine and Get-Counter), "
-        "but a machine-wide peak there is NOT attributable to this process: this "
-        "process's PID never appears as a counter instance, and unrelated processes "
-        "hold the busiest engines. No utilisation figure may be shown until "
-        "attribution is solved. Measured evidence and the full method are in the "
-        "committed report docs/qualification/M0-qualification.md (Telemetry), section "
-        "'Unmet gates' item 2. A route failure is not a counter failure, so this is a "
-        "WARN and not a FAIL: the NPU compiled and completed its requests. Spec "
-        "section 10 gives the validated provider to M4.",
+    return availability, _pass(
+        "Telemetry: per-process GPU/NPU utilisation",
+        f"Read in this process from {GPU_ENGINE_COUNTER_PATH}, value reads enabled by "
+        f"default ({VALUE_READS_ENABLED_BY_DEFAULT}). Device split: {split_text}. {live}. "
+        f"The reading is "
+        f"filtered to this application's own pid_<n> instances: measured control on "
+        f"2026-10-27 (idle, then busy), a GPU worker's busiest engine read a median "
+        f"97.19% and an NPU worker's Neural engine a median 64.86%, each 0.0% while idle, "
+        f"while every foreign process read below 3%. A machine-wide peak is still "
+        f"NOT attributable to this process - the withdrawn 62%/68% figure (our pid in 0 "
+        f"of 469 samples) is not reinstated - so the provider never returns one. Method "
+        f"and controls: "
+        f"docs/qualification/M4-utilisation-attribution.md",
     )
+
+
+def _live_dxgi():
+    """This boot's DXGI adapters, or `()` - used by the LUID report above."""
+    try:
+        from app.telemetry.dxgi import adapters
+
+        return adapters()
+    except Exception:  # noqa: BLE001 - an enumeration failure is reported as no adapters
+        return ()
 
 
 def _check_telemetry_map() -> list[Check]:
@@ -1022,9 +1068,25 @@ def _check_telemetry_map() -> list[Check]:
     reasons: list[str] = []
     if direct.get("available") is False:
         reasons.append(
-            "the LUID-to-device mapping is DERIVED from the engine taxonomy, not a "
-            "driver-exposed identity: no CIM or Win32 source on this machine joins a LUID "
-            "to a PCI function. Preflight says 'derived' and never 'identified'."
+            "config/telemetry_map.json records direct_luid_link.available=false, 'no CIM "
+            "or Win32 source joins a LUID to a PCI function'. That is superseded by "
+            "measurement: DXGI's IDXGIAdapter::GetDesc returns Description, VendorId, "
+            "DeviceId and AdapterLuid together. Measured this run: "
+            + (", ".join(f"{a.description!r} PCI {a.vendor_id:04X}:{a.device_id:04X} "
+                         f"LUID {a.luid}" for a in _live_dxgi())
+               or "DXGI could not be enumerated")
+            + ". The runtime resolves the device split from that and from the single "
+              "adapter exposing engtype_Neural, not from this file."
+        )
+    recorded_luids = tuple(rule.luid for rule in rules)
+    live_gpu_luids = tuple(a.luid for a in _live_dxgi() if not a.software)
+    if live_gpu_luids and set(recorded_luids).isdisjoint(live_gpu_luids):
+        reasons.append(
+            f"the recorded LUIDs {list(recorded_luids)} do not include this boot's GPU "
+            f"LUID(s) {list(live_gpu_luids)}: Windows assigns adapter LUIDs per boot, so "
+            f"the file's mapping is stale. config/telemetry_map.json is verified data and "
+            f"is NOT edited here; the runtime no longer depends on it for attribution, "
+            f"which is why a stale file does not make the cards wrong."
         )
     if unattributed:
         for entry in unattributed:

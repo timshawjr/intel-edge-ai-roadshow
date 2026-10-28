@@ -46,6 +46,17 @@ from app.telemetry.collector import (
 THIS_PID = os.getpid()
 
 
+def _step_clock(step: float = 0.25):
+    """A monotonic clock that advances, so a measured sample has a real window."""
+    ticks = [1000.0]
+
+    def clock() -> float:
+        ticks[0] += step
+        return ticks[0]
+
+    return clock
+
+
 def _by_name(samples):
     return {s.name: s for s in samples}
 
@@ -1243,6 +1254,308 @@ class Refusals(unittest.TestCase):
     def test_cpu_capacity_is_a_positive_int(self):
         self.assertIsInstance(cpu_capacity(), int)
         self.assertGreater(cpu_capacity(), 0)
+
+
+class AcceleratorAttribution(unittest.TestCase):
+    """The GPU/NPU provider: a figure is this application's, or it is `None`.
+
+    **The question this class answers** is M4 Task 5's: is there a per-process accelerator
+    utilisation figure this process can claim? There is - the Windows `GPU Engine` counter
+    is per process by construction - and these tests pin the properties that make the claim
+    legitimate: the reading is filtered to this application's pids, the adapter is
+    identified (never the software renderer), a missing instance is `None` and not `0`, and
+    engines are never summed.
+
+    The **real** control, with a worker doing GPU and then NPU inference on this machine,
+    is `tools/probe_utilisation.py` and the pasted output is in
+    `docs/qualification/M4-utilisation-attribution.md`. The tests here use an injected
+    counter so they pin the decision logic without depending on what the booth machine
+    happens to be doing.
+    """
+
+    GPU_LUID = "0x000113B4"
+    NPU_LUID = "0x000117B6"
+    SOFT_LUID = "0x0001174C"
+    UI_PID = 4242
+    WORKER_PID = 4343
+
+    @staticmethod
+    def _row(pid, luid, engtype, percent, eng=0):
+        return (f"pid_{pid}_luid_0x00000000_{luid}_phys_0_eng_{eng}_engtype_{engtype}",
+                percent)
+
+    def _adapters(self):
+        from app.telemetry.dxgi import DxgiAdapter
+
+        return (
+            DxgiAdapter("Intel(R) Arc(TM) 140V GPU (16GB)", 0x8086, 0x64A0,
+                        self.GPU_LUID, 0x113B4),
+            DxgiAdapter("Microsoft Basic Render Driver", 0x1414, 0x8C,
+                        self.SOFT_LUID, 0x1174C),
+        )
+
+    def _provider(self, rows, pids=None, *, query=None):
+        from app.telemetry.accelerator import AcceleratorUtilisation
+
+        class FakeQuery:
+            def __init__(self, rows):
+                self._rows = tuple(rows)
+                self.closed = False
+
+            def read_array(self):
+                if isinstance(self._rows, Exception):
+                    raise self._rows
+                return self._rows
+
+            def close(self):
+                self.closed = True
+
+        return AcceleratorUtilisation(
+            pids or [self.UI_PID, self.WORKER_PID], labels=("ui", "worker"),
+            query=query if query is not None else FakeQuery(rows),
+            adapters=self._adapters(), prime_seconds=0.0, clock=_step_clock(),
+        )
+
+    # -- the figure is this application's --------------------------------------------
+
+    def test_the_gpu_figure_is_the_applications_own_engine_and_not_another_process(self):
+        rows = [
+            self._row(self.WORKER_PID, self.GPU_LUID, "Compute", 97.91, eng=5),
+            self._row(999, self.GPU_LUID, "Compute", 99.0, eng=5),  # another process
+            self._row(self.UI_PID, self.SOFT_LUID, "3D", 70.0),        # software adapter
+        ]
+        gpu, npu = self._provider(rows).samples()
+        self.assertEqual(gpu.name, "gpu_utilisation_percent")
+        self.assertEqual(gpu.value, 97.91,
+                         "the figure must be this application's instance, not the busiest "
+                         "on the machine and not the software renderer's")
+        self.assertEqual(gpu.validity, Validity.VALID)
+        self.assertEqual(gpu.process_scope, ("ui", "worker"))
+        self.assertEqual(gpu.device_scope, "GPU")
+        self.assertGreater(gpu.window_seconds, 0.0)
+        self.assertIsNone(npu.value)
+
+    def test_the_npu_figure_comes_from_the_neural_engine_only(self):
+        rows = [
+            self._row(self.WORKER_PID, self.NPU_LUID, "Neural", 64.54),
+            self._row(self.WORKER_PID, self.GPU_LUID, "Compute", 97.91, eng=5),
+        ]
+        gpu, npu = self._provider(rows).samples()
+        self.assertEqual(npu.value, 64.54)
+        self.assertEqual(npu.device_scope, "NPU")
+        self.assertEqual(gpu.value, 97.91)
+        # A GPU reading never implies an NPU one: they are separate instances.
+        self.assertNotEqual(gpu.value, npu.value)
+
+    def test_engines_are_never_summed(self):
+        # Two engines busy in parallel: a sum would be 100 and would stop meaning "time".
+        rows = [
+            self._row(self.WORKER_PID, self.GPU_LUID, "Compute", 60.0, eng=5),
+            self._row(self.WORKER_PID, self.GPU_LUID, "Compute", 40.0, eng=6),
+        ]
+        gpu, _ = self._provider(rows).samples()
+        self.assertEqual(gpu.value, 60.0,
+                         "the busiest engine is the claim; 100.0 would be a sum nobody "
+                         "measured and it would read as a fully busy GPU")
+
+    # -- None is never zero -----------------------------------------------------------
+
+    def test_no_instance_for_this_application_is_none_not_zero(self):
+        # Rows exist, and they are busy - but they belong to **another process**. The
+        # absence of *our* instance is the thing that must read None; taking the busiest
+        # instance on the adapter would be the machine-wide peak this provider forbids.
+        rows = [
+            self._row(999, self.GPU_LUID, "Compute", 99.0, eng=5),
+            self._row(998, self.NPU_LUID, "Neural", 90.0),
+        ]
+        gpu, npu = self._provider(rows).samples()
+        for sample in (gpu, npu):
+            self.assertIsNone(sample.value)
+            self.assertEqual(sample.validity, Validity.UNAVAILABLE)
+            self.assertNotEqual(sample.value, 0.0)
+            self.assertTrue((sample.unavailable_reason or "").strip())
+
+    def test_an_idle_but_present_engine_is_a_measured_zero(self):
+        """The refusal must not become indiscriminate: a measured 0.0 is a reading."""
+        rows = [self._row(self.WORKER_PID, self.GPU_LUID, "Compute", 0.0, eng=5)]
+        gpu, _ = self._provider(rows).samples()
+        self.assertEqual(gpu.value, 0.0)
+        self.assertEqual(gpu.validity, Validity.VALID)
+        self.assertIsNone(gpu.unavailable_reason)
+
+    def test_an_unreadable_counter_is_two_unavailable_samples_not_a_crash(self):
+        provider = self._provider((), query=None)
+        provider._query = type("Boom", (), {
+            "read_array": lambda self: (_ for _ in ()).throw(OSError("counter gone")),
+            "close": lambda self: None,
+        })()
+        gpu, npu = provider.samples()
+        for sample in (gpu, npu):
+            self.assertIsNone(sample.value)
+            self.assertEqual(sample.validity, Validity.UNAVAILABLE)
+            self.assertIn("counter gone", sample.unavailable_reason)
+
+    # -- the adapter is identified, never guessed -------------------------------------
+
+    def test_the_software_renderer_is_never_the_gpu(self):
+        from app.telemetry.dxgi import DxgiAdapter
+        from app.telemetry.accelerator import resolve_devices
+
+        pool = (DxgiAdapter("Microsoft Basic Render Driver", 0x1414, 0x8C,
+                            self.SOFT_LUID, 0x1174C),)
+        split = resolve_devices([], pool)
+        self.assertIsNone(split.gpu_luid)
+        self.assertIsNotNone(split.gpu_reason)
+
+    def test_two_hardware_adapters_refuse_rather_than_pick_one(self):
+        from app.telemetry.dxgi import DxgiAdapter
+        from app.telemetry.accelerator import resolve_devices
+
+        pool = (
+            DxgiAdapter("Arc", 0x8086, 0x64A0, self.GPU_LUID, 1),
+            DxgiAdapter("Another", 0x8086, 0x9999, "0x00012345", 2),
+        )
+        split = resolve_devices([], pool)
+        self.assertIsNone(split.gpu_luid)
+        self.assertIn("exactly one", split.gpu_reason)
+
+    def test_two_neural_adapters_refuse_rather_than_pick_one(self):
+        from app.telemetry.accelerator import resolve_devices
+
+        rows = [
+            self._row(1, self.NPU_LUID, "Neural", 10.0),
+            self._row(2, "0x00012345", "Neural", 20.0),
+        ]
+        split = resolve_devices(rows, self._adapters())
+        self.assertIsNone(split.npu_luid)
+        self.assertIn("more than one", split.npu_reason)
+
+    def test_the_split_on_this_machine_identifies_both_devices(self):
+        """A machine fact: DXGI names the Arc, and one adapter exposes a Neural engine."""
+        from app.telemetry.accelerator import AcceleratorUtilisation
+
+        provider = AcceleratorUtilisation([THIS_PID])
+        try:
+            split = provider.snapshot().split
+            self.assertIsNotNone(split.gpu_luid, split.gpu_reason)
+            self.assertIsNotNone(split.npu_luid, split.npu_reason)
+            hardware = [a for a in split.adapters if not a.software]
+            self.assertEqual(len(hardware), 1)
+            self.assertEqual(split.gpu_luid, hardware[0].luid)
+            self.assertNotEqual(split.gpu_luid, split.npu_luid)
+        finally:
+            provider.close()
+
+    def test_a_provider_with_no_pids_is_refused(self):
+        from app.telemetry.accelerator import AcceleratorUtilisation
+
+        with self.assertRaises(ValueError):
+            AcceleratorUtilisation([], query=object(), adapters=())
+
+    def test_the_provider_is_not_wired_into_the_collector_module(self):
+        """The collector must still not import the PDH layer; it takes the provider in."""
+        import ast
+        import pathlib
+
+        import app.telemetry.collector as collector
+
+        source = pathlib.Path(collector.__file__).read_text(encoding="utf-8")
+        imported = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+        self.assertFalse([m for m in imported if m.startswith("app.telemetry.pdh")])
+        self.assertFalse([m for m in imported if m.startswith("app.telemetry.accelerator")])
+
+
+class CollectedExtraSamples(unittest.TestCase):
+    """The collector publishes another provider's samples without measuring them twice."""
+
+    def test_extra_samples_are_published_with_the_set(self):
+        from app.contracts.metric_sample import MetricSample, Validity
+
+        made = []
+
+        def extra():
+            sample = MetricSample(
+                name="gpu_utilisation_percent", value=12.5, unit="percent",
+                provider="pdh_gpu_engine", device_scope="GPU",
+                process_scope=("ui",), window_seconds=0.25,
+                sampled_at=time.monotonic(), validity=Validity.VALID,
+            )
+            made.append(sample)
+            return (sample,)
+
+        collector = MetricCollector([THIS_PID], background=False,
+                                    process_labels=("ui",), extra_samples=extra)
+        self.addCleanup(collector.stop)
+        collector._measure_extra()  # what the background thread does each tick
+        samples = _by_name(collector.sample())
+        self.assertIn("gpu_utilisation_percent", samples)
+        self.assertEqual(samples["gpu_utilisation_percent"].value, 12.5)
+
+    def test_a_failing_extra_provider_does_not_take_the_cpu_samples_down(self):
+        def boom():
+            raise RuntimeError("accelerator unavailable")
+
+        collector = MetricCollector([THIS_PID], background=False,
+                                    process_labels=("ui",), extra_samples=boom)
+        self.addCleanup(collector.stop)
+        collector._measure_extra()
+        samples = _by_name(collector.sample())
+        self.assertIn("system_cpu_percent", samples)
+        self.assertNotIn("gpu_utilisation_percent", samples)
+        self.assertIn("accelerator unavailable", collector.last_error or "")
+
+    def test_sample_never_measures_the_extra_provider_itself(self):
+        """Measuring on the caller's thread would halve the counter's rate window."""
+        calls = []
+        collector = MetricCollector([THIS_PID], background=False,
+                                    process_labels=("ui",),
+                                    extra_samples=lambda: calls.append(1) or ())
+        self.addCleanup(collector.stop)
+        collector.sample()
+        collector.sample()
+        self.assertEqual(calls, [], "sample() must not call the provider; _run does")
+
+
+class SupervisorAcceleratorWiring(unittest.TestCase):
+    """The supervisor builds the provider over its own process set, and closes it."""
+
+    def test_the_factory_is_given_the_supervisor_process_set_and_torn_down(self):
+        from app.supervisor.runner import Supervisor
+
+        made = []
+
+        class FakeProvider:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def samples(self):
+                return ()
+
+            def close(self):
+                self.closed = True
+
+        def factory(pids, labels):
+            made.append((tuple(pids), tuple(labels)))
+            return FakeProvider()
+
+        supervisor = Supervisor(device_id="CPU", accelerator_factory=factory)
+        self.addCleanup(supervisor.stop)
+        collector = supervisor._rebuild_collector()
+        self.assertEqual(len(made), 1)
+        self.assertIn(os.getpid(), made[0][0],
+                      "the UI process must be in the provider's pid set")
+        self.assertIn("ui", made[0][1])
+        self.assertEqual(collector._extra_samples.__self__, supervisor._accelerator,
+                         "the collector must publish exactly the provider the supervisor "
+                         "built, so the figure and its pid set cannot drift apart")
+        provider = supervisor._accelerator
+        supervisor.stop()
+        self.assertTrue(provider.closed, "the PDH query must be closed on teardown")
 
 
 if __name__ == "__main__":  # pragma: no cover

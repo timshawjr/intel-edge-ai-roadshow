@@ -45,18 +45,29 @@ refuses the shapes, and QML renders what it is given.
    reports `'GPU.0'`, and `'GPU' in 'GPU.0'` is a `True` substring test that would also
    pass on `'GP'`.
 
-## GPU and NPU utilisation are `False`, and that is a measurement
+## GPU and NPU utilisation are measured, per process, or absent with a reason
 
-`gpu_available` and `npu_available` are **False**, with the measured reason in
-`gpu_reason` / `npu_reason`. Measured on this machine: the native PDH value read
-(`PdhGetFormattedCounterValue`) terminates the process with `0xC0000005` for
-`\\GPU Engine(*)\\Utilization Percentage` **and** for three controls with nothing to do
-with the GPU, with the handle proven valid by `PdhGetCounterTimeBase`; and a machine-wide
-peak is not attributable to this process (our pid appeared in 0 of 469 samples). So the
-cards say **"Utilization unavailable"** and show inference activity - completions,
-latency, confirmed placement - instead. `ComputeCard` is given the string
-`UTILISATION_UNAVAILABLE_TEXT` and never a number. There is no code path here that can
-produce a utilisation figure, and that is deliberate.
+`gpu_available` and `npu_available` are **derived from the last sample**, exactly as
+`cpu_available` is: `True` only when this application's own per-process figure is in hand.
+`app.telemetry.accelerator` produces it from `\\GPU Engine(*)\\Utilization Percentage`,
+filtering each instance's own `pid_` to this application's processes and its adapter LUID
+to the identified device. Measured on this machine on 2026-10-27: a GPU inference worker's
+`engtype_Compute` instance read **97.19%** while every other process on the machine read
+below 3% (the two busiest foreign rows measured 1.42% and 2.79%), and an NPU worker's
+`engtype_Neural` instance read **64.86%**. That is the control
+that makes the number attributable; it is in
+`docs/qualification/M4-utilisation-attribution.md`.
+
+The M0 record said the native PDH value read faulted with `0xC0000005`. That was real, and
+it was a **three-argument binding of a four-argument function** in this repository, not a
+PDH defect: with the documented signature the same call returns real values (see
+`app.telemetry.pdh`). A machine-wide peak is still not attributable to this process - the
+62%/68% figure was withdrawn for exactly that reason and is not reinstated - so the figure
+here is per-process or nothing.
+
+When there is no sample yet, or this application has no engine instance on that device, the
+cards say **"Utilization unavailable"** with the sample's own reason. `ComputeCard` is never
+given a number that no sample carried.
 
 ## The mandatory label
 
@@ -119,6 +130,8 @@ __all__ = [
     "STALE_AFTER_SECONDS",
     "ThemeTokens",
     "UNAVAILABLE_TEXT",
+    "UTILISATION_MEASURED_REASON",
+    "UTILISATION_SHORT_REASON",
     "UTILISATION_UNAVAILABLE_TEXT",
     "UiBridge",
 ]
@@ -137,31 +150,51 @@ UNAVAILABLE_TEXT = "unavailable"
 #: What the GPU and NPU cards say instead of a utilisation figure. See the module note.
 UTILISATION_UNAVAILABLE_TEXT = "Utilization unavailable"
 
-#: The short reason, for the card. The full measured text is 922 characters and is pinned
-#: to the explanation panel where there is room for it; a card that carries the whole
-#: measured reason elides to three lines and says nothing.
+#: The short, card-sized reason for a card with no accelerator sample yet.
 #:
-#: **Both halves matter.** "The counters fault this process" says why there is no reading
-#: from the obvious source, and "a machine-wide peak is not attributable to this process"
-#: says why the obvious workaround - quote the machine's peak - would be a lie. Dropping
-#: either half leaves a presenter with an obvious objection and no answer.
+#: **Both halves matter.** "This application's own engine time" says what the figure
+#: measures when it exists, and "unavailable, never 0" says what is shown when it does
+#: not. The earlier version of this string asserted that the platform's counters fault
+#: this process; that was a binding bug in this repository, corrected on 2026-10-27, and
+#: repeating it here would be a claim the code no longer supports.
 UTILISATION_SHORT_REASON = (
-    "The platform's own performance counters fault this process when read, and a "
-    "machine-wide peak is not attributable to this process. Inference activity is shown "
-    "instead: frames analysed, latency, and the confirmed device."
+    "No accelerator sample has landed yet. GPU and NPU utilisation is this application's "
+    "own engine time from the Windows GPU Engine counter, filtered to its processes; a "
+    "device it has not used reads unavailable, never 0."
+)
+
+#: The long form, for the explanation panel: what the figure measures, how the device is
+#: identified, and the control that makes it attributable.
+UTILISATION_MEASURED_REASON = (
+    "GPU and NPU utilisation is read from the Windows 'GPU Engine' counter set "
+    "(\\GPU Engine(*)\\Utilization Percentage) through pdh.dll in this process, and "
+    "filtered to this application's own pids - the UI process and its workers. Each "
+    "instance name carries pid_<n>, the adapter LUID and the engine type, so a reading "
+    "belongs to a process and an adapter by construction. 100% means the busiest engine of "
+    "that adapter was busy for this application for the whole interval between two counter "
+    "samples; engines are never summed, and processes are never summed into a machine-wide "
+    "figure. The GPU is identified by DXGI as the one hardware adapter (on the demo "
+    "machine Intel Arc 140V, PCI 8086:64A0); the NPU is the one adapter exposing an "
+    "engtype_Neural engine. Measured on 2026-10-27 with an idle-then-busy control: a GPU "
+    "worker's busiest engine read a median 97.19% (97.06-100.0%) while idle it read 0.0%, "
+    "and an NPU worker's Neural engine read a median 64.86% (63.76-66.08%) while idle it "
+    "read 0.0%. M0 withdrew a 62%/68% figure because it was a "
+    "machine-wide peak - our pid appeared in none of the 469 GPU Engine instances M0 "
+    "measured - and it is not reinstated. "
+    "The control that proves this figure tracks this application is in "
+    "docs/qualification/M4-utilisation-attribution.md."
 )
 
 #: What the **CPU** card says when a system CPU reading has not landed, and why it is not
 #: the accelerator wording.
 #:
 #: "Utilization unavailable" is the *accelerator* story: the GPU and NPU cards show it
-#: because `psutil` has no counter for those devices at all, `app.telemetry.pdh`'s native
-#: value reads fault this process, and nothing is estimated in place of a measurement. On
-#: the CPU card the same words assert a failure to read a counter that **does** work here -
-#: `psutil.cpu_percent` is called every 250 ms and returns a figure. The true and much
-#: weaker fact is that no sample has landed yet, or that the last delta window was too
-#: short to measure. Those are different claims and a presenter who is asked "why does the
-#: CPU card say unavailable?" deserves the right one.
+#: until a `pdh_gpu_engine` sample lands, and nothing is estimated in place of a
+#: measurement. On the CPU card the same words would assert a failure to read a counter
+#: that **does** work here - `psutil.cpu_percent` is called every 250 ms and returns a
+#: figure. The true and much weaker fact is that no sample has landed yet, or that the last
+#: delta window was too short to measure. Those are different claims and a presenter who is
+#: asked "why does the CPU card say unavailable?" deserves the right one.
 CPU_UNAVAILABLE_TEXT = "no CPU sample yet"
 
 #: Calls a QML **binding** may make, because their result depends only on module-level
@@ -323,8 +356,12 @@ EXPLANATIONS: dict[str, str] = {
     ),
     "gpu": (
         "GPU and NPU: Intel's integrated Arc GPU and the AI Boost NPU. Utilisation is "
-        "NOT measurable here - the platform's own performance counters fault this process "
-        "when read - so no utilisation number is shown. What is shown instead is "
+        "read from the Windows GPU Engine counter, per process: each instance carries the "
+        "owning pid, the adapter LUID and the engine type, so the figure on the card is "
+        "this application's own engine time on the identified device - never a "
+        "machine-wide peak. It is the busiest engine's busy fraction, so 100% means one "
+        "engine was busy for the whole sampling interval; it is not a sum, and a device "
+        "this application has not used reads unavailable, never 0. Also shown is "
         "inference activity: how many frames were analysed, how long each inference "
         "took, and which device the runtime confirmed the work ran on. Per-device "
         "single-frame latency on this machine measures CPU 20.99-21.16 ms, GPU "
@@ -333,13 +370,15 @@ EXPLANATIONS: dict[str, str] = {
         "throughput claim."
     ),
     "utilisation": (
-        "GPU and NPU utilisation is unavailable, and this is the measured reason: "
-        "the platform's own performance counters terminate this process with an access "
-        "violation when their values are read, for the GPU counter and for controls "
-        "with nothing to do with the GPU alike; and a machine-wide peak is not "
-        "attributable to this process. So the cards read 'Utilization unavailable' and "
-        "show inference activity instead. Nothing here is estimated and nothing is "
-        "filled in."
+        "GPU and NPU utilisation is read from the Windows 'GPU Engine' counter set, per "
+        "process and per identified adapter. The M0 record said the platform's counters "
+        "faulted this process; that was a three-argument binding of a four-argument "
+        "function in this repository, corrected on 2026-10-27, and the same call now "
+        "returns real values. What remains true is that a machine-wide peak is not "
+        "attributable to this process, so the provider filters each instance to this "
+        "application's own pids and never reports a peak. When this application has no "
+        "engine instance on a device, the card reads 'Utilization unavailable' with that "
+        "reason. Nothing here is estimated and nothing is filled in."
     ),
     "metrics": (
         "Metrics: each figure names its provider, its scope and the window it was "
@@ -952,15 +991,11 @@ class UiBridge(QObject):
         #: interval rather than immediately.
         self._last_activity = time.perf_counter()
 
-        # Utilisation is **unavailable**, and it is unavailable for a measured reason. The
-        # reasons are the strings `app/telemetry/pdh.py` publishes as
-        # VALUE_READS_REFUSED_REASON, quoted by reference rather than restated here so
-        # this module cannot drift from the measurement that produced it.
-        from app.telemetry.pdh import VALUE_READS_REFUSED_REASON
-
-        self._utilisation_reason = VALUE_READS_REFUSED_REASON
-        self._gpu_available = False
-        self._npu_available = False
+        # Utilisation availability is **derived from the sample**, not asserted here: the
+        # provider (`app.telemetry.accelerator`) measures this application's own engine
+        # time and this module only formats what it is handed. A fresh bridge has no
+        # sample, so both cards read unavailable - which is the truth before the first
+        # tick, not a claim about the machine.
 
     # ------------------------------------------------------------------ properties
 
@@ -1395,9 +1430,9 @@ class UiBridge(QObject):
     system_cpu_percent = Property(float, _get_system_cpu, notify=systemCpuPercentChanged)
 
     # The two accelerator utilisation properties exist so that a QML binding can name
-    # them and get an honest `None` rather than a binding error. **They are always
-    # `None`** and `set_metrics` can set them - a machine where the counters *are*
-    # readable would fill them, and nothing in this module decides whether they can be.
+    # them and get an honest `None` rather than a binding error. `set_samples` fills them
+    # from the accelerator provider; a fresh bridge, and a device this application has not
+    # used, are `None` with a reason. **No code path here invents a value.**
     def _get_gpu_utilisation(self):
         return self._metrics["gpu_utilisation_percent"]
 
@@ -1416,12 +1451,20 @@ class UiBridge(QObject):
     app_cpu_percent = Property(float, _get_app_cpu, notify=appCpuPercentChanged)
 
     def _get_gpu_available(self) -> bool:
-        return self._gpu_available
+        """Whether a per-process GPU figure is in hand. **Derived from the value.**
+
+        Same rule as `cpu_available`: availability cannot drift from the number it
+        describes. A fresh bridge and a bridge whose last sample was unavailable both
+        read `False`; only a sample this application's own engine time produced reads
+        `True`.
+        """
+        return self._metrics["gpu_utilisation_percent"] is not None
 
     gpu_available = Property(bool, _get_gpu_available, notify=gpuAvailableChanged)
 
     def _get_npu_available(self) -> bool:
-        return self._npu_available
+        """Whether a per-process NPU figure is in hand. See `_get_gpu_available`."""
+        return self._metrics["npu_utilisation_percent"] is not None
 
     npu_available = Property(bool, _get_npu_available, notify=npuAvailableChanged)
 
@@ -1471,7 +1514,7 @@ class UiBridge(QObject):
 
     @Property(str, constant=True)
     def utilisation_unavailable_text(self) -> str:
-        """What the GPU and NPU cards say. They never show a utilisation number."""
+        """What a GPU or NPU card says when it has no figure. Never a digit."""
         return UTILISATION_UNAVAILABLE_TEXT
 
     @Property(str, constant=True)
@@ -1481,24 +1524,24 @@ class UiBridge(QObject):
 
     @Property(str, constant=True)
     def gpu_reason(self) -> str:
-        """The short, card-sized reason GPU utilisation is unavailable."""
+        """The short, card-sized reason a GPU card has no figure yet."""
         return UTILISATION_SHORT_REASON
 
     @Property(str, constant=True)
     def npu_reason(self) -> str:
-        """The short reason for the NPU. Same provider, same fault, same absence."""
+        """The short reason for the NPU. Same provider, same wording; the sample carries
+        the device-specific detail when there is one."""
         return UTILISATION_SHORT_REASON
 
     @Property(str, constant=True)
     def utilisation_measured_reason(self) -> str:
-        """The full measured text, quoted from `app.telemetry.pdh` by reference.
+        """The full measured method and the attribution control, for the panel.
 
-        This is the 921-character refusal the PDH module publishes verbatim, and it is
-        reachable from the pinned explanation panel. **Quoted rather than restated**: a
-        copy in this module would be a second version of a measured string that could
-        disagree with the one the measurement produced.
+        A module constant, not a string imported from the telemetry layer: the earlier
+        version quoted `VALUE_READS_REFUSED_REASON`, which described a binding fault that
+        has since been fixed. A quote is only as true as its source.
         """
-        return self._utilisation_reason
+        return UTILISATION_MEASURED_REASON
 
     @Property("QStringList", constant=True)
     def explanation_keys(self) -> list[str]:
@@ -1679,17 +1722,17 @@ class UiBridge(QObject):
         """`deviceId -> what to show when that card has no figure`.
 
         **Per card, because the reason is per card.** The GPU and NPU cards show
-        `UTILISATION_UNAVAILABLE_TEXT`, which is true for them: there is no `psutil` counter
-        for those devices, the PDH value reads fault this process, and nothing is estimated
-        in their place. The CPU card shows `CPU_UNAVAILABLE_TEXT`, because the true fact
-        there is that no sample has landed yet - `psutil.cpu_percent` is being called every
-        250 ms and works.
+        `UTILISATION_UNAVAILABLE_TEXT` until a sample lands. The CPU card shows
+        `CPU_UNAVAILABLE_TEXT`, because the true fact there is that no sample has landed
+        yet - `psutil.cpu_percent` is being called every 250 ms and works.
 
         Sharing one literal made every run announce "Utilization unavailable" on the CPU
         card during startup, before the first telemetry tick, and asserted a failure to
         read a counter that is not failing. When a `MetricSample` carries an
-        `unavailable_reason`, that reason is preferred over both, because it is the
-        measurement's own words.
+        `unavailable_reason`, that reason is preferred over the default, because it is the
+        measurement's own words - that is now true of the GPU and NPU samples as well, so a
+        card whose device this application has not used says *that*, rather than the
+        generic word.
 
         The three keys are fixed rather than derived from whatever the bridge happens to
         know, so a card asking for a device with no entry gets an empty string and QML's
@@ -1700,11 +1743,14 @@ class UiBridge(QObject):
             "GPU": UTILISATION_UNAVAILABLE_TEXT,
             "NPU": UTILISATION_UNAVAILABLE_TEXT,
         }
-        sample = self._samples.get("system_cpu_percent")
-        if sample is not None and sample.validity is Validity.UNAVAILABLE:
-            reason = (sample.unavailable_reason or "").strip()
-            if reason:
-                notices["CPU"] = reason
+        for device, metric in (("CPU", "system_cpu_percent"),
+                               ("GPU", "gpu_utilisation_percent"),
+                               ("NPU", "npu_utilisation_percent")):
+            sample = self._samples.get(metric)
+            if sample is not None and sample.validity is Validity.UNAVAILABLE:
+                reason = (sample.unavailable_reason or "").strip()
+                if reason:
+                    notices[device] = reason
         return notices
 
     unavailable_notice = Property("QVariantMap", _get_unavailable_notice,
@@ -1895,7 +1941,9 @@ class UiBridge(QObject):
 
         A sample whose `validity` is `UNAVAILABLE` sets the corresponding property to
         `None`, whatever its `value` field says - which is always `None`, because
-        `MetricSample` refuses the other combination at construction.
+        `MetricSample` refuses the other combination at construction. A GPU/NPU sample
+        carrying a measured number sets that property and makes the card available; the
+        card renders the number, not a claim about the hardware.
         """
         for sample in samples or ():
             name = sample.name

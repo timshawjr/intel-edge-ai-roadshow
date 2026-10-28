@@ -693,6 +693,7 @@ class Supervisor(QObject):
         compile_failure: bool | Sequence[str] = False,
         collector_interval: float = 0.25,
         clock=time.perf_counter,
+        accelerator_factory: Callable[[Sequence[int], Sequence[str]], Any] | None = None,
     ) -> None:
         super().__init__()
         requested = self._requested_devices(device_id, device_ids)
@@ -703,6 +704,13 @@ class Supervisor(QObject):
         self._conf_threshold = float(conf_threshold)
         self._iou_threshold = float(iou_threshold)
         self._collector_interval = float(collector_interval)
+        #: Builds the per-process GPU/NPU provider over `(pids, labels)`. **Injected, not
+        #: imported here by default**: the product passes a real provider from
+        #: `app.main`, while unit tests construct supervisors by the dozen and must not
+        #: each open a Windows counter and prime it for 0.75 s. `None` means this
+        #: supervisor publishes no accelerator samples, and the cards read unavailable -
+        #: which is the honest state for a run that registered no provider.
+        self._accelerator_factory = accelerator_factory
 
         self._lock = threading.RLock()
         self._order: tuple[str, ...] = ids
@@ -739,6 +747,11 @@ class Supervisor(QObject):
         #: finaliser could still block on. See `_retire`.
         self._retired_queues: list[Any] = []
         self._collector: MetricCollector | None = None
+        #: The per-process accelerator provider, rebuilt with the collector because its
+        #: process set is the same set. `None` when the machine has no readable
+        #: `GPU Engine` counter; the cards then read unavailable with that provider's
+        #: reason, never a fabricated 0.
+        self._accelerator: Any = None
         #: The most recent `samples()` result, kept so a run summary can be built after
         #: `stop()` has torn the collector down. See `last_samples`.
         self._last_samples: tuple[MetricSample, ...] = ()
@@ -1455,6 +1468,10 @@ class Supervisor(QObject):
         if collector is not None:
             collector.stop()
         self._collector = None
+        accelerator = getattr(self, "_accelerator", None)
+        if accelerator is not None:
+            accelerator.close()
+        self._accelerator = None
 
     def _retire(self, *queues: Any) -> None:
         """Release queues: discard what they still hold, close them, forget them.
@@ -2713,9 +2730,25 @@ class Supervisor(QObject):
         previous = self._collector
         if previous is not None:
             previous.stop()
+        # The accelerator provider covers the same pids, so it is rebuilt on the same
+        # occasion - **only when a factory was injected.** Its construction is contained:
+        # a machine with no `GPU Engine` counter (or a test host that injected nothing)
+        # leaves it None, and `MetricCollector` then publishes no accelerator sample -
+        # which the bridge renders as unavailable, not as 0.
+        previous_accelerator = getattr(self, "_accelerator", None)
+        if previous_accelerator is not None:
+            previous_accelerator.close()
+        self._accelerator = None
+        if self._accelerator_factory is not None:
+            try:
+                self._accelerator = self._accelerator_factory(tuple(pids), tuple(labels))
+            except Exception:  # noqa: BLE001 - a missing counter is a stated absence
+                self._accelerator = None
         collector = MetricCollector(
             pids, interval=self._collector_interval, process_labels=labels,
             background=True,
+            extra_samples=(self._accelerator.samples
+                           if self._accelerator is not None else None),
         )
         self._collector = collector
         return collector

@@ -1650,3 +1650,53 @@ the daemon assertion. The full report is
 `.superpowers/sdd/2026-10-01-m4-sustained-trials-and-legibility/task-2-report.md`; it records the
 process census, everything killed, the mutation tally and the numeric-claims audit.
 
+## M4 Task 5 - GPU/NPU utilisation, attributed per process (2026-10-27)
+
+M0's second gate is closed with a measurement, not a refusal. The in-process `0xC0000005`
+was a three-argument binding of the four-argument `PdhGetFormattedCounterValue`; with the
+documented signature the call returns real values, and `\GPU Engine(*)\Utilization
+Percentage` is per process by construction - every instance name carries `pid_<n>`, the
+adapter LUID and the engine type. A provider filters each instance by its own `pid_` and by
+the identified adapter (DXGI: `Intel(R) Arc(TM) 140V GPU (16GB)`, PCI `8086:64A0`, LUID
+`0x000113B4`; NPU: the one adapter exposing `engtype_Neural`, LUID `0x000117B6`).
+
+**The control** (`tools/probe_utilisation.py`; output
+`docs/qualification/m4-utilisation-control.json`): one worker, idle then busy, sampled by
+its own pid. GPU `0.0%` idle -> median **97.19%** (n=26, min 97.06, max 100.0) busy; NPU
+`0.0%` idle -> median **64.86%** (n=26, min 63.76, max 66.08); the probe's own pid read
+**0.0%** while that worker was at 97-100%, and another process on the **same** adapter read
+1.42%. The machine was asserted clean before the worker started: 349 instances, busiest
+0.00%. The 62%/68% machine-wide figure stays withdrawn: the runtime never returns a peak.
+
+The GPU and NPU cards now render a figure when the application has an engine instance, and
+"Utilization unavailable" with the sample's reason when it does not. A measured `0.0%` stays
+a reading. `config/telemetry_map.json` was not modified; its recorded LUIDs are stale on this
+boot (reported by preflight), and the runtime resolves the split from DXGI and the Neural
+engine instead.
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+Source verification: 6 PASS, 0 FAIL                              exit 0
+
+$ .venv\Scripts\python.exe tools\preflight.py
+Summary: 17 PASS, 1 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                  exit 0
+(the WARN is the recorded-map / hardware-identity row: stale LUIDs and three disagreeing
+identity records, both reported)
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+Ran 1420 tests in 587.903s
+OK                                                               exit 0   wall 590.3 s
+
+$ .venv\Scripts\python.exe tools\probe_utilisation.py
+VERDICT: attributed - the figure tracks this process            exit 0
+```
+
+**1420 tests, no skips, no failures, wall 590.3 s** (1398 before this task; 22 added).
+Eight mutations were constructed and all eight caught. The full report is
+`.superpowers/sdd/2026-10-01-m4-sustained-trials-and-legibility/task-5-report.md`; the
+standalone account is `docs/qualification/M4-utilisation-attribution.md`.
+

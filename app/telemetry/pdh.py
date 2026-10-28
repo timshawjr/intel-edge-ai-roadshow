@@ -51,78 +51,64 @@ first-touch cost). Still too slow to run at 4 Hz over the whole set, which is wh
 strategy is the *owned subset* (see below), and why `instances()` caches for
 `instance_ttl`.
 
-### 3. `PdhGetFormattedCounterValue` still faults natively. Not fixed, and not guessable.
+### 3. The value read was mis-bound, and that was the "fault". Corrected 2026-10-27.
 
-With the correct counter name, a handle proven valid by `PdhGetCounterTimeBase`, three
-`PdhCollectQueryData` samples, and stable 64-byte output buffers, this call kills the
-process with `0xC0000005` ("access violation reading 0xFFFFFFFFFFFFFFFF") - for
-`\GPU Engine(*)\Utilization Percentage` **and** for three controls that have nothing to do
-with the GPU:
+The M0 record said the native value read terminates the process with `0xC0000005`. That is
+reproducible, and it was never a PDH defect: **the binding passed three arguments to a
+four-argument function.**
 
-| counter | handle | timebase | `PdhGetFormattedCounterValue` |
-|---|---|---|---|
-| `\Processor(_Total)\% Processor Time` | valid | 10000000 | **0xC0000005** |
-| `\Memory\Available Bytes` | valid | 10000000 | **0xC0000005** |
-| `\System\Processor Queue Length` | valid | 10000000 | **0xC0000005** |
-| `\GPU Engine(*)\Utilization Percentage` | valid | 10000000 | **0xC0000005** |
+Measured on this machine (same interpreter, same process, exit code observed from a child
+process because a native fault is not catchable):
 
-`PdhGetRawCounterValue` faults the same way. `pdh.dll` here is `10.0.26100.1` and exports
-119 names; `PdhGetFormattedCounterValue` and `PdhGetRawCounterValue` are the only value
-entry points, and neither has a `W`/`A` twin. Swept and measured, all still unusable:
+| binding | call | result |
+|---|---|---|
+| `(hCounter, pValue, lpType)` - the old one | `PdhGetFormattedCounterValue` | **exit `0xC0000005`**: `dwFormat` read `pValue` as the format, `lpType` read the old third argument, and the real `pValue` slot held garbage |
+| `(hCounter, dwFormat, lpType, pValue)` - the documented one | `PdhGetFormattedCounterValue` | `rc = 0`, `CStatus = 0`, `\Memory\Available Bytes` = 25,606,934,528.0, `\Processor(_Total)\% Processor Time` = 10.0 |
 
-- 2, 3 arguments (the documented arity): fault.
-- 4-6 arguments: returns `0xC0000BBD`/`0xC0000BBC` and writes 4 bytes to two out
-  parameters - no value, and no fault.
-- `PdhGetFormattedCounterArrayW` at 3-6 arguments, 9 `dwFormat` values, both a byte count
-  and an item count in the size slot: `rc = 0`, no fault, and **no percentage anywhere in
-  the returned buffer**. What it actually writes is the *instance name list*: a count, then
-  `{pointer, length}` headers and UTF-16 names. A scan of every 8-byte offset of the
-  returned buffer for a double in `[0.05, 100]` found **zero** candidates, on the wildcard
-  counter and on a concrete single-instance counter.
-- `PdhGetFormattedCounterArrayA`, `PdhVbGetDoubleCounterValue`, `PdhGetCounterInfoW`,
-  `PdhLookupPerfIndexByNameW`: measured, listed in the fix report. The last of these works
-  (`rc = 0`, `index = 5802`) - the earlier report's "it access-violates" was the NULL
-  handle from finding 1, not a PDH fault.
+The same class of error explains the "array writes the instance-name list" finding: a
+`PDH_FMT_COUNTERVALUE_ITEM_W` is **24 bytes** - an 8-byte `LPWSTR szName` followed by the
+16-byte `PDH_FMT_COUNTERVALUE` - and the old reader walked it as 16-byte values, so every
+item after the first was read at the wrong offset. With the real struct the array read
+returns names *and* percentages: 335 instances, a busy `engtype_Compute` instance at
+97.91%.
 
-`ctypes` is not the problem: `GetSystemTime`, `GetVersionExW` and `GlobalMemoryStatusEx`
-all fill their structures correctly here, and a hand-built `CFUNCTYPE` from the raw export
-address behaves identically to the `WinDLL` binding. Nor is it a "that instance has no
-data" fault: the same call on a **concrete instance that was busy at that moment** - with
-`Get-Counter` reporting 18-63% on sibling instances of the same counter - faults
-identically. The same counters read correctly through `Get-Counter` and through
-`Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine`, so the counters and their values
-exist; what is unavailable is reaching the *value* from this process.
+So `PdhGetFormattedCounterValue` and `PdhGetFormattedCounterArrayW` are both usable here,
+and the refusal they used to produce was a bug in this module, not a property of the
+machine. `VALUE_READS_ENABLED_BY_DEFAULT` is now `True`, and `PdhQuery.read_array()` is the
+reader the accelerator provider uses: one wildcard counter, one array read per sample,
+names and percentages together, so a value cannot be attributed to the wrong instance.
 
-**Consequence, and the reason `enable_value_reads` still defaults to `False`.** A native
-access violation is not a Python exception: it cannot be caught, and it takes the whole
-process with it. A booth application that dies while sampling is the worst outcome
-available, so `PdhQuery` **does not call the value reader unless explicitly told to**. The
-default is the measured state of this machine, the reason is the string below, and every
-refusal is appended to `value_read_refusals` so a caller - and the M0 report - can see that
-a value was **refused**, not zero. `PdhQuery(..., enable_value_reads=True)` turns the
-reading path on unchanged, and the reading path itself is complete: it returns a `float` in
-`[0, 100]` when `dwCStatus == 0` and `None` for every other state.
+**Why the array read and not one concrete counter per instance.** A `GPU Engine` instance
+comes and goes with its process's engine; a concrete handle for an instance that has
+vanished returns `PDH_NO_DATA` on every later collect (measured: `0x800007D5`), and
+re-adding handles per sample is path building at 4 Hz. The array read is one call over the
+live set. On this machine it costs **0.37-0.84 ms** for 335 items (n=30: p50 0.38, p95 0.72),
+which fits the 250 ms budget with no priming per sample.
 
-The reading path is exercised with an injected `pdh_api()`, which is the only safe way to
-test a reader whose native call can fault. The **real** `pdh.dll` is still used for
-everything that is real: the counter name, the add, the wildcard enumeration, the array
-size probe, the handle guards, and `close`.
+The reading path is exercised with an injected `PdhApi`, so its decision logic is pinned
+without a native call. The **real** `pdh.dll` is used for everything that is real: the
+counter name, the add, the wildcard enumeration, the array size probe and values, the handle
+guards, and `close`.
 
-### 4. The read strategy: the owned subset, read one concrete counter each.
+### 4. The read strategies: the array path for sampling, the owned subset for one instance.
 
-This machine has **455-497** live `GPU Engine` instances and the formatted array reports
-**4328** items for the wildcard counter. Reading all of them 4 times a second would be
-meaningless work and, on this build, would not return percentages anyway. So the ruling
-implemented here is:
+The array path is what the accelerator provider uses (`read_array()`): one
+`PdhCollectQueryData` plus one `PdhGetFormattedCounterArrayW`, names and percentages
+together. This machine has 335-361 live instances (it had 455-497 on 2026-10-01, under
+different load); the array buffer measured 49,352 bytes and the call 0.37-0.84 ms, so reading
+the whole set at 4 Hz is affordable and is one native call, not one per instance.
+
+`PdhQuery` also keeps the **owned subset** API, for a caller that wants one named instance:
 
 1. `instances()` enumerates the real names once and caches them (`instance_ttl`).
-2. The caller selects the **owned** subset - the instances whose LUID the recorded map
-   identifies as ours - with `instances_for_luid(luid)`.
+2. The caller selects the owned subset with `instances_for_luid(luid)`.
 3. `watch(names)` opens **one concrete counter per owned instance**, by adding
    `\GPU Engine(<bare instance>)\Utilization Percentage`, and primes them **once**.
-4. Each sample is then `collect()` plus one `PdhGetFormattedCounterValue` per owned
-   instance - a fixed, small number that does not grow with the machine's total instance
-   count.
+4. `read()` then takes one `PdhGetFormattedCounterValue` per watched instance.
+
+That path is not the sampling path: an instance comes and goes with its engine, and a
+concrete handle for a vanished instance returns `PDH_NO_DATA` on every later collect
+(measured `0x800007D5`). Only the array read sees the live set as it is.
 
 Measured with a real load running, on this machine: 13 NPU `Neural` instances + 31 GPU
 `Compute` instances = 44 owned counters; `watch` of those costs **754 ms** once (dominated
@@ -189,6 +175,7 @@ from typing import Any, Final
 from app.telemetry.instance_map import normalise_luid, parse_instance_name
 
 __all__ = [
+    "FMT_COUNTERVALUE_ITEM_SIZE",
     "FMT_COUNTERVALUE_SIZE",
     "GPU_ENGINE_COUNTER",
     "GPU_ENGINE_COUNTER_PATH",
@@ -196,6 +183,7 @@ __all__ = [
     "INSTANCE_TTL_SECONDS",
     "MAX_VALUE_READ_REFUSALS",
     "PDH_DLL",
+    "PDH_FMT_DOUBLE",
     "PDH_MORE_DATA",
     "PDH_MORE_DATA_UNPRIMED",
     "PERCENT_MAX",
@@ -264,27 +252,23 @@ PRIME_SECONDS: Final[float] = 0.75
 #: spend more time in enumeration than in reading.
 INSTANCE_TTL_SECONDS: Final[float] = 2.0
 
-#: The measured reason value reads are off by default. Verbatim, because the whole point is
-#: that the next reader can tell an intentional refusal from an oversight.
+#: The reason a query gives when value reads are explicitly turned **off** - not a claim
+#: about this machine. `VALUE_READS_ENABLED_BY_DEFAULT` is `True` because the read works;
+#: a caller that passes `enable_value_reads=False` gets this stated refusal instead of a
+#: silent zero, and `read_many`/`read` never reach `pdh.dll`.
 VALUE_READS_REFUSED_REASON: Final[str] = (
-    "the native PDH value read is not usable on this machine: PdhGetFormattedCounterValue "
-    "and PdhGetRawCounterValue both terminate the process with 0xC0000005 (access "
-    "violation reading 0xFFFFFFFFFFFFFFFF) for \\GPU Engine(*)\\Utilization Percentage and "
-    "for the non-GPU controls \\Processor(_Total)\\% Processor Time, \\Memory\\Available "
-    "Bytes and \\System\\Processor Queue Length, all with a handle proven valid by "
-    "PdhGetCounterTimeBase (timebase 10000000) and three PdhCollectQueryData samples. "
-    "PdhGetFormattedCounterArrayW returns rc=0 and no percentage: what it writes into the "
-    "item buffer is the instance-name list. The same counters read correctly through "
-    "Get-Counter and through Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine, so "
-    "the counter is live and the in-process read is not. A native fault cannot be caught, "
-    "so calling it would kill the booth application. Every reading is therefore None "
-    "(unavailable), never 0."
+    "value reads are disabled for this query (enable_value_reads=False), so no counter "
+    "value was read. This is a caller's choice, not a fault in the counter: the PDH value "
+    "read works on this machine and returns a double with dwCStatus==0. Every reading is "
+    "therefore None (unavailable), never 0."
 )
 
-#: `False` on this machine, for the reason above. Flip to `True` - or pass
-#: `enable_value_reads=True` - only on a build where the value read has been observed to
-#: return a value rather than fault.
-VALUE_READS_ENABLED_BY_DEFAULT: Final[bool] = False
+#: `True`: measured on 2026-10-27, with the four-argument binding, the value read returns
+#: a real double (`\Memory\Available Bytes` 25,606,934,528.0; `\Processor(_Total)\%...`
+#: 10.0) and the array read returns per-instance percentages. It defaults on because the
+#: booth's accelerator cards have no other per-process source, and a card that cannot
+#: read has to say so rather than show 0.
+VALUE_READS_ENABLED_BY_DEFAULT: Final[bool] = True
 
 #: **How many refusal reasons are retained, newest kept.** Measured 2026-10-01: the 4 Hz
 #: path (`collect()` + `read_many`) over 40 owned instances appends **160 refusals a
@@ -331,12 +315,38 @@ class _PdhValueUnion(ctypes.Union):
 
 
 class _PdhFmtCountervalue(ctypes.Structure):
-    """`PDH_FMT_COUNTERVALUE`. Measured `ctypes.sizeof` on this machine: 16, value at 8."""
+    """`PDH_FMT_COUNTERVALUE`. Measured `ctypes.sizeof` on this machine: 16, value at 8.
 
-    _fields_ = [("CType", ctypes.c_uint32), ("value", _PdhValueUnion)]
+    The first field is `CStatus`, not a counter type. `dwType` - the third argument of
+    `PdhGetFormattedCounterValue` - was measured **not** to be filled meaningfully here
+    (`0x00010100` for `\\Memory\\Available Bytes`, `0x21510500` for
+    `\\Processor(_Total)\\% Processor Time`, unchanged when `dwFormat` changed), so it is
+    reported as a diagnostic and is never the validity gate. `CStatus` is the gate.
+    """
+
+    _fields_ = [("CStatus", ctypes.c_uint32), ("value", _PdhValueUnion)]
 
 
 FMT_COUNTERVALUE_SIZE: Final[int] = ctypes.sizeof(_PdhFmtCountervalue)
+
+
+class _PdhFmtCountervalueItem(ctypes.Structure):
+    """`PDH_FMT_COUNTERVALUE_ITEM_W`: `LPWSTR szName` then `PDH_FMT_COUNTERVALUE`.
+
+    Measured `ctypes.sizeof` on this machine: **24** (8 + 16), and 335 items for the
+    wildcard `GPU Engine` counter come back with their real names and percentages when the
+    buffer is walked with this stride. The earlier 16-byte stride is why the same call was
+    reported as writing "the instance-name list".
+    """
+
+    _fields_ = [("szName", ctypes.c_wchar_p), ("FmtValue", _PdhFmtCountervalue)]
+
+
+FMT_COUNTERVALUE_ITEM_SIZE: Final[int] = ctypes.sizeof(_PdhFmtCountervalueItem)
+
+#: `PDH_FMT_DOUBLE`. The value read is always requested in this format, so the union's
+#: `doubleValue` is the reading; no other member is ever interpreted as a percentage.
+PDH_FMT_DOUBLE: Final[int] = 0x00000200
 
 
 def format_pdh_status(status: int) -> str:
@@ -375,12 +385,12 @@ class PdhApi:
        values such as `0xC0000BC0` - are misread.
     2. **Handles cross this boundary as `int`, with `0` meaning NULL.** That makes the
        NULL-handle guard in `PdhQuery` total rather than hopeful, and it makes the whole
-       native surface substitutable - which is the only safe way to test a reader whose
-       value call faults the process. Pass a substitute to `PdhQuery(api=...)`.
+       native surface substitutable, so the reader's decisions can be tested without a
+       native call. Pass a substitute to `PdhQuery(api=...)`.
 
-    Never call `formatted_value` or `raw_counter_value` through this class without a
-    handle obtained from `add_counter` and checked non-zero. `pdh.dll` on this machine
-    dereferences a NULL or unprimed handle rather than returning a status.
+    Never call `formatted_value` or `formatted_array_values` through this class without a
+    handle obtained from `add_counter` and checked non-zero. `pdh.dll` dereferences a NULL
+    handle rather than returning a status - measured, `0xC0000005`.
     """
 
     def __init__(self, library: Any) -> None:
@@ -413,14 +423,21 @@ class PdhApi:
         # call returns 0xC0000BBD for every wildcard path.
         lib.PdhExpandWildCardPathW.argtypes = [lpwstr, lpwstr, buffer, lpdword, lpdword]
         lib.PdhExpandWildCardPathW.restype = dword
-        # SIX parameters: (hCounter, dwFormat, lpdwBufferSize, lpdwValueType,
-        # ItemBuffer, lpdwStatus). lpdwBufferSize is in BYTES, not items.
+        # SIX parameters: (hCounter, dwFormat, lpdwBufferSize, lpdwItemCount,
+        # ItemBuffer, lpdwStatus). lpdwBufferSize is in BYTES, not items, and ItemBuffer
+        # is a byte buffer walked as `PDH_FMT_COUNTERVALUE_ITEM_W` (24 bytes) - not as
+        # 16-byte `PDH_FMT_COUNTERVALUE`s. `c_void_p` so a `create_string_buffer` can be
+        # passed without a cast that hides the stride.
         lib.PdhGetFormattedCounterArrayW.argtypes = [
-            handle, dword, lpdword, lpdword, ctypes.POINTER(_PdhFmtCountervalue), lpdword
+            handle, dword, lpdword, lpdword, buffer, lpdword
         ]
         lib.PdhGetFormattedCounterArrayW.restype = dword
+        # FOUR parameters: (hCounter, dwFormat, lpdwType, pValue). The M0 binding passed
+        # three - (hCounter, pValue, lpdwType) - so `dwFormat` read the value pointer and
+        # the real `pValue` slot held garbage: that is the measured 0xC0000005, not a PDH
+        # defect. `lpdwType` is filled unpredictably here and is diagnostic only.
         lib.PdhGetFormattedCounterValue.argtypes = [
-            handle, ctypes.POINTER(_PdhFmtCountervalue), lpdword
+            handle, dword, lpdword, ctypes.POINTER(_PdhFmtCountervalue)
         ]
         lib.PdhGetFormattedCounterValue.restype = dword
         lib.PdhGetRawCounterValue.argtypes = [handle, buffer, lpdword]
@@ -474,87 +491,146 @@ class PdhApi:
 
         Call one passes a NULL buffer and reads back the required **character** count from
         `pcchPathListLength`; call two passes a buffer of that size. Measured working for
-        `\\GPU Engine(*)\\Utilization Percentage`: `0x800007D2` then `0` with 455-469 paths.
+        `\\GPU Engine(*)\\Utilization Percentage`: `0x800007D2` then `0` with 335-497 paths.
+
+        **The whole pattern is retried up to three times.** The `GPU Engine` instance set
+        changes whenever a process opens or closes an engine, and a set that grows between
+        call one and call two makes call two return `PDH_MORE_DATA` again with a larger
+        size. Measured on this machine: the five-parameter expansion returned `()` with
+        `0x800007D2` in a suite run while worker processes were exiting, and the same call
+        succeeded immediately on a retry. A single attempt would make `instances()` flap
+        empty at 4 Hz - which is an absence, not a zero, but it is an absence caused by our
+        own call pattern rather than by the machine.
         """
-        chars = ctypes.c_uint32(0)
-        size = ctypes.c_uint32(0)
-        status = int(self._lib.PdhExpandWildCardPathW(
-            None, path, None, ctypes.byref(chars), ctypes.byref(size)
-        ))
-        if status not in _BUFFER_NOT_FILLED or chars.value == 0:
-            return status, ()
-        buffer = ctypes.create_unicode_buffer(chars.value + 2)
-        chars_in, size_in = ctypes.c_uint32(chars.value), ctypes.c_uint32(size.value + 8)
-        status = int(self._lib.PdhExpandWildCardPathW(
-            None, path, ctypes.cast(buffer, ctypes.c_void_p),
-            ctypes.byref(chars_in), ctypes.byref(size_in),
-        ))
-        if status != 0:
-            return status, ()
-        return status, tuple(e for e in buffer[:].split("\0") if e)
+        status = -1
+        for _attempt in range(3):
+            chars = ctypes.c_uint32(0)
+            size = ctypes.c_uint32(0)
+            status = int(self._lib.PdhExpandWildCardPathW(
+                None, path, None, ctypes.byref(chars), ctypes.byref(size)
+            ))
+            if status not in _BUFFER_NOT_FILLED or chars.value == 0:
+                return status, ()
+            buffer = ctypes.create_unicode_buffer(chars.value + 4096)
+            chars_in, size_in = (
+                ctypes.c_uint32(chars.value + 2048), ctypes.c_uint32(size.value + 8)
+            )
+            status = int(self._lib.PdhExpandWildCardPathW(
+                None, path, ctypes.cast(buffer, ctypes.c_void_p),
+                ctypes.byref(chars_in), ctypes.byref(size_in),
+            ))
+            if status == 0:
+                return status, tuple(e for e in buffer[:].split("\0") if e)
+            if status != PDH_MORE_DATA:
+                return status, ()
+        return status, ()
 
     # -- values ---------------------------------------------------------------------
 
-    def formatted_value(self, counter: int) -> tuple[int, int, int, float]:
-        """`(status, dwCStatus, CType, doubleValue)` for one concrete counter.
+    def formatted_value(
+        self, counter: int, dw_format: int = PDH_FMT_DOUBLE
+    ) -> tuple[int, int, int, float]:
+        """`(status, dwCStatus, dwType, doubleValue)` for one concrete counter.
 
-        **Unsafe on this machine** - it terminates the process; see the module docstring.
-        Reached only when `PdhQuery` has value reads explicitly enabled and a non-zero
-        handle in hand.
+        The four-argument call. `dwFormat` is passed explicitly and is `PDH_FMT_DOUBLE` by
+        default, so `doubleValue` is the reading. `dwType` is returned for diagnostics and
+        was measured **not** to be filled meaningfully on this build; it is not a gate.
+        `dwCStatus` is the gate: non-zero means "no data for this sample", never zero.
+
+        Measured on this machine, 2026-10-27: `rc = 0`, `CStatus = 0`, and
+        `\\Memory\\Available Bytes` returns 25,560,748,032.0. The old three-argument form
+        terminated the process with `0xC0000005`.
         """
         value = _PdhFmtCountervalue()
         value_type = ctypes.c_uint32(0)
         status = int(self._lib.PdhGetFormattedCounterValue(
-            ctypes.c_void_p(counter), ctypes.byref(value), ctypes.byref(value_type)
+            ctypes.c_void_p(counter), dw_format, ctypes.byref(value_type),
+            ctypes.byref(value),
         ))
-        return status, int(value.CType), int(value_type.value), float(value.value.doubleValue)
+        return status, int(value.CStatus), int(value_type.value), float(value.value.doubleValue)
 
-    def formatted_array_size(self, counter: int, dw_format: int = 0) -> tuple[int, int]:
+    def formatted_array_size(
+        self, counter: int, dw_format: int = PDH_FMT_DOUBLE
+    ) -> tuple[int, int]:
         """`(status, bytes)` - the NULL-buffer probe of the two-call array pattern.
 
         `lpdwBufferSize` is in **bytes**, and the caller divides by
-        `FMT_COUNTERVALUE_SIZE` to get an item count. Measured on this machine, primed:
-        `0x800007D2` with 69256 bytes, i.e. 4328 items. Unprimed it returns
-        `0x800007D5` with 0 bytes.
+        `FMT_COUNTERVALUE_ITEM_SIZE` to get an item count. Measured on this machine,
+        primed: `0x800007D2` with 49,352 bytes for 335 `GPU Engine` items. Unprimed it
+        returns `0x800007D5` with 0 bytes.
         """
-        size, value_type, status_out = (
+        size, item_count, status_out = (
             ctypes.c_uint32(0), ctypes.c_uint32(0), ctypes.c_uint32(0)
         )
         status = int(self._lib.PdhGetFormattedCounterArrayW(
-            ctypes.c_void_p(counter), dw_format, ctypes.byref(size), ctypes.byref(value_type),
-            None, ctypes.byref(status_out),
+            ctypes.c_void_p(counter), dw_format, ctypes.byref(size),
+            ctypes.byref(item_count), None, ctypes.byref(status_out),
         ))
         return status, int(size.value)
 
     def formatted_array(
-        self, counter: int, items: int, dw_format: int = 0
+        self, counter: int, items: int, dw_format: int = PDH_FMT_DOUBLE
     ) -> tuple[int, int, tuple[int, ...]]:
-        """`(status, items filled, per-item status words)` with a **real** buffer.
+        """`(status, items filled, per-item CStatus words)` with a **real** byte buffer.
 
         The second half of the two-call pattern: `lpdwBufferSize` in **bytes**, a buffer
         large enough for the probe, and never a NULL `ItemBuffer`.
 
         **On output PDH reports the counter's whole item count, not how many it wrote.**
-        Measured: asking for 8 items of a 4328-item counter comes back with
-        `lpdwBufferSize = 4328 * 16`. The count is therefore clamped to the buffer that
-        was actually supplied, or reading it would index past the allocation - one more
-        way to turn this call into a native fault.
+        Measured: asking for 8 items of a 335-item counter comes back with
+        `lpdwBufferSize = 335 * 24`. The count is therefore clamped to the buffer that was
+        actually supplied, or reading it would index past the allocation.
 
-        The returned status words are whatever PDH put in the first `DWORD` of each
-        16-byte slot. **On this build those slots are not `PDH_FMT_COUNTERVALUE` items** -
-        they hold the instance-name list, so no percentage is extracted here. That is
-        recorded rather than papered over; see the module docstring.
+        The stride is `FMT_COUNTERVALUE_ITEM_SIZE` (24), **not** `FMT_COUNTERVALUE_SIZE`
+        (16): each item is an 8-byte name pointer followed by the 16-byte value. The
+        earlier 16-byte stride is why this was reported as writing "the instance-name
+        list". `formatted_array_values` is the one that returns the names and readings.
         """
-        size = ctypes.c_uint32(items * FMT_COUNTERVALUE_SIZE)
-        value_type = ctypes.c_uint32(0)
+        size = ctypes.c_uint32(max(1, items) * FMT_COUNTERVALUE_ITEM_SIZE)
+        item_count = ctypes.c_uint32(0)
         status_out = ctypes.c_uint32(0)
-        buffer = (_PdhFmtCountervalue * items)()
+        buffer = ctypes.create_string_buffer(size.value)
         status = int(self._lib.PdhGetFormattedCounterArrayW(
-            ctypes.c_void_p(counter), dw_format, ctypes.byref(size), ctypes.byref(value_type),
-            buffer, ctypes.byref(status_out),
+            ctypes.c_void_p(counter), dw_format, ctypes.byref(size),
+            ctypes.byref(item_count), ctypes.cast(buffer, ctypes.c_void_p),
+            ctypes.byref(status_out),
         ))
-        written = min(int(size.value) // FMT_COUNTERVALUE_SIZE, items)
-        return status, written, tuple(int(buffer[i].CType) for i in range(written))
+        written = min(int(item_count.value), items, int(size.value) // FMT_COUNTERVALUE_ITEM_SIZE)
+        walk = (_PdhFmtCountervalueItem * max(written, 0)).from_buffer(buffer)
+        return status, written, tuple(int(walk[i].FmtValue.CStatus) for i in range(written))
+
+    def formatted_array_values(
+        self, counter: int, items: int, dw_format: int = PDH_FMT_DOUBLE
+    ) -> tuple[int, tuple[tuple[str, int, float], ...]]:
+        """`(status, ((instance_name, dwCStatus, double), ...))` from one array read.
+
+        This is the per-process read the accelerator provider uses. The names come back
+        **with** their values from one call, so a percentage cannot be paired with the
+        wrong instance; the caller filters on the `pid_` field and never sees a machine-wide
+        total. Each item carries its own `dwCStatus`, so a dead engine is distinguishable
+        from a busy one.
+
+        Measured on this machine: 335 items in 49,352 bytes, `rc = 0`, a busy
+        `engtype_Compute` instance at 97.91%, in 0.37-0.84 ms (n=30).
+        """
+        size = ctypes.c_uint32(max(1, items) * FMT_COUNTERVALUE_ITEM_SIZE)
+        item_count = ctypes.c_uint32(0)
+        status_out = ctypes.c_uint32(0)
+        buffer = ctypes.create_string_buffer(size.value)
+        status = int(self._lib.PdhGetFormattedCounterArrayW(
+            ctypes.c_void_p(counter), dw_format, ctypes.byref(size),
+            ctypes.byref(item_count), ctypes.cast(buffer, ctypes.c_void_p),
+            ctypes.byref(status_out),
+        ))
+        written = min(int(item_count.value), max(1, items),
+                      int(size.value) // FMT_COUNTERVALUE_ITEM_SIZE)
+        walk = (_PdhFmtCountervalueItem * max(written, 0)).from_buffer(buffer)
+        rows = tuple(
+            (str(walk[i].szName or ""), int(walk[i].FmtValue.CStatus),
+             float(walk[i].FmtValue.value.doubleValue))
+            for i in range(written)
+        )
+        return status, rows
 
 
 _API: PdhApi | None = None
@@ -631,9 +707,10 @@ class PdhQuery:
 
     1. Is the instance in the enumerated set? If not, `None` - the instance has gone, and
        a process that has exited has no utilisation.
-    2. Only then, a value read, and only if `enable_value_reads` is on. Off by default on
-       this machine because the call faults natively and cannot be caught; see the module
-       docstring. Every refusal is appended to `value_read_refusals` with its reason.
+    2. Only then, a value read, and only if `enable_value_reads` is on (the default). The
+       read is the four-argument `PdhGetFormattedCounterValue`, measured working on this
+       machine; see the module docstring. Every refusal is appended to
+       `value_read_refusals` with its reason.
     """
 
     def __init__(
@@ -932,25 +1009,24 @@ class PdhQuery:
           how a booth visitor is told the NPU is idle when nothing was measured;
         - the instance has no concrete counter open, i.e. it has not been `watch`ed;
         - the query is not primed, so a rate counter has one sample and no rate;
-        - value reads are disabled on this machine (the default here) - see the module
-          docstring. This check comes **before** the enumeration on purpose: with reads
-          off there is nothing an enumeration could contribute, and skipping it keeps the
-          4 Hz path off `pdh.dll` entirely. **This is the refusal that fires 160 times a
-          second at 4 Hz over 40 owned instances**, which is why `value_read_refusals` is
-          bounded and `refusal_count` exists;
+        - value reads are disabled for this query (`enable_value_reads=False`). This check
+          comes **before** the enumeration on purpose: with reads off there is nothing an
+          enumeration could contribute, and skipping it keeps that path off `pdh.dll`
+          entirely. When it fires, `VALUE_READS_REFUSED_REASON` is logged once per read;
         - the native call returns a non-zero status, or `dwCStatus != 0`. A rate counter
           that has not been primed reports `PDH_INVALID_DATA` here, and that is "not yet
           available", not zero;
         - the reading is outside `[0, 100]`, and is **refused rather than clamped**. A
           clamp would put a number on the card that was never measured: a 137.2% multi-
           engine sum displayed as 100.0% is a different number, and a wrong one;
-        - the reading is not a double. Every other counter type is refused rather than
-          reinterpreted, because reinterpreting an unknown type as a percentage is how a
-          plausible-looking wrong number gets made.
+        - the reading is `NaN`, which fails every comparison and would otherwise look
+          fresh for ever.
 
-        A value is returned only when it was actually read, was a `PERF_DOUBLE`, and fell
+        A value is returned only when it was actually read, `dwCStatus` was 0, and it fell
         inside the range. There is no code path in this method that produces a number the
-        counter did not report.
+        counter did not report. The `dwType` out-parameter is **not** a gate: measured on
+        this build it is filled with stale values, so gating on it would refuse every real
+        reading (see `_MEASURED_UNFILLED_TYPES`).
         """
         if str(path.category) != self._category:
             reason = (f"path category {path.category!r} is not this query's category "
@@ -1020,10 +1096,10 @@ class PdhQuery:
             return None
         try:
             status, cstatus, ctype, reading = self._api.formatted_value(handle)
-        except OSError as exc:  # pragma: no cover - needs the native fault to be catchable
+        except OSError as exc:  # pragma: no cover - a native fault is not normally catchable
             self._refuse(
-                f"the native value read for {instance!r} faulted: {exc}. A native fault is "
-                f"normally not catchable at all, which is why this call is off by default."
+                f"the native value read for {instance!r} raised {exc}. No value is "
+                f"available."
             )
             return None
         self.last_status = status
@@ -1040,11 +1116,16 @@ class PdhQuery:
                 f"never zero."
             )
             return None
-        if ctype != _PERF_DOUBLE:
+        if ctype and ctype != _PERF_DOUBLE and ctype not in _MEASURED_UNFILLED_TYPES:
+            # Kept as a diagnostic, not as a gate. `dwType` was measured not to be filled
+            # meaningfully on this build (0x00010100 for a memory counter, 0x21510500 for a
+            # CPU counter), so refusing on it would refuse every real reading. The gate is
+            # `dwCStatus` above and the request format is `PDH_FMT_DOUBLE`, so the value
+            # interpreted is always the double PDH was asked for.
             self._refuse(
-                f"{self.counter_name!r} for {instance!r} came back as CType {ctype}, not "
-                f"the double this provider reads; refusing to reinterpret an unknown "
-                f"counter type as a percentage"
+                f"{self.counter_name!r} for {instance!r} reported dwType {ctype:#x}, which "
+                f"is neither the requested PDH_FMT_DOUBLE nor a measured filler value; "
+                f"refusing rather than guessing"
             )
             return None
         if reading != reading or not (PERCENT_MIN <= reading <= PERCENT_MAX):
@@ -1099,20 +1180,100 @@ class PdhQuery:
 
     # -- the two-call array pattern -------------------------------------------------
 
+    def read_array(self) -> tuple[tuple[str, float], ...]:
+        """Every instance's percentage from **one** array read, names paired with values.
+
+        Returns `((instance_name, percentage), ...)` for the items whose `dwCStatus` is 0
+        and whose value is a finite percentage in `[0, 100]`. An item with a non-zero
+        status, a `NaN`, or an out-of-range value is **left out and recorded** in
+        `value_read_refusals` - it is never turned into a 0. An empty tuple means "no
+        instance has a reading": on an idle machine Windows has no `GPU Engine` instances
+        for a process that has not used the GPU, which is an absence, not a zero.
+
+        One call, one sample. The caller filters by `pid_` and by adapter LUID; this method
+        makes no attribution decision of its own and never sums anything.
+
+        Measured on this machine: 335-361 instances, 0.37-0.84 ms per call (n=30), `rc = 0`, and a
+        busy worker's `engtype_Compute` instance at 97.91% while every other process sat at
+        or near 0.
+        """
+        self._check_open()
+        if len(self._handles) != 1:
+            raise PdhUnavailableError(
+                f"the array pattern is per counter and this query holds "
+                f"{len(self._handles)}; use one counter per query"
+            )
+        # **One collect, then one array read.** Without the collect the counter is never
+        # re-sampled and every "reading" is the rate from the last prime - measured: a
+        # worker at 98% read 0.0 on every tick because its busy interval began after the
+        # prime. That is a stale value presented as current, which is the defect class
+        # this module exists to prevent.
+        collect_status = self.collect()
+        if collect_status != 0:
+            self._refuse(
+                f"PdhCollectQueryData for {self._category!r} returned "
+                f"{format_pdh_status(collect_status)}; no new sample exists, so no value "
+                f"is reported. Unavailable, not 0."
+            )
+            return ()
+        handle = self._next(iter(self._handles.values()))
+        status, size = self._api.formatted_array_size(handle)
+        self.last_status = status
+        if size == 0:
+            self._refuse(
+                f"the array size probe for {self._category!r} returned "
+                f"{format_pdh_status(status)} and 0 bytes: no sample exists yet. Call "
+                f"prime(); an absence of items is not a reading of zero."
+            )
+            return ()
+        if status not in _BUFFER_NOT_FILLED:
+            self._refuse(
+                f"the array size probe for {self._category!r} returned "
+                f"{format_pdh_status(status)}; no value was read"
+            )
+            return ()
+        # Slack for instances appearing between the probe and the read, and because the
+        # probed size is not guaranteed to be an exact multiple of the stride.
+        items = size // FMT_COUNTERVALUE_ITEM_SIZE + 8
+        status, rows = self._api.formatted_array_values(handle, items)
+        self.last_status = status
+        if status != 0:
+            self._refuse(
+                f"PdhGetFormattedCounterArrayW for {self._category!r} returned "
+                f"{format_pdh_status(status)}; no reading is available"
+            )
+            return ()
+        readings: list[tuple[str, float]] = []
+        for name, cstatus, value in rows:
+            if not name:
+                continue
+            if cstatus != 0:
+                self._refuse(
+                    f"instance {name!r} came back with dwCStatus {format_pdh_status(cstatus)}"
+                    f": no data for this sample. Unavailable, never zero."
+                )
+                continue
+            if value != value or not (PERCENT_MIN <= value <= PERCENT_MAX):
+                self._refuse(
+                    f"instance {name!r} read {value!r}, outside "
+                    f"[{PERCENT_MIN}, {PERCENT_MAX}]; refused rather than clamped"
+                )
+                continue
+            readings.append((name, float(value)))
+        return tuple(readings)
+
     def formatted_array_size(self) -> tuple[int, int, str]:
         """`(bytes, item_count, status_text)` from the `PdhGetFormattedCounterArrayW` probe.
 
-        The plan names this function, and it is the half of the array pattern that is
-        reliable. It is the **first** of the two calls: a NULL `ItemBuffer` with a
+        This is the **first** of the two calls: a NULL `ItemBuffer` with a
         `lpdwBufferSize` out-parameter, from which PDH reports the buffer size **in bytes**.
-        The second call is `PdhQuery._read_formatted_array`, and it always passes a real
-        buffer - a NULL `ItemBuffer` on a *sized* call is what faulted the process in the
-        earlier implementation.
+        The second call passes a real buffer; a NULL `ItemBuffer` on a *sized* call is what
+        the earlier implementation did, and it faulted the process.
 
-        Measured on this machine, primed: `0x800007D2` with 69 kB, i.e. 4328 items for the
-        wildcard counter. Unprimed, the same call returns `0x800007D5` and **zero** bytes -
-        so call `prime()` first if the size matters. Those items are **not** percentages on
-        this build; see `_read_formatted_array`.
+        Measured on this machine, primed: `0x800007D2` with 49,352 bytes, i.e. 335 items for
+        the wildcard counter (the item stride is `FMT_COUNTERVALUE_ITEM_SIZE`, 24 bytes).
+        Unprimed, the same call returns `0x800007D5` and **zero** bytes - so call `prime()`
+        first if the size matters. `read_array()` is the call that returns the percentages.
         """
         self._check_open()
         if len(self._handles) != 1:
@@ -1134,7 +1295,7 @@ class PdhQuery:
                 f"{format_pdh_status(PDH_MORE_DATA_UNPRIMED)} and 0 bytes: the counter has "
                 "no sample yet. Call prime() before asking how large the array is."
             )
-        return size, size // FMT_COUNTERVALUE_SIZE, format_pdh_status(status)
+        return size, size // FMT_COUNTERVALUE_ITEM_SIZE, format_pdh_status(status)
 
     def _read_formatted_array(self, max_items: int = 16) -> tuple[int, int, tuple[int, ...]]:
         """The **second** call of the array pattern, with a correctly sized real buffer.
@@ -1142,8 +1303,8 @@ class PdhQuery:
         The buffer is sized from the probe plus a small slack - a deliberately short buffer
         is answered with `PDH_MORE_DATA` again, and the probed size is not always an exact
         multiple of the item size, so asking for "just eight" is not a thing this API can
-        do. Only the first `max_items` are reported back, so a 4328-item wildcard counter
-        does not put 69 kB of instance names on the caller's stack.
+        do. Only the first `max_items` are reported back, so a 335-item wildcard counter
+        does not put 8 kB of instance names on the caller's stack.
         """
         self._check_open()
         status, size = self._api.formatted_array_size(
@@ -1151,7 +1312,7 @@ class PdhQuery:
         )
         if status != PDH_MORE_DATA or size == 0:
             return status, 0, ()
-        needed = size // FMT_COUNTERVALUE_SIZE + 8
+        needed = size // FMT_COUNTERVALUE_ITEM_SIZE + 8
         status, written, statuses = self._api.formatted_array(
             self._next(iter(self._handles.values())), needed
         )
@@ -1163,9 +1324,9 @@ class PdhQuery:
         two-call array pattern, run end to end.
 
         Exposed so the argument order is pinned by a test against the **real** `pdh.dll`:
-        a NULL-buffer probe, then a real buffer sized in bytes. On this build the items PDH
-        writes are the instance-name list rather than `PDH_FMT_COUNTERVALUE` entries, so
-        the per-item words are reported raw and no percentage is derived from them.
+        a NULL-buffer probe, then a real buffer sized in bytes. Each item is walked with the
+        24-byte `PDH_FMT_COUNTERVALUE_ITEM_W` stride, and `read_array()` is the call that
+        returns the names and percentages together.
         """
         self._check_open()
         _, expected, _ = self.formatted_array_size()
@@ -1232,8 +1393,16 @@ class PdhQuery:
     _handles: dict[str, int] = {}
 
 
-#: `PERF_DOUBLE`, the `CType` of a counter measured as a `double`. The only `CType` this
-#: module will read a `doubleValue` out of; every other is refused as `None` rather than
-#: reinterpreted. It is not observed from `pdh.dll` on this machine - the value read does
-#: not return - so it is checked for, never assumed.
+#: `PERF_DOUBLE`, the counter type a double-valued counter reports. The value read asks
+#: PDH for `PDH_FMT_DOUBLE`, so the union member read is always the requested double; this
+#: constant and `_MEASURED_UNFILLED_TYPES` are a **diagnostic** on the `dwType` out-param,
+#: which was measured to be filled with stale/unrelated values on this build.
 _PERF_DOUBLE: Final[int] = 5
+
+#: The `dwType` words measured on this machine for real counters, in a clean subprocess:
+#: `0x00010100` (`\Memory\Available Bytes`) and `0x21510500`
+#: (`\Processor(_Total)\% Processor Time`), unchanged when `dwFormat` changed. They are not
+#: counter types; they are what this `pdh.dll` leaves in the third out-parameter. Treating
+#: them as a gate would refuse every real reading, so they are accepted as "unfilled" and
+#: the reading is gated on `dwCStatus` instead.
+_MEASURED_UNFILLED_TYPES: Final[frozenset[int]] = frozenset({0x00010100, 0x21510500, 0x20510500})

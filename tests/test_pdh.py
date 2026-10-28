@@ -15,10 +15,11 @@ rendered. So:
 category, because what they pin is a fact about this machine: the counter *path* that adds
 (the earlier bug), the five-parameter wildcard expansion, the two-call array pattern, the
 NULL-handle guard, and the fact that a missing instance reads `None`. The tests named
-`ValueReadDecisionLogic` inject a substitute `PdhApi`, because the real
-`PdhGetFormattedCounterValue` terminates the process on this build - measured, with
-controls - and a test that can take the test runner down proves nothing. See the
-`app.telemetry.pdh` module docstring for the measurements.
+`ValueReadDecisionLogic` inject a substitute `PdhApi`, so the decision logic is pinned
+without depending on a live counter. The real value read **was** a three-argument binding of
+a four-argument function and terminated the process with `0xC0000005`; that is fixed, and
+`RealPdhValueRead` now proves the real call returns real values in a child process, where a
+fault is observable rather than fatal to the suite.
 
 Per the plan, if `test_missing_instance_reads_as_none_not_zero` raises
 `PdhUnavailableError` on the *valid* `GPU Engine` category, the Windows install is not
@@ -400,10 +401,24 @@ class ValueReadDecisionLogic(unittest.TestCase):
         finally:
             q.close()
 
-    def test_value_reads_off_by_default_never_reach_the_native_call(self):
-        """The measured state of this machine, and the reason the reader cannot crash."""
+    def test_value_reads_are_on_by_default_and_a_disabled_query_refuses(self):
+        """The value read works here; `False` is a caller's choice, not this machine.
+
+        Measured 2026-10-27: the four-argument `PdhGetFormattedCounterValue` returns
+        `\\Memory\\Available Bytes` = 25,560,748,032.0 and a CPU percentage of 9.0 in a
+        child process. The earlier "off by default" was a three-argument binding of a
+        four-argument function. What is pinned now is that a *disabled* query refuses
+        rather than reading, and never reaches the native call.
+        """
+        self.assertTrue(pdh.VALUE_READS_ENABLED_BY_DEFAULT)
         q, api = stubbed_query(value=(0, 0, PERF_DOUBLE, 47.0), instances=[LIVE],
                                enable_value_reads=None)
+        try:
+            self.assertTrue(q.value_reads)
+        finally:
+            q.close()
+        q, api = stubbed_query(value=(0, 0, PERF_DOUBLE, 47.0), instances=[LIVE],
+                               enable_value_reads=False)
         try:
             self.assertFalse(q.value_reads)
             q.prime()
@@ -412,7 +427,7 @@ class ValueReadDecisionLogic(unittest.TestCase):
             self.assertFalse([c for c in api.calls if c[0] == "formatted_value"])
             self.assertFalse([c for c in api.calls if c[0] == "expand_wildcard"],
                              "with reads off the 4 Hz path must not touch enumeration either")
-            self.assertTrue(any("not usable on this machine" in r
+            self.assertTrue(any("disabled for this query" in r
                                 for r in q.value_read_refusals))
         finally:
             q.close()
@@ -428,13 +443,21 @@ class ValueReadDecisionLogic(unittest.TestCase):
         finally:
             q.close()
 
-    def test_a_non_double_counter_type_is_refused_rather_than_reinterpreted(self):
+    def test_an_unmeasured_dw_type_is_refused_rather_than_reinterpreted(self):
+        """`dwType` is a diagnostic, not a gate - an unknown one is still refused.
+
+        Measured: this `pdh.dll` leaves `0x00010100` and `0x21510500` in the type
+        out-parameter for real counters even when the double is correct, so those are
+        accepted as "unfilled" (`_MEASURED_UNFILLED_TYPES`). Any *other* type is refused,
+        because reinterpreting an unknown counter type as a percentage is how a
+        plausible-looking wrong number gets made.
+        """
         q, api = stubbed_query(value=(0, 0, 0x800, 12.0), instances=[LIVE])
         try:
             q.prime()
             q.watch([LIVE])
             self.assertIsNone(q.read(PdhCounterPath(GPU_ENGINE_COUNTER_SET, LIVE)))
-            self.assertTrue(any("CType" in r for r in q.value_read_refusals))
+            self.assertTrue(any("dwType" in r for r in q.value_read_refusals))
         finally:
             q.close()
 
@@ -684,6 +707,170 @@ class _NullLibrary:
             "PdhGetFormattedCounterValue", "PdhGetRawCounterValue",
         ):
             setattr(self, name, self._Fn())
+
+
+class RealPdhValueRead(unittest.TestCase):
+    """The real value read, in a **child** process so a native fault is observable.
+
+    The M0 report recorded `0xC0000005` for this call. It is reproducible - with the old
+    three-argument binding - and it is fixed with the four-argument one. Both are pinned
+    here, because a claim that a native call works is worth nothing without the control
+    that shows what failure looks like.
+    """
+
+    OLD_BINDING = r"""
+import ctypes, time
+from ctypes import wintypes
+pdh = ctypes.WinDLL("pdh.dll")
+PdhOpenQueryW = pdh.PdhOpenQueryW
+PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]
+PdhOpenQueryW.restype = ctypes.c_uint32
+PdhAddEnglishCounterW = pdh.PdhAddEnglishCounterW
+PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_size_t,
+                                  ctypes.POINTER(ctypes.c_void_p)]
+PdhAddEnglishCounterW.restype = ctypes.c_uint32
+PdhCollectQueryData = pdh.PdhCollectQueryData
+PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+PdhCollectQueryData.restype = ctypes.c_uint32
+PdhGetFormattedCounterValue = pdh.PdhGetFormattedCounterValue
+# The old, wrong binding: three arguments. dwFormat reads pValue, and the real pValue
+# slot holds garbage.
+PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double),
+                                        ctypes.POINTER(wintypes.DWORD)]
+PdhGetFormattedCounterValue.restype = ctypes.c_uint32
+q = ctypes.c_void_p()
+assert PdhOpenQueryW(None, 0, ctypes.byref(q)) == 0
+c = ctypes.c_void_p()
+assert PdhAddEnglishCounterW(q, r"\Memory\Available Bytes", 0, ctypes.byref(c)) == 0
+PdhCollectQueryData(q); time.sleep(0.3); PdhCollectQueryData(q)
+t = wintypes.DWORD(0); v = ctypes.c_double(0.0)
+print("CALLING", flush=True)
+PdhGetFormattedCounterValue(c, ctypes.byref(v), ctypes.byref(t))
+print("RETURNED", flush=True)
+"""
+
+    NEW_BINDING = r"""
+import ctypes, time
+from ctypes import wintypes
+pdh = ctypes.WinDLL("pdh.dll")
+class U(ctypes.Union):
+    _fields_ = [("l", ctypes.c_long), ("d", ctypes.c_double), ("ll", ctypes.c_longlong),
+                ("p", ctypes.c_void_p)]
+class V(ctypes.Structure):
+    _anonymous_ = ("u",)
+    _fields_ = [("CStatus", ctypes.c_uint32), ("u", U)]
+pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]
+pdh.PdhOpenQueryW.restype = ctypes.c_uint32
+pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_size_t,
+                                      ctypes.POINTER(ctypes.c_void_p)]
+pdh.PdhAddEnglishCounterW.restype = ctypes.c_uint32
+pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+pdh.PdhCollectQueryData.restype = ctypes.c_uint32
+pdh.PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(V)]
+pdh.PdhGetFormattedCounterValue.restype = ctypes.c_uint32
+q = ctypes.c_void_p()
+assert pdh.PdhOpenQueryW(None, 0, ctypes.byref(q)) == 0
+c = ctypes.c_void_p()
+assert pdh.PdhAddEnglishCounterW(q, r"\Memory\Available Bytes", 0, ctypes.byref(c)) == 0
+pdh.PdhCollectQueryData(q); time.sleep(0.3); pdh.PdhCollectQueryData(q)
+t = wintypes.DWORD(0); v = V()
+rc = pdh.PdhGetFormattedCounterValue(c, 0x200, ctypes.byref(t), ctypes.byref(v))
+print(f"RC={rc} CSTATUS={v.CStatus} VALUE={v.d}", flush=True)
+"""
+
+    def _run(self, source: str):
+        import subprocess
+        import sys
+        return subprocess.run([sys.executable, "-c", source], capture_output=True,
+                              text=True, timeout=60)
+
+    def test_the_old_three_argument_binding_is_the_access_violation(self):
+        """The control: the *old* call is what produced M0's `0xC0000005`.
+
+        Measured here: ctypes converts the native fault to a Python `OSError` on this
+        build, so the child exits 1 with `access violation reading 0xFFFFFFFFFFFFFFFF` on
+        stderr - the exact text M0 recorded. Either an uncaught `0xC0000005` exit or that
+        exception is a failure of the call; both are accepted, and a **return** is not.
+        """
+        result = self._run(self.OLD_BINDING)
+        code = result.returncode & 0xFFFFFFFF
+        self.assertNotEqual(result.returncode, 0,
+                            f"the three-argument binding returned; stdout={result.stdout!r}")
+        self.assertTrue(
+            code == 0xC0000005
+            or "access violation reading 0xFFFFFFFFFFFFFFFF" in result.stderr,
+            f"expected the access violation M0 recorded, got exit {code:#010x}; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}",
+        )
+        self.assertIn("CALLING", result.stdout)
+        self.assertNotIn("RETURNED", result.stdout,
+                         "the process died inside the call, so it cannot have returned")
+
+    def test_the_documented_four_argument_read_returns_a_real_value(self):
+        result = self._run(self.NEW_BINDING)
+        self.assertEqual(result.returncode, 0,
+                         f"exit {result.returncode:#010x}; stderr={result.stderr!r}")
+        self.assertIn("RC=0", result.stdout)
+        self.assertIn("CSTATUS=0", result.stdout)
+        value = float(result.stdout.split("VALUE=")[1].split()[0])
+        self.assertGreater(value, 1e8,
+                           f"\\Memory\\Available Bytes read {value}; a real host has more "
+                           f"than 100 MB available and 0.0 would be the old lie")
+
+    def test_the_array_read_returns_names_and_percentages_together(self):
+        q = live_query()
+        try:
+            self.assertTrue(q.prime())
+            rows = q.read_array()
+            self.assertTrue(rows, "a primed GPU Engine counter must report live instances")
+            for name, percent in rows:
+                self.assertRegex(name, r"^pid_\d+_luid_0x[0-9A-Fa-f]{8}_",
+                                 "the array read must pair each value with its instance name")
+                self.assertGreaterEqual(percent, 0.0)
+                self.assertLessEqual(percent, 100.0)
+        finally:
+            q.close()
+
+
+class ExpandRetriesWhenTheInstanceSetChanges(unittest.TestCase):
+    """A `GPU Engine` set that grows between the two calls must not read as empty.
+
+    Measured in a full suite run: the five-parameter expansion returned `()` with
+    `0x800007D2` while worker processes were exiting. That is a race in the two-call
+    pattern, not an empty machine, so the pattern is retried.
+    """
+
+    def test_a_growing_set_is_retried_rather_than_reported_empty(self):
+        api = pdh.PdhApi(_NullLibrary())
+        calls = {"sized": 0}
+        names = ("pid_1_luid_0x00000000_0x000112A0_phys_0_eng_0_engtype_Neural",
+                 "pid_2_luid_0x00000000_0x000113B4_phys_0_eng_5_engtype_Compute")
+        payload = "".join(
+            rf"\GPU Engine({name})\Utilization Percentage" + "\0" for name in names
+        )
+
+        def fake(_source, _path, buffer, chars, size):
+            if not buffer:
+                ctypes.cast(chars, ctypes.POINTER(ctypes.c_uint32)).contents.value = 4096
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_uint32)).contents.value = 8
+                return pdh.PDH_MORE_DATA
+            calls["sized"] += 1
+            if calls["sized"] == 1:
+                return pdh.PDH_MORE_DATA  # the set grew after the size probe
+            encoded = payload.encode("utf-16-le")
+            ctypes.memmove(buffer, encoded, len(encoded))
+            ctypes.cast(chars, ctypes.POINTER(ctypes.c_uint32)).contents.value = len(payload)
+            return 0
+
+        api._lib.PdhExpandWildCardPathW = fake
+        status, expanded = api.expand_wildcard(r"\GPU Engine(*)\Utilization Percentage")
+        self.assertEqual(status, 0, "the retry must return the successful call's status")
+        self.assertEqual(calls["sized"], 2, "the sized call must be retried exactly once")
+        self.assertEqual(len(expanded), 2)
+        for name, path in zip(names, expanded):
+            self.assertIn(name, path,
+                          "the expanded paths must be the real instances, not an empty tuple")
 
 
 if __name__ == "__main__":

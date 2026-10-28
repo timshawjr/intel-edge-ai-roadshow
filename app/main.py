@@ -15,10 +15,11 @@ be wrong in a way that matters: a real provider whose name merely contained one 
 words would shut down the application, and the person diagnosing that would not be
 looking at a simulation at all.
 
-`REGISTERED_PROVIDERS` is what this build actually registers: `psutil`, and nothing else.
-`app.telemetry.pdh` is deliberately absent, because the counter read is not usable in
-this process and registering an unusable provider would be a claim that something is
-being measured when it is not.
+`REGISTERED_PROVIDERS` is what this build actually registers: `psutil` for CPU/RSS and
+`pdh_gpu_engine` for per-process GPU/NPU utilisation. The latter was absent in M0 because
+the in-process counter read faulted; that fault was a three-argument binding of a
+four-argument function, corrected on 2026-10-27, and the module now reads real per-process
+values. Registering a provider that did not measure anything would be the opposite error.
 
 ## 2. `--selftest`
 
@@ -108,14 +109,16 @@ __all__ = [
 
 #: The providers this build registers. **A declared allow-list, not the source of truth.**
 #:
-#: `psutil` is the only one: it produces the CPU and RSS samples the cards show, and its
-#: values are read through `MetricCollector.sample()`.
+#: `psutil` produces the CPU and RSS samples the cards show, read through
+#: `MetricCollector.sample()`.
 #:
-#: `app.telemetry.pdh` is **not** here, and its absence is deliberate. The PDH counter read
-#: is not usable in this process - measured, it terminates the process with `0xC0000005` -
-#: so registering it would claim a measurement that never happens. The GPU and NPU cards
-#: say "Utilization unavailable" because nothing is registered to produce a value for them.
-REGISTERED_PROVIDERS: tuple[str, ...] = ("psutil",)
+#: `pdh_gpu_engine` produces the per-process GPU and NPU utilisation samples, measured in
+#: `app.telemetry.accelerator` and published through the collector's `extra_samples`
+#: producer. M0 recorded the PDH value read as unusable; that was a three-argument binding
+#: of a four-argument function, corrected on 2026-10-27, and the call now returns real
+#: values (control: `docs/qualification/M4-utilisation-attribution.md`). Registering it is
+#: a claim that a measurement happens, and it does.
+REGISTERED_PROVIDERS: tuple[str, ...] = ("psutil", "pdh_gpu_engine")
 
 #: **Release mode is on unless someone turns it off.** `--release` used to default to
 #: `False`, which meant a packaged build that forgot the flag ran with no gate at all - and
@@ -139,21 +142,36 @@ def consulted_providers() -> tuple[str, ...]:
     fail if someone edited the literal to something simulated.
 
     The gate's real question is "could a simulated provider produce a number on this
-    screen?", and that is answered by what the collector imports. So the provider name
-    comes from `app.telemetry.collector.PROVIDER`, which is the declaration beside the
-    `psutil.cpu_percent` calls it names, and the tests assert
-    `consulted_providers() <= REGISTERED_PROVIDERS` - the allow-list must cover reality,
-    which is a check that can actually fail. The scanner that enforces citations of
-    test names walks a fixed list of M1 modules that does not include the one these
+    screen?", and that is answered by what the telemetry path reaches for. So the names
+    come from the modules that declare them: `app.telemetry.collector.PROVIDER` for the
+    psutil samples, and `app.telemetry.accelerator.PROVIDER` for the per-process GPU/NPU
+    samples the supervisor adds through the collector's `extra_samples` producer. The tests
+    assert `consulted_providers() <= REGISTERED_PROVIDERS` - the allow-list must cover
+    reality, which is a check that can actually fail. The scanner that enforces citations
+    of test names walks a fixed list of M1 modules that does not include the one these
     tests live in, so they are named here by file rather than by method.
     """
+    from app.telemetry.accelerator import PROVIDER as ACCELERATOR_PROVIDER
     from app.telemetry.collector import PROVIDER
 
-    return (PROVIDER,)
+    return (PROVIDER, ACCELERATOR_PROVIDER)
 
 #: Prefixes that mark a provider as simulated. Prefixes, not substrings; see the module
 #: note for why that distinction is the whole point of the gate.
 SIMULATED_PROVIDER_PREFIXES: tuple[str, ...] = ("simulated", "mock", "fake", "stub")
+
+
+def accelerator_factory(pids: Sequence[int], labels: Sequence[str]):
+    """Build the per-process GPU/NPU provider for a supervisor's process set.
+
+    **A factory, not a global.** The provider must cover the pids that exist *now* (the UI
+    process and every live worker), and a respawn changes them, so `Supervisor` calls this
+    on every collector rebuild. The import is inside the function so a `--selftest` or a
+    non-Windows host that never opens a counter does not pay for `pdh.dll` or DXGI.
+    """
+    from app.telemetry.accelerator import AcceleratorUtilisation
+
+    return AcceleratorUtilisation(pids, labels=labels)
 
 
 def _is_simulated(provider: str) -> bool:
@@ -606,7 +624,8 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
     supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
                             scenario_id=scenario_id,
                             conf_threshold=manifest.conf_threshold,
-                            iou_threshold=manifest.iou_threshold)
+                            iou_threshold=manifest.iou_threshold,
+                            accelerator_factory=accelerator_factory)
     clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
                       session_id=session_id, scenario_id=scenario_id, target_fps=15.0)
     # Started before the clock starts. A `Supervisor` that was never started refuses
@@ -866,13 +885,15 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                                 scenario_id=manifest.id,
                                 conf_threshold=manifest.conf_threshold,
                                 iou_threshold=manifest.iou_threshold,
-                                compile_failure=([fail_stream] if fail_stream else False))
+                                compile_failure=([fail_stream] if fail_stream else False),
+                                accelerator_factory=accelerator_factory)
     else:
         supervisor = Supervisor(device_ids=stream_devices, session_id=session_id,
                                 scenario_id=manifest.id,
                                 conf_threshold=manifest.conf_threshold,
                                 iou_threshold=manifest.iou_threshold,
-                                compile_failure=([fail_stream] if fail_stream else False))
+                                compile_failure=([fail_stream] if fail_stream else False),
+                                accelerator_factory=accelerator_factory)
     clips = [ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id=sid,
                         session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
              for sid in stream_ids]

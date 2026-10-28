@@ -1604,14 +1604,39 @@ class LiveWindowedPath(unittest.TestCase):
                         f"still a plausible rectangle, so only agreement between two "
                         f"independent computations catches it.")
 
-    def test_the_accelerator_cards_still_say_unavailable_not_zero(self):
-        # `psutil` cannot read GPU or NPU utilisation in this process, and that has to stay
-        # a word. The obligation the whole telemetry layer exists for, checked on the live
-        # bridge rather than on a hand-built one.
-        self.assertEqual(self.report["gpu"], "unavailable", self.report)
-        self.assertEqual(self.report["npu"], "unavailable", self.report)
-        # I7: the CPU line now answers the same question the two accelerator lines answer,
-        # so an unavailable psutil reading cannot render as a number. **Not asserted as a
+    def test_the_accelerator_cards_show_a_measurement_or_a_reasoned_absence(self):
+        # **M4 Task 5 retarget.** This used to assert the GPU and NPU cards could never
+        # show a number, because the in-process PDH read faulted. That fault was a
+        # three-argument binding of a four-argument function in this repository; with the
+        # documented signature the counter returns this application's own per-process
+        # engine time. So the live invariant is now:
+        #
+        #   * if a card shows a number, the bridge holds a reading for it - the number is
+        #     not a fabricated zero or a machine-wide peak; and
+        #   * if it shows `unavailable`, the absence carries words, never a blank.
+        #
+        # On this run the UI process has a 3D engine instance on the Arc at a measured
+        # 0.0%, which is why `gpu` is `0.0%`: the application's GPU engines are idle while
+        # inference runs on the CPU. That is a reading, not a claim that the GPU is
+        # broken, and it is exactly the distinction the telemetry layer exists to keep.
+        for device in ("gpu", "npu"):
+            text = self.report[device]
+            available = self.report[f"{device}_available"]
+            if text == "unavailable":
+                self.assertFalse(
+                    available,
+                    f"{device} renders unavailable while the bridge claims a reading")
+                self.assertTrue(self.report[f"{device}_notice"].strip(),
+                                f"{device} is unavailable with no words at all")
+            else:
+                self.assertTrue(
+                    available,
+                    f"{device} shows {text!r} but the bridge holds no reading for it; a "
+                    f"number must come from a sample")
+                self.assertRegex(text, r"^\d+\.\d+%$",
+                                 f"{device} rendered {text!r}, which is not a percentage")
+        # I7: the CPU line answers the same question the two accelerator lines answer, so
+        # an unavailable psutil reading cannot render as a number. **Not asserted as a
         # measurement landing** - see `test_the_application_publishes_telemetry_to_the_bridge`
         # for why, and for what a starved collector thread actually produces.
         notice = self.report["unavailable_notice"]["CPU"]
@@ -2277,6 +2302,11 @@ def read_the_screen():
         report["p95"] = bridge.display_text("frame_age_p95_ms")
         report["gpu"] = bridge.display_text("gpu_utilisation_percent")
         report["npu"] = bridge.display_text("npu_utilisation_percent")
+        report["gpu_available"] = bool(bridge.gpu_available)
+        report["npu_available"] = bool(bridge.npu_available)
+        notice = bridge.unavailable_notice
+        report["gpu_notice"] = str(notice.get("GPU", ""))
+        report["npu_notice"] = str(notice.get("NPU", ""))
         report["cpu_available"] = bool(bridge.cpu_available)
     if machine is not None:
         events = list(getattr(machine, "events", ()) or ())

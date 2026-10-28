@@ -54,6 +54,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -109,6 +110,20 @@ def _track(track_id: int = 1, box=(100.0, 100.0, 400.0, 800.0),
     return Track(track_id=track_id, class_id=0, box=tuple(float(v) for v in box),
                  first_seen=0.0, last_seen=0.0, hits=2, misses=misses,
                  confirmed=confirmed)
+
+
+def _metric(name: str, value, now: float, *, reason: str | None = None):
+    """One accelerator `MetricSample`, shaped exactly as the provider produces it."""
+    from app.contracts.metric_sample import MetricSample, Validity
+
+    return MetricSample(
+        name=name, value=value, unit="percent", provider="pdh_gpu_engine",
+        device_scope="GPU", process_scope=("ui",),
+        window_seconds=(0.25 if value is not None else 0.0),
+        sampled_at=now,
+        validity=(Validity.VALID if value is not None else Validity.UNAVAILABLE),
+        unavailable_reason=(reason if value is None else None),
+    )
 
 
 def _sample(name: str, value, *, validity, window: float = 0.25, now: float = 1.0):
@@ -1743,21 +1758,35 @@ class RouteHonesty(unittest.TestCase):
 
 
 class UtilisationHonesty(unittest.TestCase):
-    """No utilisation number may exist anywhere on the GPU or NPU cards."""
+    """No utilisation number may exist on the GPU or NPU cards without a sample.
 
-    def test_both_accelerator_cards_report_their_utilisation_unavailable(self):
+    **M4 Task 5.** The earlier version of this class asserted the cards could never show a
+    figure, because the in-process PDH read faulted. That fault was a three-argument
+    binding of a four-argument function in this repository; with the documented signature
+    the counter returns real per-process values (measured: GPU worker 97.19%, NPU worker
+    64.86%). So the guard is no longer "never a number" - it is **never a number that no
+    sample carried**, which is the claim this project actually needs.
+    """
+
+    def test_a_fresh_bridge_claims_no_utilisation(self):
         b = _bridge()
         self.assertFalse(b.gpu_available)
         self.assertFalse(b.npu_available)
         self.assertEqual(b.utilisation_unavailable_text, "Utilization unavailable")
 
-    def test_the_absent_reason_is_a_measured_one_not_a_placeholder(self):
+    def test_the_absent_reason_names_the_source_and_refuses_zero(self):
         b = _bridge()
         self.assertTrue(b.gpu_reason.strip())
-        self.assertIn("counters", b.gpu_reason)
-        self.assertIn("not attributable", b.gpu_reason)
+        self.assertIn("GPU Engine counter", b.gpu_reason)
+        self.assertIn("never 0", b.gpu_reason)
+        # **The withdrawn claim is gone.** The old reason said the platform's counters
+        # fault this process; that was a binding bug here, corrected 2026-10-27, and a
+        # card that still says it would be asserting something the code disproves.
+        for word in ("fault", "0xC0000005", "terminate"):
+            self.assertNotIn(word, b.gpu_reason)
+            self.assertNotIn(word, b.npu_reason)
 
-    def test_the_accelerator_utilisation_metrics_are_absent_not_zero(self):
+    def test_the_accelerator_utilisation_metrics_are_absent_not_zero_before_a_sample(self):
         b = _bridge()
         self.assertIsNone(b.gpu_utilisation_percent)
         self.assertIsNone(b.npu_utilisation_percent)
@@ -1765,35 +1794,59 @@ class UtilisationHonesty(unittest.TestCase):
         self.assertEqual(b.display_text("gpu_utilisation_percent"), "unavailable")
         self.assertEqual(b.display_text("npu_utilisation_percent"), "unavailable")
 
+    def test_a_measured_sample_is_shown_and_a_zero_is_still_a_reading(self):
+        """The positive control at the bridge: the number comes from the sample.
+
+        A measured `97.19` renders as `97.2%` with a window; a measured `0.0` renders as
+        `0.0%` and is **available**, because an idle device that was measured is not the
+        same claim as one nobody measured.
+        """
+        b = _bridge()
+        now = time.perf_counter()
+        b.set_samples((
+            _metric("gpu_utilisation_percent", 97.19, now),
+            _metric("npu_utilisation_percent", 0.0, now),
+        ))
+        self.assertTrue(b.gpu_available)
+        self.assertTrue(b.npu_available)
+        self.assertEqual(b.display_text("gpu_utilisation_percent"), "97.2%")
+        self.assertEqual(b.display_text("npu_utilisation_percent"), "0.0%")
+
+    def test_an_unavailable_sample_surfaces_its_own_reason_not_the_generic_word(self):
+        b = _bridge()
+        now = time.perf_counter()
+        b.set_samples((
+            _metric("gpu_utilisation_percent", None, now,
+                    reason="this application has no GPU engine instance in this sample"),
+        ))
+        self.assertFalse(b.gpu_available)
+        self.assertIn("no GPU engine instance", b.unavailable_notice["GPU"])
+
     def test_the_short_reason_is_a_summary_of_the_measured_one(self):
         # The card shows a short reason; the panel shows the measured text. They must be
-        # the same fact at two lengths, not two claims - so the words the short version
-        # uses must appear in the long one.
-        #
-        # `counters` is checked in both because it is in `VALUE_READS_REFUSED_REASON`.
-        # `attributable` is checked in the **short** version only, because the measured
-        # reason is about the read faulting and does not mention attribution; the
-        # attribution finding is a *separate* measurement (M0: our pid appeared in 0 of
-        # 469 samples of a machine-wide peak) and lives in `M0-qualification.md`. The
-        # first version of this test asserted it in both and was wrong about the long
-        # text, which is recorded here rather than quietly widened.
+        # the same fact at two lengths, not two claims - so the source the short version
+        # names must appear in the long one.
         b = _bridge()
         self.assertLess(len(b.gpu_reason), len(b.utilisation_measured_reason))
-        self.assertIn("counters", b.gpu_reason)
-        self.assertIn("counters", b.utilisation_measured_reason)
-        self.assertIn("attributable", b.gpu_reason)
+        self.assertIn("GPU Engine counter", b.gpu_reason)
+        self.assertIn("GPU Engine", b.utilisation_measured_reason)
+        self.assertIn("never 0", b.gpu_reason)
 
     def test_the_attribution_finding_is_sourced_to_a_committed_measurement(self):
-        # The short reason asserts that a machine-wide peak is not attributable. That
-        # claim has to exist in a committed artefact, or the card is asserting something
-        # the repository does not say.
+        # The long reason asserts measured figures. Each has to exist in a committed
+        # artefact, or the card is quoting a measurement the repository does not contain.
         from app.inference.pinned import REPO_ROOT
 
-        report = (REPO_ROOT / "docs" / "qualification" / "M0-qualification.md")
+        report = (REPO_ROOT / "docs" / "qualification"
+                  / "M4-utilisation-attribution.md")
         text = report.read_text(encoding="utf-8")
-        self.assertIn("not attributable", text,
-                      f"{report} no longer states the attribution finding, so "
-                      f"UiBridge.gpu_reason claims something the repository does not")
+        for figure in ("97.19", "64.86"):
+            self.assertIn(figure, text,
+                          f"{report} no longer states {figure}%, so "
+                          f"UiBridge.utilisation_measured_reason quotes a measurement the "
+                          f"repository does not")
+        self.assertIn("none of the 469", text,
+                      f"{report} no longer records the withdrawn machine-wide figure")
 
     def test_no_qml_mentions_a_utilisation_percentage(self):
         # A source-level check: no QML file may name a utilisation metric with a value,

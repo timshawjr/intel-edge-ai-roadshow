@@ -1,0 +1,242 @@
+{
+  "probe": "tools/probe_utilisation.py",
+  "measured_at": "2026-10-27T15:29:24",
+  "machine": {
+    "hostname": "NUC14ProAI",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "gpu_driver": "32.0.101.6737",
+    "npu_driver": "32.0.100.5540",
+    "adapters": [
+      {
+        "description": "Intel(R) Arc(TM) 140V GPU (16GB)",
+        "vendor_id": "0x8086",
+        "device_id": "0x64A0",
+        "luid": "0x000113B4",
+        "software": false
+      },
+      {
+        "description": "Microsoft Basic Render Driver",
+        "vendor_id": "0x1414",
+        "device_id": "0x008C",
+        "luid": "0x0001174C",
+        "software": true
+      }
+    ]
+  },
+  "clean_before_measurement": {
+    "busiest_percent": 0.0,
+    "threshold": 10.0,
+    "clean": true
+  },
+  "baseline_top_instances": {
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_0_engtype_3D": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_10_engtype_": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_11_engtype_": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_12_engtype_": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_1_engtype_VideoDecode": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_2_engtype_Copy": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_3_engtype_VideoProcessing": 0.0,
+    "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_4_engtype_": 0.0
+  },
+  "baseline_busiest_by_process": {
+    "msedge.exe(11516)": 0.0,
+    "csrss.exe(1208)": 0.0,
+    "msedgewebview2.exe(12328)": 0.0,
+    "OpenCode.exe(13116)": 0.0,
+    "SystemSettings.exe(14268)": 0.0,
+    "msedgewebview2.exe(17588)": 0.0,
+    "ShellExperienceHost.exe(1772)": 0.0,
+    "msedge.exe(18260)": 0.0
+  },
+  "phases": [
+    {
+      "device": "GPU",
+      "worker_pid": 13728,
+      "idle_seconds": 5.0,
+      "busy_seconds": 15.0,
+      "idle": {
+        "samples": 5,
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "absent_samples": 0,
+        "all": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "busy": {
+        "samples": 26,
+        "min": 97.06,
+        "median": 97.19,
+        "max": 100.0,
+        "absent_samples": 0,
+        "all": [
+          97.24,
+          97.14,
+          97.19,
+          100.0,
+          97.12,
+          97.22,
+          100.0,
+          97.25,
+          97.19,
+          97.06,
+          100.0,
+          97.22,
+          97.15,
+          100.0,
+          97.12,
+          97.19,
+          100.0,
+          97.19,
+          97.09,
+          100.0,
+          97.27,
+          97.08,
+          97.19,
+          100.0,
+          97.16,
+          97.14
+        ]
+      },
+      "probe_own_pid_while_worker_busy": {
+        "samples": 28,
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "absent_samples": 0,
+        "note": "the probe's own reading while another process was at 97.19%; 0.0 or absent means the busy worker was not attributed to the probe, which is what a machine-wide peak would do"
+      },
+      "busiest_rows_while_working": [
+        {
+          "instance": "pid_13728_luid_0x00000000_0x000113B4_phys_0_eng_5_engtype_Compute",
+          "percent": 100.0
+        },
+        {
+          "instance": "pid_13116_luid_0x00000000_0x000113B4_phys_0_eng_0_engtype_3D",
+          "percent": 1.42
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_0_engtype_3D",
+          "percent": 0.0
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_10_engtype_",
+          "percent": 0.0
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_11_engtype_",
+          "percent": 0.0
+        }
+      ],
+      "sample_count": 37
+    },
+    {
+      "device": "NPU",
+      "worker_pid": 15624,
+      "idle_seconds": 5.0,
+      "busy_seconds": 15.0,
+      "idle": {
+        "samples": 5,
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "absent_samples": 0,
+        "all": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "busy": {
+        "samples": 26,
+        "min": 63.76,
+        "median": 64.86,
+        "max": 66.08,
+        "absent_samples": 0,
+        "all": [
+          64.85,
+          65.48,
+          64.71,
+          65.56,
+          64.9,
+          65.49,
+          64.52,
+          64.86,
+          65.31,
+          66.08,
+          64.79,
+          64.24,
+          65.25,
+          64.58,
+          64.49,
+          63.94,
+          63.76,
+          63.94,
+          63.93,
+          65.19,
+          65.44,
+          65.31,
+          64.57,
+          65.44,
+          64.74,
+          65.68
+        ]
+      },
+      "probe_own_pid_while_worker_busy": {
+        "samples": 28,
+        "min": 0.0,
+        "median": 0.0,
+        "max": 0.0,
+        "absent_samples": 0,
+        "note": "the probe's own reading while another process was at 64.86%; 0.0 or absent means the busy worker was not attributed to the probe, which is what a machine-wide peak would do"
+      },
+      "busiest_rows_while_working": [
+        {
+          "instance": "pid_15624_luid_0x00000000_0x000117B6_phys_0_eng_0_engtype_Neural",
+          "percent": 66.97
+        },
+        {
+          "instance": "pid_13116_luid_0x00000000_0x000113B4_phys_0_eng_0_engtype_3D",
+          "percent": 2.79
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_0_engtype_3D",
+          "percent": 0.0
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_10_engtype_",
+          "percent": 0.0
+        },
+        {
+          "instance": "pid_11516_luid_0x00000000_0x000113B4_phys_0_eng_11_engtype_",
+          "percent": 0.0
+        }
+      ],
+      "sample_count": 37
+    }
+  ],
+  "verdict": [
+    {
+      "device": "GPU",
+      "busy_tracks_this_process": true,
+      "idle_is_absent_or_near_zero": true,
+      "busy_worker_not_attributed_to_probe": true,
+      "passed": true
+    },
+    {
+      "device": "NPU",
+      "busy_tracks_this_process": true,
+      "idle_is_absent_or_near_zero": true,
+      "busy_worker_not_attributed_to_probe": true,
+      "passed": true
+    }
+  ]
+}

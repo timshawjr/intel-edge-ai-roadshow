@@ -307,6 +307,7 @@ class MetricCollector:
         process_labels: Sequence[str] | None = None,
         background: bool = True,
         clock: Callable[[], float] = time.monotonic,
+        extra_samples: Callable[[], Sequence[MetricSample]] | None = None,
     ) -> None:
         interval = float(interval)
         if interval != interval or interval in (float("inf"), float("-inf")):
@@ -323,6 +324,16 @@ class MetricCollector:
         self._interval = interval
         self._clock = clock
         self._capacity = cpu_capacity()
+        #: An optional producer of *other* providers' samples, measured on this collector's
+        #: background thread and published with each set. **It is called only from
+        #: `_run`**, never from `sample()`: the accelerator reader holds a PDH query whose
+        #: rate window is the interval between collects, so a second caller (the UI thread
+        #: calling `sample()` every 500 ms) would halve the window and race the handle.
+        #: The collector does not import the provider: `app/telemetry/collector.py` must not
+        #: import `app.telemetry.pdh` (read by `tests/test_collector.py`), and the provider
+        #: belongs to the device cards anyway.
+        self._extra_samples = extra_samples
+        self._latest_extra: tuple[MetricSample, ...] = ()
 
         self._lock = threading.Lock()
         self._measure_lock = threading.Lock()
@@ -629,6 +640,12 @@ class MetricCollector:
                     reason=self._reason(window_note,
                                         rss_failures.get(tracked.label))))
 
+            # Other providers' samples, measured on this collector's thread by the last
+            # `_run` tick (see `_measure_extra`). Appended, never merged into the psutil
+            # samples above: each carries its own provider, window and reason.
+            if self._latest_extra:
+                samples.extend(self._latest_extra)
+
             self._latest = tuple(samples)
             return self._latest
 
@@ -741,9 +758,25 @@ class MetricCollector:
         """
         while not self._stop.wait(self._interval):
             try:
+                self._measure_extra()
                 self.sample()
             except Exception as exc:  # noqa: BLE001 - one bad tick is not a dead thread
                 self._last_error = self._describe(exc)
+
+    def _measure_extra(self) -> None:
+        """Take the optional provider's samples **on the telemetry thread**.
+
+        Its failure is recorded and does not stop the psutil samples: one provider that
+        cannot read must not take the CPU card down with it. A failed measurement leaves
+        the previous samples in place, which carry their own `sampled_at` and go `STALE`
+        by the 2 s rule rather than being replaced by a number nobody measured.
+        """
+        if self._extra_samples is None:
+            return
+        try:
+            self._latest_extra = tuple(self._extra_samples())
+        except Exception as exc:  # noqa: BLE001 - an absent reading is a result
+            self._last_error = self._describe(exc)
 
     @property
     def running(self) -> bool:
