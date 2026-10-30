@@ -1,0 +1,114 @@
+{
+  "machine_id": "1DBB66E9-47DF-0DEA-BEF3-BCFCE7DD5FE0",
+  "hostname": "NUC14PROAI",
+  "cpu": {
+    "name": "Intel(R) Core(TM) Ultra 9 288V",
+    "manufacturer": "GenuineIntel",
+    "cores": 8,
+    "logical_processors": 8,
+    "max_clock_mhz": 3300
+  },
+  "gpu": {
+    "name": "Intel(R) Arc(TM) 140V GPU (16GB)",
+    "pnp_id": "PCI\\VEN_8086&DEV_64A0&SUBSYS_88F21043&REV_04\\3&11583659&0&10",
+    "driver_version": "32.0.101.6737",
+    "driver_date": "2025-04-15",
+    "driver_provider": "Intel Corporation",
+    "driver_inf": "oem79.inf",
+    "adapter_ram_reported_bytes": 2147479552,
+    "adapter_ram_note": "Win32_VideoController.AdapterRAM is a 32-bit property and can be capped; it reported 2147479552 here. The adapter name is 'Intel(R) Arc(TM) 140V GPU (16GB)'; do not read either as a measured VRAM figure.",
+    "current_width": 3440,
+    "current_height": 1440,
+    "current_refresh_hz": 59
+  },
+  "npu": {
+    "name": "Intel(R) AI Boost",
+    "manufacturer": "Intel Corporation",
+    "pnp_id": "PCI\\VEN_8086&DEV_643E&SUBSYS_88F21043&REV_04\\3&11583659&0&58",
+    "status": "OK",
+    "driver_version": "32.0.100.5540",
+    "driver_date": "2026-08-19",
+    "driver_provider": "Intel Corporation",
+    "driver_inf": "oem5.inf"
+  },
+  "drivers": {
+    "gpu": {
+      "version": "32.0.101.6737",
+      "date": "2025-04-15",
+      "provider": "Intel Corporation",
+      "inf": "oem79.inf",
+      "reason": null
+    },
+    "npu": {
+      "version": "32.0.100.5540",
+      "date": "2026-08-19",
+      "provider": "Intel Corporation",
+      "inf": "oem5.inf",
+      "reason": null
+    }
+  },
+  "windows": {
+    "caption": "Microsoft Windows 11 Pro",
+    "version": "10.0.26200",
+    "build_number": "26200",
+    "ubr": 9711,
+    "edition_id": "Professional",
+    "display_version": "25H2",
+    "registry_product_name": "Windows 10 Pro",
+    "product_name_note": "Win32_OperatingSystem.Caption ('Microsoft Windows 11 Pro') and the registry ProductName ('Windows 10 Pro') disagree on this machine; both are recorded and neither is corrected.",
+    "architecture": "64-bit"
+  },
+  "ram_bytes": 33805881344,
+  "power_plan": {
+    "guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+    "name": "Balanced"
+  },
+  "ac_status": null,
+  "battery_instances": 0,
+  "monitor": {
+    "name": "Dell S3422DWG(HDMI2 2.0)",
+    "pnp_id": "DISPLAY\\DELD129\\4&16626495&0&UID24631",
+    "manufacturer": "DEL",
+    "product": "D129",
+    "serial": "809587030",
+    "year": 2023,
+    "week": 41,
+    "current_width": 3440,
+    "current_height": 1440,
+    "current_refresh_hz": 59
+  },
+  "python_version": "3.12.10",
+  "python_executable": "C:\\dev\\intel-edge-ai-roadshow\\.venv\\Scripts\\python.exe",
+  "openvino_version": "2026.4.0",
+  "openvino_available_devices": [
+    "CPU",
+    "GPU",
+    "NPU"
+  ],
+  "sku_records": [
+    {
+      "source": "Win32_ComputerSystem.Model + SystemFamily",
+      "value": "NUC14LNK LN",
+      "detail": "model='NUC14LNK'; system_family='LN'",
+      "reason": null
+    },
+    {
+      "source": "Win32_ComputerSystem.Name (hostname)",
+      "value": "NUC14PROAI",
+      "detail": "the machine's hostname; this is not a model or a SKU",
+      "reason": null
+    },
+    {
+      "source": "PCI SUBSYS in GPU/NPU PNPDeviceID",
+      "value": "88F21043",
+      "detail": "gpu='88F21043'; npu='88F21043'; the last four hex digits are the subsystem vendor ID (1043 = ASUSTeK)",
+      "reason": null
+    }
+  ],
+  "sku_note": "This machine reports three SKU-bearing records that disagree: the Win32_ComputerSystem model with its system family, the hostname, and the PCI subsystem ID. No single SKU is defensible, so all three are preserved and none is promoted to 'the' SKU. The hostname is not a model; the PCI subsystem ID is not a marketing name.",
+  "unavailable": {
+    "ac_status": "Win32_Battery returned 0 instances on this machine: there is no battery, so AC/battery status cannot be read and is None rather than a guess"
+  },
+  "generated_at_utc": "2026-10-30T22:36:58+00:00",
+  "collector": "tools/environment_manifest.py: PowerShell CIM (Win32_* + WmiMonitorID) + powercfg + sys/platform + importlib.metadata + openvino.Core().available_devices"
+}
