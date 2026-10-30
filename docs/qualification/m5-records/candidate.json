@@ -1,0 +1,182 @@
+{
+ "format": "benchmark-record/1",
+ "mode": "live",
+ "started_at": "2026-10-30T11:00:00",
+ "duration_s": 33.0,
+ "warmup_s": 3.0,
+ "fingerprint": {
+  "model_id": "yolo11n-fp16",
+  "model_sha256": "4845b46cc9b6ac379a44484258b7ed98f836ed117d91f127c7728ea068250a95",
+  "input_shape": [
+   1,
+   3,
+   640,
+   640
+  ],
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "stream_count": 1,
+  "target_fps": 30.0,
+  "device_layout": [
+   "NPU"
+  ],
+  "decode_path": "none (frame synthesised in memory)",
+  "openvino_version": "2026.4.0-22959-99c81491cc3-releases/2026/4",
+  "numpy_version": "2.5.3"
+ },
+ "fingerprint_hash": "c68c6e0981d5f9871659a5c03b0bc9a9f0c986fe83b906f7e2fd4ea40794b17a",
+ "environment": {
+  "machine_id": "NUC14ProAI",
+  "cpu": "Intel(R) Core(TM) Ultra 9 288V",
+  "gpu": "Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)",
+  "npu": "Intel(R) AI Boost",
+  "gpu_driver": "32.0.101.6737",
+  "npu_driver": "32.0.100.5540",
+  "windows_build": "10.0.26200",
+  "ram_bytes": 33805881344,
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "ac_status": "unavailable - Win32_Battery reports 0 instances on this machine",
+  "monitor": "DELL S3422DWG 3440x1440 at 150% -> 2293x960 logical, 0.310 mm/logical px",
+  "python_version": "3.12.10"
+ },
+ "samples": [
+  {
+   "name": "latency_p50_ms",
+   "value": 5.56489999871701,
+   "unit": "ms",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 3.0,
+   "sampled_at": 1.5,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "cold"
+  },
+  {
+   "name": "npu_utilization_percent",
+   "value": null,
+   "unit": "percent",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 0.0,
+   "sampled_at": 1.5,
+   "validity": "unavailable",
+   "unavailable_reason": "no per-process NPU engine counter was sampled in this harness",
+   "phase": "cold"
+  },
+  {
+   "name": "latency_p50_ms",
+   "value": 3.99364999611862,
+   "unit": "ms",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 13.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  },
+  {
+   "name": "latency_p50_ms",
+   "value": 3.9932499639689922,
+   "unit": "ms",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 23.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  },
+  {
+   "name": "latency_p50_ms",
+   "value": 3.989199991337955,
+   "unit": "ms",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 33.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  },
+  {
+   "name": "throughput_fps",
+   "value": 243.89642938195837,
+   "unit": "fps",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 13.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  },
+  {
+   "name": "throughput_fps",
+   "value": 243.5061892406395,
+   "unit": "fps",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 23.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  },
+  {
+   "name": "throughput_fps",
+   "value": 244.10366448843263,
+   "unit": "fps",
+   "provider": "openvino.CompiledModel.infer",
+   "device_scope": "NPU",
+   "process_scope": [
+    "worker"
+   ],
+   "window_seconds": 10.0,
+   "sampled_at": 33.0,
+   "validity": "valid",
+   "unavailable_reason": null,
+   "phase": "settled"
+  }
+ ],
+ "trial_summary": [
+  {
+   "condition": "sustained",
+   "placement": [
+    "NPU"
+   ],
+   "settled_after_s": 3.0
+  }
+ ],
+ "exclusions": [
+  "first 3 s are warm-up"
+ ],
+ "comparison_eligible": true,
+ "unavailable_reasons": {
+  "npu_utilization_percent": "no per-process NPU engine counter was sampled in this harness"
+ },
+ "routing_transitions": [],
+ "errors": []
+}

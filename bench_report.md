@@ -1875,3 +1875,110 @@ here; four measurements each needed an idle machine (matrix 699.7 s, trials camp
 conditions ~150 s each); `PipelineStrip.qml` was **deleted** and one stress-test assertion was restated
 with a bounded tolerance; and the matrix vocabulary gained a split value (`passed at 2 m, failed at 3 m`).
 None of that is a threshold lowered to make a gate green, and each is recorded where it happened.
+
+---
+
+## M5 - records, export and the recorded-demonstration mode (2026-10-30)
+
+The milestone report is **`docs/qualification/M5-qualification.md`**; five matrix rows were added (four
+`passed`, one `failed` for the content gate), each marked `passed` only because M5 re-measured it. This task
+is **documentation only**: no code, `config/*.json` or tool was changed. Two claims were verified by a
+temporary mutation and both were restored (`git diff --numstat` 0 entries afterwards).
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+Source verification: 6 PASS, 0 FAIL                              exit 0   wall 0.14 s
+
+$ .venv\Scripts\python.exe tools\preflight.py
+Summary: 17 PASS, 1 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                  exit 0   wall 4.36 s
+(the WARN is the recorded-map / hardware-identity row: this boot's GPU LUID is 0x000113B4 and the
+ committed file records 0x00010E9E / 0x000112A0; the runtime no longer depends on it. The file was not
+ edited.)
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0   wall 0.96 s
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+----------------------------------------------------------------------
+Ran 1573 tests in 597.673s
+
+OK                                                               exit 0   wall 598.6 s
+```
+
+1 573 = M4's 1 459 + **114 new tests** (record 40, export 19, comparison 20, recorded mode and CLI 23,
+content gate 12). Machine asserted clean before the suite and before the one measurement taken here
+(`Get-Process python` and `pythonw` both 0).
+
+| # | M5 exit criterion | verdict |
+|---|---|---|
+| 1 | a fingerprint covering everything that changes a number, and a mismatched pair refused with the fields named | **MET** - 11 fields, SHA-256 over all of them (`4a1030e4...a447217` reproduced); a model-id-only hash gives **`FAILED (failures=10)`**, each of the other ten fields failing by name; a real pair differing on `conf_threshold` and `stream_count` is refused with exactly those names |
+| 2 | the export contains manifest, transitions, metrics and logs and excludes imagery by default, proven by content | **MET** - 6 members and **0 image-content hits inside every member's bytes** on a record holding three frames; opt-in gives 9 members and `png`/`jpeg`/`webp`; the README states the mode |
+| 3 | comparisons report ranges and medians, label older records `previous run`, invalidate a baseline on a setting change | **MET** - medians with `[min, max]` on both sides and `within noise`; `previous run` on the older record in either argument order; refusal gives `eligible: no`, `invalidated`, `per_metric {}`, exit 1 |
+| 4 | a playback shows the recorded notice, disables live controls, cannot be mistaken for live | **MET** - notice visible and still visible after 400 ms; live label and live screen not visible; control and `MouseArea` `enabled: false`, opacity 0.45, a real click emits `[]`; the live mirror restores the label and a working control |
+| 5 | the content shortfall measured from the files and reported | **MET AS A REPORT - THE GATE IS NOT MET**: 3 of 12 clips, 1 of 4 packs, 1 of 3 inside 45-90 s, **0 rights-cleared**, `tools/content_gate.py` exit 1 |
+
+**Records.** `WorkloadFingerprint` covers `model_id`, `model_sha256`, `input_shape`, `conf_threshold`,
+`iou_threshold`, `stream_count`, `target_fps`, `device_layout`, `decode_path`, `openvino_version`,
+`numpy_version`. The artifact **hash**, not the id, is the field that stops two exports of one network
+sharing a baseline. A record cannot exist without a fingerprint; a `recorded` record cannot be
+`comparison_eligible`; a `SETTLED` sample inside `warmup_s` raises, which is what stops the NPU's published
+5.2-5.9 ms cold figure being compared as its 3.96-4.01 ms sustained figure.
+
+**Export.** Default members are `manifest.json`, `routing_transitions.json`, `metrics_summary.json`,
+`metrics_raw.jsonl`, `errors.log` and `README.txt`. The scan reads every member's whole content for
+`\xFF\xD8\xFF`, `\x89PNG` and `RIFF....WEBP`; it finds **none** by default and all three formats when
+`include_imagery=True`. `metrics_summary.json` carries settled median **and** min/max with cold values listed
+separately; unavailable is `null` with a reason, never `0`; two exports are byte-identical.
+
+**Comparison.** Two records were taken for this report (fresh NPU compile, three 10 s windows each, 3 s
+warm-up outside the timed span, `EXECUTION_DEVICES` re-read after inference -> `('NPU',)`) and are
+**committed** at `docs/qualification/m5-records/`. Matched pair: `latency_p50_ms` 3.9972 `[3.9923, 4.00325]`
+against 3.99325 `[3.9892, 3.99365]`, delta -0.00395003, within noise; `throughput_fps` 243.767
+`[242.781, 243.804]` against 243.896 `[243.506, 244.104]`; `npu_utilization_percent` `n/a` with a reason on
+both sides; cold 5.5885 / 5.5649 ms **excluded**, 3 settled samples per side. Refused pair: `conf_threshold`
+0.25 -> 0.30 and `stream_count` 1 -> 2 give `eligible: no`, `baseline status: invalidated`, the two fields
+named, `per_metric: {}`, exit 1.
+
+**Recorded mode.** Read from the rendered `Main.qml`: notice `Recorded demonstration - metrics are not live`
+at 44 rendered px, visible and visible again after 400 ms; `live_label_visible` and `live_screen_visible`
+both **False**; the control and its `MouseArea` `enabled: False` at opacity 0.45 and a real click emits
+nothing; every figure carries `recorded 2026-10-01T10:00:00 (+12 s into the recording)`; leaving restores
+`Recorded footage - live inference` and a control that emits `[['A','NPU']]`. A playback over live work is
+refused with *"refusing to enter recorded mode while live work is running: 1 frames have been analysed on
+this screen"* and the live screen stays live.
+
+**Content gate - NOT MET, reported from the files.** `python -m tools.content_gate`, exit 1, measured with
+`cv2.VideoCapture`:
+
+| requirement | required | provisioned | gap |
+|---|---:|---:|---|
+| packs | 4 | **1** | **3 missing** |
+| clips | 12 | **3** | **9 missing** |
+| clips inside 45-90 s | 12 of 12 | **1 of 3** | `retail-checkout` +23.0129 s, `one-by-one` +49.4 s |
+| rights-cleared | 12 | **0** | no licence text embedded, no sidecar beside any clip |
+
+`retail-checkout.mp4` 1920x1080 / 29.970 fps / 3 387 frames / **113.0129 s** (used by the app);
+`store-aisle-detection.mp4` 720x404 / 59.940 / 3 921 / **65.41535 s** (in band, not used);
+`one-by-one-person-detection.mp4` 768x432 / 10.000 / 1 394 / **139.4 s** (not used). **No footage was
+acquired, generated, trimmed or substituted**; missing rights-cleared footage is a procurement dependency.
+
+**What stays open after M5** (unchanged rows are unchanged):
+
+| item | status | owner |
+|---|---|---|
+| The content gate | **NOT MET** - 3 of 12 clips, 0 rights-cleared; shelf-to-basket undelivered | procurement / operator |
+| Legibility at 3 m on the attached monitor | **fails** - 44 px is 11.2' cap / 8.1' x-height at 3 m; the 55-inch panel is a requirement with **no gate** | procurement / M6 |
+| M2's 2 s warm-transition target | **still missed** (p50 2.238-2.261 s, 37/50); **not re-measured by M5** | M6 |
+| M0 gate 9's **silent** half | **open, cannot close on this machine** | M6 |
+| `config/telemetry_map.json` is stale (per-boot LUIDs) | **reported, not edited** | operator |
+| The Tasks 4-5 QML-precedence claim | **not reproduced** - the unparenthesised binding hid the live screen in this session's two runs; the delivered behaviour is verified, the stated reason for the parentheses is not | reviewer |
+| `python tools/compare_records.py` as its docstring documents | **fails with `ModuleNotFoundError`**; `python -m tools.compare_records` works and was used. A doc defect in a committed tool, not fixed here | tool owner |
+| A JSON-loaded record cannot re-export imagery | **by design**, stated as a limit | design |
+| `test_main` 30.0% substring flake; route-stress GC-timing flake | **known, not observed in this run** | M0-M4 owner / M6 |
+
+**M5's costs, named.** The suite is 1 573 tests and **598.6 s** of wall; the comparison measurement cost
+**70.08 s** and produced three committed record payloads; the two mutation checks each needed a restore and a
+`git diff` check rather than a clean tree. The matrix gained one status value, `failed`, for a gate that is
+measured and unmet. Nothing in this milestone edited a config file, and no number here is a target or an
+estimate.
