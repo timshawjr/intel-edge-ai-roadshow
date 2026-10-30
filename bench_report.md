@@ -1982,3 +1982,162 @@ acquired, generated, trimmed or substituted**; missing rights-cleared footage is
 `git diff` check rather than a clean tree. The matrix gained one status value, `failed`, for a gate that is
 measured and unmet. Nothing in this milestone edited a config file, and no number here is a target or an
 estimate.
+
+---
+
+## M6 - the package, the guides and the signing verdict (2026-10-30)
+
+The milestone report is **`docs/qualification/M6-qualification.md`**; this is the closing section of the bench
+record. Five matrix rows were added (four `passed`, one `unmet` for signing), and the milestone's centrepiece is
+**one table stating every gate from M0 to M6, passed or not** (below). This task is **documentation only**: no
+code, `config/*.json`, `requirements.txt` or tool was changed.
+
+```
+$ .venv\Scripts\python.exe tools\verify_sources.py
+Source verification: 6 PASS, 0 FAIL                              exit 0   wall 0.14 s
+
+$ .venv\Scripts\python.exe tools\preflight.py
+Summary: 17 PASS, 1 WARN, 0 FAIL - 18 total rows
+Status: Limited                                                  exit 0   wall 4.51 s
+(the WARN is the recorded-map / hardware-identity row: this boot's GPU LUID is 0x000113B4 and the
+ committed file records 0x00010E9E / 0x000112A0; the runtime no longer depends on it. The file was not
+ edited. 189.4 GiB disk free, 22.3 GiB RAM, discovery 2.82 s, import-to-first-inference 4.02 s.)
+
+$ .venv\Scripts\python.exe -m app.main --selftest
+PASS                                                             exit 0   wall 1.01 s
+
+$ .venv\Scripts\python.exe -m unittest discover -s tests
+----------------------------------------------------------------------
+Ran 1635 tests in 609.277s
+
+OK                                                               exit 0   wall 610.33 s
+```
+
+M6 adds **62 tests in five modules** (`test_build_bundle` 12, `test_environment_manifest` 13,
+`test_presenter_guide` 13, `test_diagnostic_export` 13, `test_signing_document` 11) to M5's 1 573. Machine
+asserted clean before every gate (`Get-Process python` and `pythonw` both 0). **Disclosed:** running
+`tools/probe_telemetry.py` rewrote `config/telemetry_map.json` (21 lines); it was restored with
+`git checkout` and hashes `235B13AF...` again.
+
+**The bundle - 64 files, verified, installed offline, unsigned.** `dist/M6-bundle` carries 64 payload files
+totalling **459,628,699 bytes** (65 with the manifest, 459,636,178), and `provision_offline.py --verify-only`
+prints `MANIFEST PASS: 64 files match their SHA-256`, exit 0, 0.38 s;
+`tools/build_bundle.py --verify` adds `checked 64 files; ok=True`, which also refuses an unlisted file.
+Contents: 43 `app/` source files, 10 wheels, 5 assets (`yolo11n.xml` 412,503 B, `yolo11n.bin` 5,283,218 B,
+`labels.txt` 701 B, `retail-checkout.mp4` 64,996,307 B, the scenario manifest 4,535 B), 3 config files,
+`docs/install/SETUP.md`, `requirements.txt` and `provision_offline.py`. **The wheelhouse is exactly the
+pinned closure**: 6 direct pins plus the 4 dependencies the pinned metadata declares
+(`openvino-telemetry` 2025.2.0, `pyside6-essentials`, `pyside6-addons`, `shiboken6` 6.11.2) = 10, set-equal,
+**0 unrelated wheels**. An extra `requests` wheel, a missing `pyyaml`, a missing `shiboken6` and `numpy`
+2.4.0 against the pinned 2.5.3 are each **refused** by the committed validator - re-run in this session.
+**Offline install re-run, not quoted:** copied to a fresh directory outside the repo, network made unusable
+(`HTTP(S)_PROXY=http://127.0.0.1:9`, dead `PIP_INDEX_URL`, `PIP_CONFIG_FILE=NUL`),
+`provision_offline.py --selftest` created the venv, ran `pip install --no-index --only-binary=:all:
+--find-links wheelhouse -r requirements.txt`, showed `Looking in links:` and **no index**, installed **all
+10** (`pip freeze` lists exactly 10), then `--selftest` **PASS**, exit 0, **32.44 s**. **Unsigned**:
+`signed: false` in the manifest with a note that refuses to weaken Defender, ASR, AppLocker or the
+execution policy. **The bundle is not committed** - `dist/` is gitignored - and it **omits
+`docs/install/SIGNING.md`, `docs/PRESENTER-GUIDE.md` and `KNOWN-GOOD-environment.json`** (reported, not fixed;
+its signature note points at SETUP.md, which points at a signing document not inside the bundle).
+
+**Environment - read from the machine, re-read now.** `tools.environment_manifest.collect_environment()`
+against the committed `docs/install/KNOWN-GOOD-environment.json`: **69 fields compared, 68 identical, one
+differs and it is `generated_at_utc`**. Three SKU records preserved as three - `NUC14LNK LN`
+(`Win32_ComputerSystem`), `NUC14PROAI` (hostname), `88F21043` (PCI SUBSYS) - and no single SKU claimed.
+`ac_status` is **null** because `Win32_Battery` returns **0 instances**; the Windows caption
+`Microsoft Windows 11 Pro` and the registry `Windows 10 Pro` are **both retained**. `AdapterRAM`
+2,147,479,552 B is labelled a capped 32-bit property, not VRAM.
+
+**Presenter guide - checked against the parser.** 11 application commands in `docs/PRESENTER-GUIDE.md`, **11
+accepted** by `app.main.build_parser()`. One nuance: `--headless --streams 3` parses and is then **refused by
+`app.main` with exit 2** ("not supported by --headless ... single-stream"), which is exactly what the guide
+prints as a refusal; `tests.test_presenter_guide` re-runs it. **13 tests, OK, 0.021 s.** The guide carries the
+three open gates with their numbers and states the NPU figure as 5.50-5.57 ms cold against 3.96-4.01 ms
+settled. **Flagged:** it prints "M2 measured p50 2.238 s" and **no committed M2 file contains 2.238**; the
+committed p50s are **2.261 s** (30 s deadline, 25/50 over) and **2.628 s** (2.0 s default, 37/50 over). The
+guide was not edited.
+
+**Diagnostic export - the gates travel, the imagery does not.** `python -m tools.diagnostic_export` wrote a
+**7-member** ZIP (`manifest.json`, `environment.json`, `device_discovery.json`, `selftest.txt`, `gates.json`,
+`benchmark_record.json`, `README.txt`), exit 0, 6.42 s. All three gates are present and **marked failed**:
+content (3 of 12, 0 rights-cleared, 1 in band, 1 pack), legibility (cap 11.2' at 3 m; x-height 12.2' at 2 m
+and 8.1' at 3 m) and transition (37 of 50 over 2.0 s at p50 2.628 s); `all_passed: False`. Every member's
+**whole bytes** were scanned for PNG/JPEG/GIF/TIFF/WEBP: **`IMAGE-CONTENT HITS: NONE`**. The writer refuses a
+member carrying a magic number, so the zero is enforced. `config/telemetry_map.json` hashes
+**`235B13AF...` before and after** - the export does not repeat `probe_telemetry.py`'s side effect. The
+transition figure is the **committed M2 file**, quoted and sourced in `gates.json`, not re-measured at M6.
+
+**Signing - UNMET, and the step written down.** No Authenticode signature, no certificate, no private key,
+no timestamp account on this machine. `docs/install/SIGNING.md` gives
+`signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256 /a <file>` and `signtool verify /pa /all <file>`,
+states the cost (SmartScreen "unknown publisher"; an enterprise WDAC/AppLocker/SmartScreen policy may block
+an unsigned artifact outright; a procurement rule may refuse it) and forbids the workaround (no Defender
+exclusion, no ASR change, no execution-policy change, no AppLocker bypass, no disabled SmartScreen).
+Elevation is an **install** step for a human; the application runs as a standard user. Nothing is fabricated.
+
+### The closing gate table - every gate, M0 to M6
+
+| # | gate | status | measured | evidence |
+|---:|---|---|---|---|
+| 1 | three devices compile, >=100 requests each | **passed** | M0 | M0-qualification.md (quoted from gitignored `m0.json`, re-rendered by preflight) |
+| 2 | detection passes the annotated sanity fixture | **passed** | M0; CPU re-run live M6 | preflight this session: `2 of 2 matched`, `VERDICT PASS` |
+| 3 | CPU fallback when GPU/NPU unavailable | **partially observed; gate not closed** | M0 route, M2 visible half + one recovery | CPU-only route 24.51 ms; a dead worker claims no device; at the 2.0 s default a route timeout was **recovered to CPU and stated**. Silent device fallback **never observed** - not tested |
+| 4 | retail event >=90 % precision/recall on a curated set | **not tested** | - | no curated set exists; no P/R figure was ever measured |
+| 5 | people-in-zone presence, 2 per clip | **passed** | M1/M2/M4 | 2 events in each of 18/18 windows; 1 694/1 694 frames |
+| 6 | input acknowledgement <200 ms | **passed as a floor** | M1/M4 | p95 10.1-16.6 ms (M1), 8/8 windows (M4); at 8/8 saturation max 1 105.5 ms |
+| 7 | GPU/NPU utilisation attributed | **passed** | M4 | per-PID: GPU 0.0 -> 97.19 %, NPU 0.0 -> 64.86 %; machine-wide figure withdrawn |
+| 8 | 1920x1080 at four DPI scales | **passed with documented failures** | M3 | four committed captures, no overflow; readability failures documented |
+| 9 | legibility at 2-3 m on the actual monitor | **2 m cap pass, 3 m fail, x-height fails both** | M4 | 16.8'/11.2' cap, 12.2'/8.1' x at 0.310 mm/logical px |
+| 10 | warm route transition <=2 s | **MISSED** | M2, not re-measured since | p50 2.261 s (30 s deadline, 25/50) and 2.628 s (2.0 s default, **37/50**) |
+| 11 | 50 alternating warm transitions: no crash/leak/stale overlay | **passed, leak qualified** | M2, leak fixed M4 | 30 s deadline: 50/50 acked, 0 crashes, 0 errors, 0 stale overlays. 2.0 s default: 26/50 acked, 0 crashes, 0 stale, one route timeout recovered to CPU. Leak +153.7 -> -10.4 MiB |
+| 12 | content: 12 clips, 4 packs, 45-90 s, rights-cleared | **NOT MET** | M5, re-run M6 | 3 of 12 clips, 1 of 4 packs, 1 of 3 in band, **0 rights-cleared**, exit 1 |
+| 13 | export excludes imagery by default | **passed** | M5, re-proved M6 | 0 hits in 6 M5 members; 0 hits in 7 M6 diagnostic members |
+| 14 | recorded mode cannot be mistaken for live | **passed** | M5 | notice visible +400 ms; live screen not visible; control disabled and unresponsive |
+| 15 | offline bundle with per-file SHA-256, installs offline, `--selftest` | **passed** | M6 | 64/64; fresh dir; dead proxy; 10 wheels; PASS, 32.44 s |
+| 16 | known-good environment read from the machine | **passed** | M6 | 69 fields, 68 identical; 3 SKUs; `ac_status null` with reason |
+| 17 | presenter guide checked against CLI and gates | **passed** | M6 | 11/11 commands; 13 tests OK; three gates present |
+| 18 | code signing | **UNMET** | M6 | no certificate; step documented; nothing signed or certified |
+
+### M6 exit criteria - the six, stated one by one
+
+| # | criterion | verdict |
+|---|---|---|
+| 1 | offline bundle with per-file SHA-256, installs without network, runs `--selftest` | **MET** - 64/64, fresh directory, dead proxy, 10 wheels, PASS in 32.44 s; **unsigned** |
+| 2 | known-good environment read from the machine, unreadable fields `None`, three SKUs kept | **MET** - 68 of 69 fields reproduce; `ac_status null`; three SKU values preserved |
+| 3 | presenter guide checked against the CLI and the gates | **MET** - 11/11 commands, 13 tests, three open gates with numbers; one uncommitted number flagged |
+| 4 | diagnostic export carries the gates and no imagery, proven by content | **MET** - 7 members, all three gates failed, `IMAGE-CONTENT HITS: NONE`, telemetry hash unchanged |
+| 5 | signing reported unmet, exact step documented, cost stated | **MET AS A REPORT - THE GATE IS UNMET**; no certificate exists |
+| 6 | a single table states every gate across M0-M6 | **MET** - the 18-row table above and M6-qualification.md section 7 |
+
+### The final deliverable status
+
+**Windows package (unsigned candidate), source, verified assets and their licences, qualification evidence,
+and the presenter guide - with the open gates named rather than closed by assertion.**
+
+- **Package:** `dist/M6-bundle`, 64 files / 459,628,699 B, 64/64 SHA-256, offline install proven, `--selftest`
+  PASS. **Unsigned** - no certificate exists; the manifest says so.
+- **Source:** the tree that built it, with the M6 tools and their five test modules.
+- **Assets and licences:** six artifacts content-verified (`6 PASS, 0 FAIL`); weights are **AGPL-3.0**,
+  unresolved; **0 of 3 clips rights-cleared** - the M0 licence strings are provenance, not permission.
+- **Qualification evidence:** M0-M6 reports, the content gates, the legibility and utilisation reviews, the
+  committed captures, trial and benchmark records, the **42-row** matrix, and this gate set with wall times.
+- **Presenter guide:** checked against the parser and the gates, with a may-say / must-not-say list.
+
+**Not held, named:** a signed package; rights-cleared footage; a screen that reads at 3 m; a two-second
+camera switch; shelf-to-basket; observed device fallback; a curated precision/recall set; AC status and a
+single SKU; and a bundle that carries its own signing document and presenter guide.
+
+**The three largest open risks.**
+
+1. **Content - 3 of 12 clips, 0 rights-cleared.** Nine clips do not exist, one provisioned clip is 49.4 s
+   over the band, none carries a redistribution grant, and shelf-to-basket was never filmed. It is the one
+   shortfall no further engineering on this machine can close. Owner: procurement / operator.
+2. **Legibility at 3 m.** 11.2' of cap height against a 16' threshold at 3 m, and **no x-height clears 16' at
+   either distance** on the attached DELL S3422DWG. The 55-inch panel that would read (22.9'/16.6') is a
+   procurement requirement with **no gate**: preflight cannot measure a panel. Owner: procurement.
+3. **The missed 2 s warm transition.** p50 **2.628 s** and **37 of 50** over at the real default. A presenter
+   switching a camera's device will be seen to wait, and the distribution's tail runs to several seconds.
+   Owner: engineering, against M2's committed distribution.
+
+Below those: **signing** (a procurement rule may reject the package), **no observed fallback** (a loud path is
+demonstrated, a silent one is not), and the **stale per-boot LUID map** (a WARN, not a device fault).
