@@ -176,6 +176,14 @@ Do **not** use the docstring's script path; it fails with
 `ModuleNotFoundError: No module named 'app'`. The working form is `python -m
 tools.compare_records`.
 
+To send a problem away for diagnosis, write the diagnostic bundle. It carries the
+environment, device discovery, the self-test output, the three gate results and the
+benchmark record, and it carries **no camera imagery**:
+
+```powershell
+.venv\Scripts\python.exe -m tools.diagnostic_export --destination logs\diagnostic.zip
+```
+
 To check the footage inventory and its rights position:
 
 ```powershell
