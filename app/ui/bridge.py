@@ -95,6 +95,7 @@ from PySide6.QtGui import QColor, QImage, QPainter
 
 import numpy as np
 
+from app.contracts.benchmark_record import BenchmarkRecord
 from app.contracts.metric_sample import MetricSample, Validity
 from app.inference.devices import is_device, normalise_execution_devices
 
@@ -123,8 +124,10 @@ __all__ = [
     "DEFAULT_ROUTE_STREAM",
     "EXPLANATIONS",
     "FrameImageProvider",
+    "RECORDED_CONTROL_NOTE",
     "RECORDED_DEMO_LABEL",
     "RECORDED_FOOTAGE_LABEL",
+    "RECORDED_METRIC_LIMIT",
     "SCOPE_NOTE_LABEL",
     "SLOT_CALLS_SAFE_IN_A_QML_BINDING",
     "STALE_AFTER_SECONDS",
@@ -271,6 +274,19 @@ ATTRACT_TITLE = "Intel Edge AI Roadshow"
 
 #: Spec section 9's wording for a recorded surface, quoted rather than paraphrased.
 RECORDED_DEMO_LABEL = "Recorded demonstration \u2014 metrics are not live"
+
+#: **M5 Task 4.** What a presenter is told when the live device controls are present but
+#: dead. The wording is a statement about the screen, not about the machine: it says the
+#: controls are disabled *while a recording plays*, which is the only time it is shown.
+RECORDED_CONTROL_NOTE = (
+    "Live device controls are disabled while a recording plays. "
+    "Leave the recording to move a camera."
+)
+
+#: How many recorded metrics a playback puts on screen. The record can carry arbitrarily
+#: many samples; the screen is 1080 logical pixels tall and every row is 44 px so it reads
+#: from the aisle. Truncation is **stated** (`recorded_metrics_note`), never silent.
+RECORDED_METRIC_LIMIT = 6
 
 #: Spec section 9: attract starts after 90 s of no presenter input. A time, like
 #: `STALE_AFTER_SECONDS`, so it lives in this module rather than in `app/theme.py`, which
@@ -920,6 +936,20 @@ class UiBridge(QObject):
     #: property the attract overlay binds to; without this signal the Loader would be
     #: evaluated once at `engine.load` and the idle screen would never appear.
     attractActiveChanged = Signal()
+    #: **Recorded-demonstration mode was entered or left, or its record was replaced. M5.**
+    #: Everything the recorded surface reads - `recorded_mode`, `recorded_metrics`,
+    #: `recorded_source_text`, `recorded_metrics_note` - is notified by this one signal,
+    #: because they are one fact: a record is (or is not) loaded.
+    recordedModeChanged = Signal()
+    #: The accepted live device request changed. See `deviceControl`.
+    deviceControlChanged = Signal()
+    #: A live device control asked to move a camera. `(stream, device)`.
+    #:
+    #: **Never emitted while recorded mode is active.** The windowed run connects this to
+    #: the supervisor's existing presenter-selection path; a playback has no supervisor,
+    #: and a control that still emitted here would be a live action behind a recorded
+    #: screen.
+    deviceRequested = Signal(str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -990,6 +1020,25 @@ class UiBridge(QObject):
         #: at construction so a window that is never touched enters attract after the idle
         #: interval rather than immediately.
         self._last_activity = time.perf_counter()
+        #: **Recorded-demonstration mode (M5 Task 4).** The loaded record, or `None`. This
+        #: is a *playback*, never a measurement: `_recorded_metrics` is derived from the
+        #: record's own samples, and each row carries the record's timestamp. The live
+        #: fields above are deliberately left untouched so leaving recorded mode restores
+        #: the live screen exactly.
+        self._recorded_record: BenchmarkRecord | None = None
+        self._recorded_metrics: tuple[dict[str, str], ...] = ()
+        self._recorded_metrics_hidden = 0
+        self._recorded_source = ""
+        self._recorded_source_name = ""
+        self._recorded_refusal = ""
+        #: Whether a live source is attached. Set by `run_windowed` when the supervisor
+        #: starts and cleared when it stops. A playback cannot be entered while this is
+        #: true, or while any live evidence exists - see `live_stream_running`.
+        self._live_source_attached = False
+        #: The last **accepted** live device request, empty before one. Reading back what
+        #: was accepted (not what was clicked) is what keeps a disabled control from
+        #: appearing to have done something.
+        self._device_control = ""
 
         # Utilisation availability is **derived from the sample**, not asserted here: the
         # provider (`app.telemetry.accelerator`) measures this application's own engine
@@ -1803,8 +1852,17 @@ class UiBridge(QObject):
         return [dict(headline) for headline in ATTRACT_HEADLINES]
 
     def set_attract(self, active: bool) -> None:
-        """Enter (`True`) or leave (`False`) attract mode. **The only state it owns.**"""
+        """Enter (`True`) or leave (`False`) attract mode. **The only state it owns.**
+
+        **M5: a playback is not yielded to the idle screen.** Attract and recorded mode are
+        two different recorded surfaces with two different sets of dates; letting the idle
+        timer replace a loaded record with the attract headlines would swap one record's
+        numbers for another's without the presenter asking. Leaving attract is always
+        allowed.
+        """
         wanted = bool(active)
+        if wanted and self._recorded_record is not None:
+            return
         if wanted == self._attract_active:
             return
         self._attract_active = wanted
@@ -1827,6 +1885,243 @@ class UiBridge(QObject):
         """
         self._last_activity = time.perf_counter() if now is None else float(now)
         self.set_attract(False)
+
+    # -- recorded-demonstration mode (M5 Task 4) ---------------------------------------
+    #
+    # **The mirror of the mandatory live label.** A playback is not a measurement, so it
+    # says so continuously and it cannot reach a live device control. Three properties
+    # make that structural rather than conventional:
+    #
+    # - `recorded_mode` is `True` only while a `BenchmarkRecord` is loaded, and the screen
+    #   binds the live label's `visible` to its inverse. The live label is not "hidden by
+    #   the overlay"; it is `visible: false` in the scene graph, which is what the render
+    #   reads.
+    # - `recorded_metrics` is built **from the record's own samples**, so a playback cannot
+    #   show a live number that was already on the screen, and every row carries the
+    #   record's `started_at` rather than the wall clock.
+    # - `deviceControl` refuses while `recorded_mode` is true, *and* the QML control's
+    #   `enabled` is false, so a click has two independent reasons not to become an action.
+
+    def _get_recorded_mode(self) -> bool:
+        return self._recorded_record is not None
+
+    recorded_mode = Property(bool, _get_recorded_mode, notify=recordedModeChanged)
+
+    @Property(str, constant=True)
+    def recorded_demo_label(self) -> str:
+        """Spec section 9's wording, the same constant attract mode renders."""
+        return RECORDED_DEMO_LABEL
+
+    @Property(str, constant=True)
+    def recorded_control_note(self) -> str:
+        """Why the live device controls are disabled, shown only while recorded."""
+        return RECORDED_CONTROL_NOTE
+
+    def _get_recorded_metrics(self) -> list:
+        return [dict(row) for row in self._recorded_metrics]
+
+    recorded_metrics = Property("QVariantList", _get_recorded_metrics,
+                               notify=recordedModeChanged)
+
+    def _get_recorded_metrics_note(self) -> str:
+        if not self._recorded_metrics_hidden:
+            return ""
+        return (f"{self._recorded_metrics_hidden} more measured metrics are in the "
+                f"exported record; this screen shows {len(self._recorded_metrics)}.")
+
+    recorded_metrics_note = Property(str, _get_recorded_metrics_note,
+                                     notify=recordedModeChanged)
+
+    def _get_recorded_source_text(self) -> str:
+        return self._recorded_source
+
+    recorded_source_text = Property(str, _get_recorded_source_text,
+                                    notify=recordedModeChanged)
+
+    def _get_recorded_refusal(self) -> str:
+        """The stated reason the last `enter_recorded` refused, or `""`."""
+        return self._recorded_refusal
+
+    recorded_refusal = Property(str, _get_recorded_refusal,
+                                notify=recordedModeChanged)
+
+    def _get_live_stream_running(self) -> bool:
+        return bool(self._live_stream_reason())
+
+    live_stream_running = Property(bool, _get_live_stream_running,
+                                   notify=recordedModeChanged)
+
+    def _live_stream_reason(self) -> str:
+        """Why a recording may not be entered now, or `""`.
+
+        **Evidence, not a flag the caller sets.** A playback may not take over a screen
+        that is showing live work: any analysed frame, any route that is running or
+        pending, any decoded frame, or an attached live source is enough to refuse. The
+        `_live_source_attached` field is set by `run_windowed` itself at the point the
+        supervisor starts, so a caller that forgets to say "live" still cannot enter
+        recorded mode after a frame has been analysed.
+        """
+        if self._live_source_attached:
+            return "a live source is attached to this screen"
+        if self._frames_analysed > 0:
+            return f"{self._frames_analysed} frames have been analysed on this screen"
+        running = sorted(
+            stream for stream, route in self._stream_routes.items()
+            if str(route.get("state") or "") in ("active", "pending"))
+        if running:
+            return f"camera(s) {', '.join(running)} have a live route"
+        for stream, record in sorted(self._stream_frames.items()):
+            if record.get("image") is not None:
+                return f"camera {stream} has a decoded live frame"
+        if self._frame_image is not None:
+            return "the screen holds a live frame"
+        return ""
+
+    def attach_live_source(self) -> None:
+        """Declare that `run_windowed` has started a supervisor behind this screen."""
+        self._live_source_attached = True
+        self.recordedModeChanged.emit()
+
+    def detach_live_source(self) -> None:
+        """Declare that the live source has stopped."""
+        self._live_source_attached = False
+        self.recordedModeChanged.emit()
+
+    def set_recorded_source(self, name: str) -> None:
+        """Name the file the record was read from, for the playback's own caption."""
+        self._recorded_source_name = str(name)
+
+    @staticmethod
+    def _recorded_value_text(sample: MetricSample) -> str:
+        """One sample's value, with its unit. Never a substitute for an absence."""
+        if sample.value is None:
+            reason = sample.unavailable_reason or "no reason was recorded"
+            return f"unavailable - {reason}"
+        value = float(sample.value)
+        unit = str(sample.unit)
+        if unit in ("percent", "%"):
+            return f"{value:.1f}%"
+        if unit == "fps":
+            return f"{value:.1f} fps"
+        if value.is_integer():
+            return f"{int(value)} {unit}"
+        return f"{value:g} {unit}"
+
+    @classmethod
+    def _recorded_rows(cls, record: BenchmarkRecord) -> tuple[tuple[dict[str, str], ...], int]:
+        """The rows a playback may put on screen, and how many are not shown.
+
+        **One row per metric, from the record's own samples, each stamped with the
+        recording's own date.** The latest settled sample wins where one exists; a metric
+        measured only during warm-up keeps its `cold` phase and its value, because showing
+        it as steady state would be the NPU's 5.2 ms mistake. The row is deliberately plain
+        data: the QML renders `name`, `text` and `timestamp` and invents nothing.
+        """
+        samples = record.settled_samples() or record.samples
+        latest: dict[str, Any] = {}
+        for sample in samples:
+            current = latest.get(sample.metric)
+            if current is None or sample.sample.sampled_at >= current.sample.sampled_at:
+                latest[sample.metric] = sample
+        rows = []
+        for name in sorted(latest):
+            sample = latest[name]
+            rows.append({
+                "name": name,
+                "text": cls._recorded_value_text(sample.sample),
+                "timestamp": (f"{record.started_at} "
+                              f"(+{sample.sample.sampled_at:g} s into the recording)"),
+                "phase": sample.phase.value,
+            })
+        shown = tuple(rows[:RECORDED_METRIC_LIMIT])
+        return shown, max(0, len(rows) - len(shown))
+
+    @Slot(object, result=bool)
+    def enter_recorded(self, record: object) -> bool:
+        """Load a `BenchmarkRecord` as a playback. **Refused while live work is running.**
+
+        Returns `False` with `recorded_refusal` set rather than partially entering: a
+        screen that showed half a playback and half a live run would be the exact confusion
+        this mode exists to prevent.
+        """
+        try:
+            if not isinstance(record, BenchmarkRecord):
+                self._recorded_refusal = (
+                    "recorded mode needs a BenchmarkRecord; got "
+                    f"{type(record).__name__}")
+                self.recordedModeChanged.emit()
+                return False
+            reason = self._live_stream_reason()
+            if reason:
+                self._recorded_refusal = (
+                    "refusing to enter recorded mode while live work is running: "
+                    f"{reason}")
+                self.recordedModeChanged.emit()
+                return False
+            rows, hidden = self._recorded_rows(record)
+            self._recorded_record = record
+            self._recorded_metrics = rows
+            self._recorded_metrics_hidden = hidden
+            self._recorded_source = (
+                f"recorded {record.started_at} on {record.machine_id}"
+                + (f" - {self._recorded_source_name}" if self._recorded_source_name else ""))
+            self._recorded_refusal = ""
+            if self._attract_active:
+                # Attract shows dated headlines; a playback shows a different record. Two
+                # recorded surfaces at once would be two sets of dates over one screen.
+                self._attract_active = False
+                self.attractActiveChanged.emit()
+            self.recordedModeChanged.emit()
+            return True
+        except Exception as exc:  # noqa: BLE001 - a slot failure is not a crash
+            self._report_slot_failure("enter_recorded", exc)
+            self._recorded_refusal = f"recorded mode failed: {exc}"
+            self.recordedModeChanged.emit()
+            return False
+
+    @Slot(result=bool)
+    def leave_recorded(self) -> bool:
+        """Leave the playback. The live fields were never touched, so the screen returns."""
+        if self._recorded_record is None:
+            return False
+        self._recorded_record = None
+        self._recorded_metrics = ()
+        self._recorded_metrics_hidden = 0
+        self._recorded_source = ""
+        self.recordedModeChanged.emit()
+        return True
+
+    def _get_device_control(self) -> str:
+        return self._device_control
+
+    def _set_device_control(self, value: str) -> None:
+        """QML writes a device id here to ask for a move. **Refused while recorded.**
+
+        A writable property rather than a Slot call, for two reasons: a QML binding over a
+        Slot cannot re-evaluate (the standing guard), and an assignment is not a binding.
+        The read-back is the **accepted** request, so a refused assignment leaves the
+        screen's own record of "what I asked for" unchanged.
+        """
+        self.request_device(str(value))
+
+    device_control = Property(str, _get_device_control, _set_device_control,
+                              notify=deviceControlChanged)
+
+    def request_device(self, device_id: str) -> bool:
+        """Ask to move the bound camera to `device_id`. Returns whether it was accepted."""
+        wanted = str(device_id).strip()
+        if wanted not in ("CPU", "GPU", "NPU"):
+            return False
+        if self._recorded_record is not None:
+            # **The second line of defence.** The QML control is disabled, so a click never
+            # reaches here; if some other path writes the property, the playback still
+            # does not become a live action.
+            return False
+        self._device_control = wanted
+        self.deviceControlChanged.emit()
+        self.deviceRequested.emit(str(self._route_stream), wanted)
+        return True
+
 
 
     @Slot(str, result=str)

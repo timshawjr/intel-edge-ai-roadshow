@@ -58,7 +58,7 @@ __all__ = [
     "CARD_REASON_CHARS",
     "CARD_REASON_MARKER",
     "COLOR_BAD", "COLOR_GOOD", "COLOR_NEUTRAL",
-    "COLOR_WARN", "DRAWER_WIDTH_FRACTION", "FONT_FAMILY", "GAP", "GRID", "MARGIN",
+    "COLOR_WARN", "DISABLED_OPACITY", "DRAWER_WIDTH_FRACTION", "FONT_FAMILY", "GAP", "GRID", "MARGIN",
     "MM_PER_LOGICAL_PX", "OVERLAY_BOX",
     "OVERLAY_LABEL", "OVERLAY_ZONE", "RADIUS", "READING_ACUITY_ARCMIN",
     "READING_MARGINAL_ARCMIN", "READING_MIN_ARCMIN", "READING_MIN_HEIGHT_MM",
@@ -145,6 +145,12 @@ SPACING: Final[dict[str, int]] = {"xs": 4, "sm": 8, "md": 16, "lg": 28, "xl": 48
 
 #: Corner radius for cards and panels.
 RADIUS: Final[int] = 10
+
+#: How faint a disabled control is drawn. **M5 Task 4.** A disabled control has to look
+#: disabled as well as be disabled: a presenter who cannot tell the difference will click
+#: it and conclude the screen is broken. Kept in the theme because it is a visual token,
+#: not a measurement.
+DISABLED_OPACITY: Final[float] = 0.45
 
 # -- M4: the card's internal layout ------------------------------------------------------
 #

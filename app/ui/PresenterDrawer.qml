@@ -200,6 +200,79 @@ Rectangle {
             wrapMode: Text.WordWrap
         }
 
+        // -- M5 Task 4: the live device controls ----------------------------------------
+        //
+        // **These are the controls a playback must not have.** They write
+        // `bridge.deviceControl`, a writable property rather than a Slot call in a binding
+        // (the standing guard bans the latter, and an assignment is not a binding). In
+        // recorded mode the button and its `MouseArea` are both `enabled: false`, and the
+        // bridge's setter refuses the write as well - two independent reasons a click
+        // cannot become a live action. The render test clicks one and reads the emitted
+        // request list, so "disabled" is proved by behaviour and not by the flag alone.
+        Row {
+            width: parent.width
+            spacing: Theme.SPACING.sm
+
+            Text {
+                objectName: "deviceControlLabel"
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Live device control - Camera " + bridge.route_stream
+                color: Theme.TEXT_ON_PANEL
+                font.family: Theme.FONT_FAMILY
+                font.pixelSize: Theme.TYPE_DETAIL
+                font.bold: true
+            }
+
+            Repeater {
+                model: ["CPU", "GPU", "NPU"]
+
+                delegate: Rectangle {
+                    id: deviceControlButton
+                    required property string modelData
+                    objectName: "deviceControl_" + modelData
+                    enabled: !bridge.recorded_mode
+                    opacity: enabled ? 1.0 : Theme.DISABLED_OPACITY
+                    width: deviceControlText.implicitWidth + Theme.SPACING.md
+                    height: Theme.TYPE_DETAIL + Theme.SPACING.sm * 2
+                    radius: Theme.RADIUS
+                    color: Theme.BG_PANEL_DEEP
+                    border.color: bridge.device_control === modelData
+                        ? Theme.ACCENT : Theme.BORDER
+                    border.width: 1
+
+                    Text {
+                        id: deviceControlText
+                        anchors.centerIn: parent
+                        text: modelData
+                        color: deviceControlButton.enabled ? Theme.TEXT_ON_PANEL
+                                                           : Theme.COLOR_NEUTRAL
+                        font.family: Theme.FONT_FAMILY
+                        font.pixelSize: Theme.TYPE_DETAIL
+                    }
+
+                    MouseArea {
+                        objectName: "deviceControlMouse_" + modelData
+                        anchors.fill: parent
+                        enabled: parent.enabled
+                        onClicked: bridge.device_control = modelData
+                    }
+                }
+            }
+        }
+
+        // Why the controls above will not move anything. Shown only while recorded, so it
+        // cannot be read as a claim about a live run.
+        Text {
+            objectName: "deviceControlNotice"
+            width: parent.width
+            visible: bridge.recorded_mode
+            text: bridge.recorded_control_note
+            color: Theme.COLOR_WARN
+            font.family: Theme.FONT_FAMILY
+            font.pixelSize: Theme.TYPE_DETAIL
+            wrapMode: Text.WordWrap
+        }
+
         // -- M4: this camera, precisely -----------------------------------------------
         //
         // The six rows that left the always-visible screen. One block per declared camera,
@@ -211,6 +284,10 @@ Rectangle {
             delegate: Column {
                 required property string modelData
                 objectName: "drawerCameraBlock_" + modelData
+                // **M5 Task 4:** a playback shows only the recorded surface's own dated
+                // figures. These blocks read the live bridge, so showing them behind a
+                // Recorded demonstration notice would be a live number on a recorded screen.
+                visible: !bridge.recorded_mode
                 width: parent.width
                 spacing: Theme.SPACING.xs
 
@@ -361,6 +438,7 @@ Rectangle {
         Text {
             objectName: "eventCountRow"
             width: parent.width
+            visible: !bridge.recorded_mode
             readonly property var kinds: ["zone_occupancy", "candidate_transfer",
                                           "candidate_return"]
             readonly property bool countedSomethingYet: bridge.frames_analysed > 0
@@ -395,6 +473,7 @@ Rectangle {
         Text {
             objectName: "drawerStatusText"
             width: parent.width
+            visible: !bridge.recorded_mode
             text: "status: " + (bridge.status_message.length > 0
                                   ? bridge.status_message : "running")
             color: Theme.COLOR_NEUTRAL
@@ -408,6 +487,7 @@ Rectangle {
         Text {
             objectName: "stalenessText"
             width: parent.width
+            visible: !bridge.recorded_mode
             text: bridge.staleness.length > 0
                 ? "telemetry " + bridge.staleness : "telemetry unavailable"
             color: Theme.COLOR_NEUTRAL

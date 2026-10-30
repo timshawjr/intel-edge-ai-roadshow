@@ -52,7 +52,7 @@ Window {
     height: Theme.CANVAS_HEIGHT
     visible: true
     color: Theme.TEXT_ON_PANEL
-    title: "Intel Edge AI Roadshow - " + bridgeUi.recordedFootageLabel
+    title: "Intel Edge AI Roadshow - " + bridgeUi.surfaceLabel
 
     // **The presenter drawer (M3 Task 5).** A display state, like attract mode: the drawer
     // is an overlay anchored to the window's right edge, so opening it cannot reflow the
@@ -73,7 +73,7 @@ Window {
         // Task 4's attract mode hides this rectangle; the attract render asserts it is not
         // visible, which is what makes "no live number is shown" a checkable claim.
         objectName: "liveScreen"
-        visible: !bridge.attract_active
+        visible: (!bridge.attract_active) && (!bridge.recorded_mode)
         color: Theme.BG
 
         // The three bands, as fractions of the height that is actually available.
@@ -117,9 +117,16 @@ Window {
                             spacing: Theme.SPACING.lg
 
                             // THE MANDATORY LABEL. Unconditional, never inside a conditional.
+                            //
+                            // **M5 Task 4 makes its absence a rendered fact.** The label's
+                            // `visible` is false while a playback is loaded, rather than
+                            // the label merely sitting under an opaque overlay. A covered
+                            // label is still a label a scene walk finds, and "the live
+                            // label is absent" has to mean absent.
                             Rectangle {
                                 id: labelBox
                                 anchors.verticalCenter: parent.verticalCenter
+                                visible: !bridge.recorded_mode
                                 width: recordedFootageText.implicitWidth + Theme.MARGIN
                                 height: recordedFootageText.implicitHeight
                                         + Theme.SPACING.sm * 2
@@ -137,6 +144,7 @@ Window {
                                     // measure is a label nobody is checking.
                                     objectName: "recordedFootageText"
                                     anchors.centerIn: parent
+                                    visible: !bridge.recorded_mode
                                     text: bridgeUi.recordedFootageLabel
                                     color: Theme.TEXT_ON_PANEL
                                     font.family: Theme.FONT_FAMILY
@@ -516,24 +524,18 @@ Window {
     }
 
     // =================================================================================
-    // Attract mode (M3 Task 4) - and its type, like the live screen's, from the ladder
+    // Attract mode (M3 Task 4) and recorded-demonstration mode (M5 Task 4)
     // =================================================================================
     //
-    // **The one screen whose whole purpose is to show no number it cannot date.** The live
-    // screen above is hidden while this is up (`screen.visible: !bridge.attract_active`),
-    // so there is no live figure behind it to be misread. Everything here comes from
-    // `bridge.attract_headlines`, a constant list of recorded measurements, each rendered
-    // **with the date it was recorded and the committed file it came from**.
+    // **One Loader, two recorded surfaces, and no new object in the live scene.** The
+    // committed M3 capture pins the live window's QObject child count, so recorded mode
+    // reuses the Loader attract mode already created rather than adding a second one: when
+    // it is inactive (the live screen) it adds nothing, and its `Component` was already
+    // counted. Which surface is drawn is one fact - `bridge.recorded_mode`.
     //
-    // **M4: the idle screen is read from the aisle too.** The overlay's type was
-    // `TYPE_HEADLINE` / `TYPE_LABEL` / `TYPE_DETAIL` - 40 / 26 / 18 px - and 18 px is below
-    // the acuity floor at 3 m. A booth with nobody at it is exactly when a passer-by reads
-    // it, so these sizes come from the same ladder as the live screen.
-    //
-    // The overlay is a `Loader` with `active: bridge.attract_active` and an inline
-    // `Component`, so when attract mode is off these items **do not exist in the scene
-    // graph at all**. That keeps the live screen's font census (and every committed
-    // capture) exactly what it is.
+    // Attract mode shows dated headline claims. Recorded mode shows **one record's**
+    // samples under `Recorded demonstration - metrics are not live`, and the live label
+    // above is `visible: false` while it is up, so the two cannot be confused.
     Loader {
         id: attractLoader
         // Named so the render can assert the overlay **loaded**, not merely that it was
@@ -541,7 +543,7 @@ Window {
         // overlay, and "no strings" must never be read as a pass.
         objectName: "attractLoader"
         anchors.fill: parent
-        active: bridge.attract_active
+        active: bridge.attract_active || bridge.recorded_mode
         sourceComponent: attractOverlay
     }
 
@@ -549,11 +551,18 @@ Window {
         id: attractOverlay
 
         Rectangle {
-            objectName: "attractOverlay"
+            // **The surface names itself.** Attract mode and a playback are both recorded
+            // surfaces and share this component; only one can be active at a time, so the
+            // name says which one is on screen. A test reading `attractOverlay` cannot be
+            // passed by a playback's notice, and vice versa.
+            objectName: bridge.recorded_mode ? "recordedOverlay" : "attractOverlay"
             anchors.fill: parent
             color: Theme.BG
 
+            // -- attract mode: dated headline claims ---------------------------------
             Column {
+                objectName: "attractColumn"
+                visible: !bridge.recorded_mode
                 anchors.centerIn: parent
                 width: parent.width - Theme.MARGIN * 2
                 spacing: Theme.SPACING.lg
@@ -612,6 +621,96 @@ Window {
                             font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                         }
                     }
+                }
+            }
+
+            // -- recorded-demonstration mode: one record, every row dated -------------
+            //
+            // **The mirror of the live label.** The notice is present for the whole
+            // playback, at `TYPE_BOOTH_DETAIL` - the same 44 px the body text is drawn at,
+            // and therefore the same angular target. Every figure is a row from
+            // `bridge.recorded_metrics`, and every row carries **the timestamp of the
+            // recording it came from**. No binding here calls `bridge.display_text(...)`:
+            // that is a Slot over live state, and the standing guard would fail.
+            Column {
+                objectName: "recordedColumn"
+                visible: bridge.recorded_mode
+                anchors.centerIn: parent
+                width: parent.width - Theme.MARGIN * 2
+                spacing: Theme.SPACING.md
+
+                // THE NOTICE. Present for the whole playback, never a tooltip or a flash.
+                Text {
+                    objectName: "recordedNoticeText"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: bridge.recorded_demo_label
+                    color: Theme.COLOR_WARN
+                    font.family: Theme.FONT_FAMILY
+                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                    font.bold: true
+                }
+
+                Text {
+                    objectName: "recordedSourceText"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: bridge.recorded_source_text
+                    color: Theme.TEXT_ON_PANEL
+                    font.family: Theme.FONT_FAMILY
+                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                }
+
+                Repeater {
+                    model: bridge.recorded_metrics
+
+                    delegate: Column {
+                        required property var modelData
+                        required property int index
+                        objectName: "recordedMetricRow_" + index
+                        width: parent.width
+                        spacing: Theme.SPACING.xs
+
+                        Text {
+                            objectName: "recordedMetric_" + index
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: modelData.name + ": " + modelData.text
+                            color: Theme.TEXT_ON_PANEL
+                            font.family: Theme.FONT_FAMILY
+                            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                        }
+
+                        // **The date, on the same row as the number.** A recorded figure
+                        // with no date is indistinguishable from a live one; this line is
+                        // the whole reason the row exists in this shape.
+                        Text {
+                            objectName: "recordedMetricTime_" + index
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: "recorded " + modelData.timestamp
+                            color: Theme.COLOR_NEUTRAL
+                            font.family: Theme.FONT_FAMILY
+                            font.pixelSize: Theme.TYPE_BOOTH_DETAIL
+                        }
+                    }
+                }
+
+                // Truncation is stated, never silent. The count comes from the record.
+                Text {
+                    objectName: "recordedMetricsNote"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    visible: bridge.recorded_metrics_note.length > 0
+                    text: bridge.recorded_metrics_note
+                    color: Theme.COLOR_NEUTRAL
+                    font.family: Theme.FONT_FAMILY
+                    font.pixelSize: Theme.TYPE_BOOTH_DETAIL
                 }
             }
         }

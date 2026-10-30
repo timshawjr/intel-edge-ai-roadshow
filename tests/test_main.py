@@ -693,6 +693,59 @@ class ResultFolding(unittest.TestCase):
                          f"five distinct frames produced {len(calls)} folds")
 
 
+class RecordedPlaybackCommandLine(unittest.TestCase):
+    """**M5 Task 4, the CLI surface:** a playback is a windowed mode of its own.
+
+    It cannot be combined with the flags that describe a live run, and an unreadable
+    record is a stated reason and exit 2 - never a window carrying the live label over
+    nothing.
+    """
+
+    def test_the_play_record_flag_is_accepted_and_names_a_path(self):
+        from app.main import build_parser
+
+        args = build_parser().parse_args(["--play-record", "run.json"])
+        self.assertEqual(args.play_record, "run.json")
+
+    def test_a_playback_is_dispatched_to_run_recorded_not_the_live_window(self):
+        from app import main as main_module
+
+        seen = {}
+        with mock.patch.object(main_module, "run_recorded",
+                               lambda path: seen.update(path=path) or 0), \
+                mock.patch.object(main_module, "run_windowed",
+                                  lambda **kwargs: self.fail(
+                                      "a playback went through the live window")):
+            code = main_module.main(["--play-record", "run.json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.get("path"), "run.json")
+
+    def test_a_playback_refuses_the_flags_that_describe_a_live_run(self):
+        from app import main as main_module
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), \
+                mock.patch.object(main_module, "run_recorded",
+                                  lambda path: self.fail("a refused playback still ran")):
+            headless = main_module.main(["--play-record", "run.json", "--headless"])
+            select = main_module.main(["--play-record", "run.json", "--select", "A=GPU"])
+            streams = main_module.main(["--play-record", "run.json", "--streams", "3"])
+        self.assertEqual([headless, select, streams], [2, 2, 2])
+        message = stderr.getvalue()
+        for fragment in ("--headless", "--select", "--streams 3"):
+            self.assertIn(fragment, message,
+                          f"the refusal must name what it refused; it says: {message!r}")
+
+    def test_an_unreadable_record_is_a_stated_reason_and_exit_two(self):
+        from app import main as main_module
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = main_module.run_recorded("definitely-not-a-record.json")
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read", stderr.getvalue())
+
+
 class CommandLine(unittest.TestCase):
     """The CLI surface the brief specifies, checked without running the pipeline."""
 

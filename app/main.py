@@ -919,6 +919,15 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     bridge.errorArrived.connect(bridge.apply_error)
     bridge.frameArrivedFromWorker.connect(bridge.apply_frame)
     bridge.samplesArrived.connect(bridge.apply_samples)
+    # **M5 Task 4: the drawer's live device controls.** The QML writes
+    # `bridge.deviceControl`; the bridge refuses the write while a playback is loaded and
+    # otherwise emits the stream and device asked for. This is the same presenter-selection
+    # path `--select` uses, on its own thread, so a move cannot freeze the screen. A
+    # playback has no supervisor and no connection here, because `run_recorded` builds no
+    # bridge with one.
+    bridge.deviceRequested.connect(
+        lambda stream_id, device_id: _start_presenter_selection(
+            supervisor, {str(stream_id): str(device_id)}))
 
     # The supervisor's own signals are converted into those bridge signals by
     # `_on_route` / `_append_error` / `_on_result`, which run on the **supervisor's**
@@ -948,6 +957,10 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     # screen. Declaring a stream claims nothing: every figure still reads `unavailable`
     # until something is measured.
     bridge.set_streams(list(supervisor.stream_ids))
+    # **M5 Task 4: a live source is attached from here on.** The bridge refuses recorded
+    # mode while this is true (and while any frame has been analysed), so the screen cannot
+    # be half live and half playback. Cleared after the event loop returns.
+    bridge.attach_live_source()
     # **One feeder thread per camera, each with its own `ClipSource`.** One clip decoded into
     # three streams would put three workers on three devices each analysing the *same*
     # picture, and the three tiles would show three copies of one camera - which is exactly
@@ -968,6 +981,7 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
         _start_presenter_selection(supervisor, select)
 
     exit_code = application.exec()
+    bridge.detach_live_source()
     # The feeder thread is stopped **before** the supervisor and the clip, and it is
     # stopped by a flag it checks rather than by its own logic. See `_start_feeders`.
     stop_feeding()
@@ -980,6 +994,57 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     for clip in clips:
         clip.close()
     return int(exit_code)
+
+
+def run_recorded(record_path: str) -> int:
+    """Play a saved `BenchmarkRecord` on the booth screen. **No pipeline is opened.**
+
+    This is the other half of the recorded-demonstration obligation: the replay path must
+    be incapable of being a live run. There is no `Supervisor`, no `ClipSource`, no model
+    and no device discovery here - the only thing on screen is the record's own samples,
+    each with the timestamp of the run it came from, under the notice
+    `Recorded demonstration - metrics are not live`.
+
+    A record that cannot be read is an exit code and a stated reason, never a window with
+    the live label on it.
+    """
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QFontDatabase
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    from app.contracts.benchmark_record import BenchmarkRecord
+    from app.ui.bridge import ThemeTokens, UiBridge
+
+    try:
+        payload = json.loads(Path(record_path).read_text(encoding="utf-8"))
+        record = BenchmarkRecord.from_json(payload)
+    except Exception as exc:  # noqa: BLE001 - the operator gets the reason and exit 2
+        print(f"[recorded] cannot read {record_path!r}: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return 2
+
+    application = _gui_application()
+    _register_font(QFontDatabase)
+    bridge = UiBridge(application)
+    theme = ThemeTokens(application)
+    bridge.set_recorded_source(str(record_path))
+    if not bridge.enter_recorded(record):
+        print(f"[recorded] refused: {bridge.recorded_refusal}", file=sys.stderr, flush=True)
+        return 2
+
+    engine = QQmlApplicationEngine()
+    context = engine.rootContext()
+    context.setContextProperty("Theme", theme)
+    context.setContextProperty("bridge", bridge)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "ui" / "Main.qml")))
+    if not engine.rootObjects():
+        print("[recorded] Main.qml produced no root objects; refusing to open a blank "
+              "window", file=sys.stderr, flush=True)
+        return 2
+    print(f"[recorded] playing {record_path}: mode={record.mode} "
+          f"started_at={record.started_at} samples={len(record.samples)} - "
+          f"metrics are not live; live device controls are disabled", flush=True)
+    return int(application.exec())
 
 
 #: The presenter-selection threads. The windowed run joins them before tearing the
@@ -1680,6 +1745,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "same fault `Supervisor`'s own test seam injects, so what "
                              "you see is the real detect-a-dead-worker path and not a "
                              "mock.")
+    parser.add_argument("--play-record", dest="play_record", default=None,
+                        metavar="PATH",
+                        help="play a saved BenchmarkRecord JSON instead of running the "
+                             "pipeline. The screen says `Recorded demonstration - metrics "
+                             "are not live`, every figure carries the recording's own "
+                             "timestamp, and the live device controls are disabled. No "
+                             "camera, model or device is opened on this path.")
     parser.add_argument("--release", dest="release", action="store_true",
                         default=RELEASE_BY_DEFAULT,
                         help="refuse to start with a simulated provider registered. "
@@ -1757,6 +1829,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         print("FAIL: " + ", ".join(summary["failed"]), file=sys.stderr, flush=True)
         return 1
+
+    if args.play_record:
+        # **A playback is its own mode, and the flags that would make it a live run are
+        # refused rather than ignored.** `--headless` cannot show a notice; `--select` and
+        # `--streams` describe live cameras, and a playback has none to move or count.
+        if args.headless or args.selftest:
+            print(f"--play-record cannot be combined with "
+                  f"{'--headless' if args.headless else '--selftest'}: a playback is a "
+                  f"windowed screen, and a headless run would discard the notice that "
+                  f"makes it unmistakable.", file=sys.stderr, flush=True)
+            return 2
+        if args.select:
+            print("--play-record cannot be combined with --select: the live device "
+                  "controls are disabled while a recording plays.", file=sys.stderr,
+                  flush=True)
+            return 2
+        if int(args.streams or 1) != 1:
+            print(f"--play-record cannot run --streams {args.streams}: a playback shows "
+                  f"the recorded run, not a live camera layout.", file=sys.stderr,
+                  flush=True)
+            return 2
+        return run_recorded(args.play_record)
 
     if args.headless:
         # **`--streams` is refused in headless, not silently ignored.** The flag used to be

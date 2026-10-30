@@ -39,6 +39,14 @@ QtObject {
             ? bridge.recorded_footage_label
             : "Recorded footage \u2022 live inference"
 
+    // **M5 Task 4: the surface's own name.** One string, chosen by the one fact that
+    // decides which screen is up. The live label is *absent* during a playback - not
+    // merely covered by an overlay - because `Main.qml` binds its `visible` to the
+    // inverse of `recorded_mode`. This property is what the window title says, so the
+    // title cannot keep claiming live inference over a recording.
+    readonly property string surfaceLabel:
+        bridge.recorded_mode ? bridge.recorded_demo_label : recordedFootageLabel
+
     // ---- device honesty ------------------------------------------------------------
 
     readonly property string deviceBadge: bridge.device_display

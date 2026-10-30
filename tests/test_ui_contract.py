@@ -48,6 +48,7 @@ module needs no event loop of its own.
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -135,6 +136,63 @@ def _sample(name: str, value, *, validity, window: float = 0.25, now: float = 1.
         sampled_at=now, validity=validity,
         unavailable_reason=("nothing was measured" if value is None else None),
     )
+
+
+def _benchmark_record(*, samples=None, started_at: str = "2026-10-01T10:00:00",
+                      mode: str = "recorded"):
+    """A real `BenchmarkRecord` for the recorded-mode tests.
+
+    `samples` is `[(metric, value, sampled_at, unit)]`; `value=None` becomes an
+    `UNAVAILABLE` sample and its reason travels in the record's own map, which is the
+    contract's rule. Nothing here is a stand-in: the recorded surface renders the record's
+    samples, so a hand-built record is the object under test.
+    """
+    from app.contracts.benchmark_record import (
+        BenchmarkRecord, EnvironmentManifest, RecordedSample, SamplePhase, TrialSummary,
+        WorkloadFingerprint,
+    )
+    from app.contracts.device_status import Validity
+    from app.contracts.metric_sample import MetricSample
+
+    if samples is None:
+        samples = [
+            ("latency_ms", 4.0, 10.0, "ms"),
+            ("system_cpu_percent", 18.4, 11.0, "percent"),
+            ("ai_fps", 14.9, 12.0, "fps"),
+        ]
+    built = []
+    reasons = {}
+    for metric, value, at, unit in samples:
+        reason = None if value is not None else "counter unreadable"
+        if reason is not None:
+            reasons[metric] = reason
+        built.append(RecordedSample(
+            sample=MetricSample(
+                name=metric, value=value, unit=unit, provider="test",
+                device_scope="CPU", process_scope=("worker",),
+                window_seconds=(1.0 if value is not None else 0.0),
+                sampled_at=at,
+                validity=(Validity.VALID if value is not None else Validity.UNAVAILABLE),
+                unavailable_reason=reason),
+            phase=SamplePhase.SETTLED))
+    fingerprint = WorkloadFingerprint(
+        model_id="yolo11n-fp16", model_sha256="a" * 64, input_shape=(1, 3, 640, 640),
+        conf_threshold=0.25, iou_threshold=0.45, stream_count=1, target_fps=15.0,
+        device_layout=("CPU",), decode_path="msmf", openvino_version="2026.4.0",
+        numpy_version="2.5.3")
+    environment = EnvironmentManifest(
+        machine_id="booth-01", cpu="Intel(R) Core(TM) Ultra 9 288V",
+        gpu="Intel(R) Arc(TM) Graphics", npu="Intel(R) AI Boost",
+        gpu_driver="32.0.101.7026", npu_driver="32.0.100.3104",
+        windows_build="10.0.26100", ram_bytes=32 * 1024 ** 3,
+        power_plan="Balanced", ac_status="AC", monitor="1920x1080 @ 2 m",
+        python_version="3.12.10")
+    return BenchmarkRecord(
+        mode=mode, started_at=started_at, duration_s=60.0, fingerprint=fingerprint,
+        environment=environment, samples=tuple(built),
+        trial_summary=(TrialSummary(condition="sustained", placement=("CPU",)),),
+        exclusions=(), comparison_eligible=False, unavailable_reasons=reasons,
+        warmup_s=0.0)
 
 
 #: The seed M1's render has always used: one stream, one confirmed CPU placement with a
@@ -2967,7 +3025,132 @@ class AttractModeState(unittest.TestCase):
         self.assertTrue(attract_mode_permitted(release=True, providers=("psutil",)))
 
 
-#: The live items whose positions must be identical with the drawer open and closed.
+class RecordedDemonstrationState(unittest.TestCase):
+    """**M5 Task 4**, the bridge half: a playback says what it is and cannot be live.
+
+    The screen half (`RecordedDemonstrationOnTheScreen`) drives the real QML. This one
+    asserts the state it rests on: a live screen refuses a playback, a playback's figures
+    come from the record and carry its timestamp, and leaving restores the live fields.
+    """
+
+    def test_a_recording_cannot_be_entered_while_a_live_stream_is_running(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        bridge.set_streams(["A"])
+        bridge.apply_route({"stream": "A", "requested": "CPU", "confirmed": ["CPU"],
+                            "state": "active", "fell_back": False, "errors": []})
+        bridge.set_stream_metrics("A", age_p50_ms=63.0, age_p95_ms=88.0, backlog=0,
+                                  analysis_fps=14.9, window_samples=256)
+        self.assertTrue(bridge.live_stream_running)
+        self.assertFalse(bridge.enter_recorded(_benchmark_record()),
+                         "a playback was loaded over a running live camera")
+        self.assertFalse(bridge.recorded_mode)
+        self.assertIn("live work is running", bridge.recorded_refusal)
+        self.assertIn("camera", bridge.recorded_refusal)
+
+    def test_nothing_to_play_until_a_record_is_loaded(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        self.assertFalse(bridge.recorded_mode)
+        self.assertEqual(bridge.recorded_demo_label,
+                         "Recorded demonstration \u2014 metrics are not live",
+                         "the playback's own notice changed")
+        self.assertEqual(bridge.recorded_metrics, [])
+
+    def test_a_recording_enters_and_every_shown_figure_carries_its_timestamp(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        record = _benchmark_record(started_at="2026-10-01T10:00:00")
+        self.assertTrue(bridge.enter_recorded(record), bridge.recorded_refusal)
+        self.assertTrue(bridge.recorded_mode)
+        self.assertTrue(bridge.recorded_metrics,
+                        "a loaded record with samples rendered no metric rows")
+        for row in bridge.recorded_metrics:
+            self.assertEqual(row["name"], row["name"].strip())
+            self.assertTrue(row["text"].strip(), row)
+            self.assertIn("2026-10-01T10:00:00", row["timestamp"],
+                          f"a recorded metric has no date: {row}")
+            self.assertIn("into the recording", row["timestamp"], row)
+        names = {row["name"] for row in bridge.recorded_metrics}
+        self.assertEqual(names, {"latency_ms", "system_cpu_percent", "ai_fps"})
+
+    def test_an_unavailable_recorded_metric_says_so_and_is_never_zero(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        record = _benchmark_record(samples=[
+            ("npu_utilisation_percent", None, 10.0, "percent"),
+            ("latency_ms", 0.0, 11.0, "ms"),
+        ])
+        self.assertTrue(bridge.enter_recorded(record), bridge.recorded_refusal)
+        rows = {row["name"]: row["text"] for row in bridge.recorded_metrics}
+        self.assertIn("unavailable", rows["npu_utilisation_percent"])
+        self.assertIn("counter unreadable", rows["npu_utilisation_percent"])
+        self.assertEqual(rows["latency_ms"], "0 ms",
+                         "a recorded measured zero must render as a number, not unavailable")
+
+    def test_leaving_restores_the_live_screen_and_its_label(self):
+        from app.ui.bridge import RECORDED_FOOTAGE_LABEL, UiBridge
+
+        bridge = UiBridge()
+        before = {key: value for key, value in bridge.__dict__.items()
+                  if key not in {"_recorded_record", "_recorded_metrics",
+                                 "_recorded_metrics_hidden", "_recorded_source",
+                                 "_recorded_source_name", "_recorded_refusal"}}
+        self.assertTrue(bridge.enter_recorded(_benchmark_record()))
+        self.assertTrue(bridge.leave_recorded())
+        self.assertFalse(bridge.recorded_mode)
+        self.assertEqual(bridge.recorded_metrics, [])
+        self.assertEqual(bridge.recorded_footage_label, RECORDED_FOOTAGE_LABEL)
+        after = {key: value for key, value in bridge.__dict__.items()
+                 if key not in {"_recorded_record", "_recorded_metrics",
+                                "_recorded_metrics_hidden", "_recorded_source",
+                                "_recorded_source_name", "_recorded_refusal"}}
+        self.assertEqual(after, before, "leaving a playback changed a live field")
+
+    def test_the_live_device_control_is_refused_while_recorded(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        emitted = []
+        bridge.deviceRequested.connect(lambda sid, dev: emitted.append((sid, dev)))
+        self.assertTrue(bridge.request_device("NPU"))
+        self.assertEqual(emitted, [("A", "NPU")])
+        self.assertTrue(bridge.enter_recorded(_benchmark_record()))
+        emitted.clear()
+        self.assertFalse(bridge.request_device("GPU"),
+                         "a live device control accepted a request during a playback")
+        self.assertEqual(bridge.device_control, "NPU",
+                         "a refused request changed the screen's accepted request")
+        self.assertEqual(emitted, [], "a playback emitted a live device request")
+
+    def test_a_playback_cannot_be_replaced_by_the_idle_screen(self):
+        from app.ui.bridge import UiBridge
+
+        bridge = UiBridge()
+        self.assertTrue(bridge.enter_recorded(_benchmark_record()))
+        bridge.set_attract(True)
+        self.assertFalse(bridge.attract_active,
+                         "the idle screen replaced a loaded record with another record")
+
+    def test_the_recorded_metric_list_is_bounded_and_says_what_it_hid(self):
+        from app.ui.bridge import RECORDED_METRIC_LIMIT, UiBridge
+
+        bridge = UiBridge()
+        samples = [(f"metric_{index:02d}", float(index), float(index), "ms")
+                   for index in range(RECORDED_METRIC_LIMIT + 3)]
+        self.assertTrue(bridge.enter_recorded(_benchmark_record(samples=samples)))
+        self.assertEqual(len(bridge.recorded_metrics), RECORDED_METRIC_LIMIT)
+        self.assertIn("more measured metrics", bridge.recorded_metrics_note)
+        self.assertIn(str(3), bridge.recorded_metrics_note)
+        for row in bridge.recorded_metrics:
+            self.assertIn("2026-10-01T10:00:00", row["timestamp"])
+
+
+
 #: **Named explicitly, and compared one by one**, because "nothing threw" is not the claim
 #: the brief asks for - it asks that the hero, the badges, the tiles and the staleness line
 #: do not move, item by item.
@@ -3930,6 +4113,402 @@ class AttractModeOnTheScreen(unittest.TestCase):
                          f"{moved[:8]}")
         self.assertEqual(attract["after_exit_census"], attract["before_census"],
                          "the font census changed across an attract-mode round trip")
+
+
+# ======================================================================================
+# M5 Task 4: recorded-demonstration mode, as rendered
+# ======================================================================================
+#
+# **One child, because a `QGuiApplication` is a singleton.** It drives the real
+# `Main.qml` three times over the *same* window:
+#
+#   1. a record loaded before the scene exists - the playback is on screen;
+#   2. the record left - the live screen returns, and the live control works again;
+#   3. live work seeded and a playback attempted - refused, and the screen stays live.
+#
+# The device control is clicked in states (1) and (2). "Disabled" is therefore two claims:
+# the rendered `enabled` property is false **and** the click emitted no request. A control
+# that is painted disabled and still acts is the defect the brief names.
+_RECORDED_SCRIPT = r'''
+import json
+import os
+import sys
+
+sys.path.insert(0, @REPO@)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QPoint, QPointF, QUrl, Qt
+from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickWindow
+from PySide6.QtTest import QTest
+
+import app.theme as theme_module
+import tools.capture_ui as harness
+from app.contracts.benchmark_record import BenchmarkRecord
+from app.ui.bridge import ThemeTokens, UiBridge
+from app.ui.provider import FrameImageProvider
+
+application = QGuiApplication(sys.argv[:1])
+QFontDatabase.addApplicationFont(@FONT@)
+
+with open(@RECORD@, encoding="utf-8") as handle:
+    record = BenchmarkRecord.from_json(json.load(handle))
+
+bridge = UiBridge(application)
+bridge.set_recorded_source(@RECORD@)
+entered = bridge.enter_recorded(record)
+
+engine = QQmlApplicationEngine()
+engine.addImageProvider("frames", FrameImageProvider(bridge))
+context = engine.rootContext()
+context.setContextProperty("bridge", bridge)
+context.setContextProperty("Theme", ThemeTokens(application))
+engine.load(QUrl.fromLocalFile(os.path.join(@REPO@, "app", "ui", "Main.qml")))
+root = next((r for r in engine.rootObjects() if isinstance(r, QQuickWindow)), None)
+if root is None:
+    print("REPORT " + json.dumps({"errors": ["Main.qml produced no window"], "done": True}))
+    sys.exit(5)
+root.setWidth(float(theme_module.CANVAS_WIDTH))
+root.setHeight(float(theme_module.CANVAS_HEIGHT))
+bridge.set_streams(["A"])
+root.setProperty("drawerOpen", True)
+
+report = {"emissions": [], "entered": bool(entered), "errors": []}
+bridge.deviceRequested.connect(
+    lambda stream_id, device_id: report["emissions"].append([stream_id, device_id]))
+
+
+def render():
+    root.grabWindow()
+    application.processEvents()
+
+
+def walk():
+    return {name: item for name, item in harness.walk_items(root.contentItem())
+            if item is not None}
+
+
+def read():
+    render()
+    return harness.read_scene(
+        root.contentItem(),
+        window_rect=(0.0, 0.0, float(root.width()), float(root.height())))
+
+
+def enabled(name):
+    item = walk().get(name)
+    return None if item is None else bool(item.property("enabled"))
+
+
+def opacity(name):
+    item = walk().get(name)
+    return None if item is None else float(item.property("opacity"))
+
+
+def click(name):
+    render()
+    items = walk()
+    if name not in items:
+        raise AssertionError("no item named %r; have %s" % (name, sorted(items)))
+    item = items[name]
+    pos = item.mapToScene(QPointF(item.width() / 2.0, item.height() / 2.0))
+    QTest.mouseClick(root, Qt.LeftButton, Qt.NoModifier,
+                     QPoint(int(round(pos.x())), int(round(pos.y()))))
+    application.processEvents()
+
+
+def snapshot():
+    scene = read()
+    return {
+        "strings": dict(scene.strings),
+        "visible": dict(scene.visible),
+        "font_pixels": dict(scene.font_pixels),
+        "overflow": list(scene.overflow),
+    }
+
+
+QTest.qWait(400)
+
+# -- 1. the playback -----------------------------------------------------------------
+recorded = snapshot()
+report["recorded"] = {
+    "notice": recorded["strings"].get("recordedNoticeText", ""),
+    "notice_visible": recorded["visible"].get("recordedNoticeText", False),
+    "live_label": recorded["strings"].get("recordedFootageText", ""),
+    "live_label_visible": recorded["visible"].get("recordedFootageText", False),
+    "live_screen_visible": recorded["visible"].get("liveScreen", False),
+    "overlay_visible": recorded["visible"].get("recordedOverlay", False),
+    "overlay_present": "recordedOverlay" in recorded["strings"]
+                       or "recordedOverlay" in recorded["visible"],
+    "source": recorded["strings"].get("recordedSourceText", ""),
+    "note": recorded["strings"].get("recordedMetricsNote", ""),
+    "notice_font_px": recorded["font_pixels"].get("recordedNoticeText"),
+    "metric_rows": {
+        name: recorded["strings"][name] for name in sorted(recorded["strings"])
+        if name.startswith("recordedMetric_")
+    },
+    "metric_times": {
+        name: recorded["strings"][name] for name in sorted(recorded["strings"])
+        if name.startswith("recordedMetricTime_")
+    },
+    "overflow": [name for name in recorded["overflow"]
+                 if name.startswith("recorded")],
+    "control_cpu_enabled": enabled("deviceControl_CPU"),
+    "control_mouse_cpu_enabled": enabled("deviceControlMouse_CPU"),
+    "control_npu_enabled": enabled("deviceControl_NPU"),
+    "control_cpu_opacity": opacity("deviceControl_CPU"),
+    "control_notice": recorded["strings"].get("deviceControlNotice", ""),
+    "control_notice_visible": recorded["visible"].get("deviceControlNotice", False),
+}
+report["emissions"].clear()
+click("deviceControlMouse_CPU")
+report["recorded"]["emissions_after_click"] = list(report["emissions"])
+report["recorded"]["device_control_after_click"] = str(bridge.device_control)
+
+# **Continuously, not a flash.** The same notice is read again after the screen has had
+# time to update; there is no timer that removes it.
+QTest.qWait(400)
+again = snapshot()
+report["recorded"]["notice_visible_again"] = again["visible"].get(
+    "recordedNoticeText", False)
+
+# -- 2. leaving the playback: the live mirror -----------------------------------------
+report["left"] = bool(bridge.leave_recorded())
+QTest.qWait(300)
+live = snapshot()
+report["live"] = {
+    "notice": live["strings"].get("recordedNoticeText", ""),
+    "notice_visible": live["visible"].get("recordedNoticeText", False),
+    "live_label": live["strings"].get("recordedFootageText", ""),
+    "live_label_visible": live["visible"].get("recordedFootageText", False),
+    "live_screen_visible": live["visible"].get("liveScreen", False),
+    "control_npu_enabled": enabled("deviceControl_NPU"),
+}
+report["emissions"].clear()
+click("deviceControlMouse_NPU")
+report["live"]["emissions_after_click"] = list(report["emissions"])
+report["live"]["device_control_after_click"] = str(bridge.device_control)
+
+# -- 3. live work running: a playback must be refused --------------------------------
+bridge.apply_route({"stream": "A", "requested": "CPU", "confirmed": ["CPU"],
+                    "state": "active", "fell_back": False, "errors": []})
+bridge.set_stream_metrics("A", age_p50_ms=63.0, age_p95_ms=88.0, backlog=0,
+                          analysis_fps=14.9, window_samples=256)
+bridge.set_frames_analysed(1)
+QTest.qWait(100)
+report["refused"] = bool(bridge.enter_recorded(record))
+report["refusal"] = str(bridge.recorded_refusal)
+refused = snapshot()
+report["after_refusal"] = {
+    "notice_visible": refused["visible"].get("recordedNoticeText", False),
+    "live_label_visible": refused["visible"].get("recordedFootageText", False),
+    "live_screen_visible": refused["visible"].get("liveScreen", False),
+    "recorded_mode": bool(bridge.recorded_mode),
+}
+
+report["done"] = True
+print("REPORT " + json.dumps(report))
+sys.stdout.flush()
+sys.exit(0)
+'''
+
+
+def _recorded_report() -> dict:
+    """Run the recorded-mode child once and return its report. Cached."""
+    global _RECORDED_CACHE
+    if _RECORDED_CACHE is not None:
+        return _RECORDED_CACHE
+    with tempfile.TemporaryDirectory(prefix="roadshow-recorded-") as tmp:
+        record_path = Path(tmp) / "record.json"
+        record_path.write_text(json.dumps(_benchmark_record().to_json()), encoding="utf-8")
+        script = Path(tmp) / "recorded.py"
+        script.write_text(
+            _RECORDED_SCRIPT
+            .replace("@REPO@", repr(str(REPO_ROOT)))
+            .replace("@FONT@", repr(str(RENDER_FONT)))
+            .replace("@RECORD@", repr(str(record_path))),
+            encoding="utf-8")
+        env = dict(os.environ)
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        completed = subprocess.run(
+            [sys.executable, str(script)], capture_output=True, text=True,
+            timeout=180, cwd=str(REPO_ROOT), env=env)
+    lines = [line for line in completed.stdout.splitlines() if line.startswith("REPORT ")]
+    if not lines:
+        raise AssertionError(
+            "the recorded-mode child produced no report.\nSTDOUT:\n"
+            + completed.stdout[-3000:] + "\nSTDERR:\n" + completed.stderr[-3000:])
+    report = json.loads(lines[-1][len("REPORT "):])
+    if report.get("errors"):
+        raise AssertionError(f"the recorded-mode child failed: {report['errors']}")
+    if not report.get("done"):
+        raise AssertionError("the recorded-mode child printed a report but never finished")
+    _RECORDED_CACHE = report
+    return report
+
+
+_RECORDED_CACHE: dict | None = None
+
+
+class RecordedDemonstrationOnTheScreen(unittest.TestCase):
+    """**The mirror of the mandatory live label**, read from the rendered scene graph.
+
+    A loaded record must: show `Recorded demonstration - metrics are not live`
+    continuously; have the live label **absent** (its own `visible` is false, not merely
+    covered); disable the live device controls so a click emits no request; and put the
+    recording's date on every figure it shows. Leaving it must restore the live label and
+    re-enable the control. Entering it while live work runs must be refused.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = _recorded_report()
+        cls.record = _benchmark_record()
+
+    def test_the_playback_was_actually_entered(self):
+        self.assertTrue(self.report["entered"],
+                        f"the record was not loaded: {self.report.get('refusal')}")
+
+    def test_the_notice_is_on_screen_and_the_live_label_is_absent(self):
+        recorded = self.report["recorded"]
+        self.assertEqual(recorded["notice"],
+                         "Recorded demonstration \u2014 metrics are not live", recorded)
+        self.assertTrue(recorded["notice_visible"],
+                        "the recorded notice is not visible on the playback")
+        self.assertTrue(recorded["notice_visible_again"],
+                        "the recorded notice disappeared after 400 ms; it must be continuous")
+        self.assertTrue(recorded["overlay_visible"],
+                        "the recorded overlay is not visible")
+        self.assertFalse(recorded["live_label_visible"],
+                         "the live label is visible while a recording plays")
+        self.assertFalse(recorded["live_screen_visible"],
+                         "the live screen is visible while a recording plays")
+
+    def test_the_live_device_controls_are_disabled_and_do_not_respond(self):
+        recorded = self.report["recorded"]
+        self.assertIs(recorded["control_cpu_enabled"], False,
+                      "the device control's rendered `enabled` is not false")
+        self.assertIs(recorded["control_mouse_cpu_enabled"], False,
+                      "the device control's MouseArea is still enabled")
+        self.assertLessEqual(recorded["control_cpu_opacity"], 0.5,
+                             "a disabled control must look disabled")
+        self.assertEqual(recorded["emissions_after_click"], [],
+                         "a disabled device control emitted a live request when clicked")
+        self.assertEqual(recorded["device_control_after_click"], "",
+                         "a disabled device control changed the accepted request")
+        self.assertTrue(recorded["control_notice_visible"], recorded)
+        self.assertIn("disabled", recorded["control_notice"].lower())
+
+    def test_every_metric_shown_carries_the_recording_timestamp(self):
+        recorded = self.report["recorded"]
+        rows = recorded["metric_rows"]
+        times = recorded["metric_times"]
+        self.assertGreaterEqual(len(rows), 3, f"no recorded metrics on screen: {recorded}")
+        self.assertEqual(len(rows), len(times),
+                         "a metric row is on screen with no timestamp of its own")
+        for index in range(len(rows)):
+            name = f"recordedMetric_{index}"
+            stamp = times[f"recordedMetricTime_{index}"]
+            text = rows[name]
+            self.assertTrue(text.strip(), f"{name} is blank")
+            self.assertIn(self.record.started_at, stamp,
+                          f"{name} carries no recording date: {stamp}")
+            self.assertIn("into the recording", stamp, stamp)
+        self.assertIn("recorded", self.report["recorded"]["source"])
+
+    def test_the_playback_does_not_overflow_its_own_surface(self):
+        self.assertEqual(self.report["recorded"]["overflow"], [],
+                         "the recorded surface clips its own text")
+
+    def test_leaving_restores_the_live_label_and_the_control(self):
+        live = self.report["live"]
+        self.assertTrue(self.report["left"], "leave_recorded reported nothing to leave")
+        self.assertTrue(live["live_label_visible"],
+                        "the live label did not return when the playback was left")
+        self.assertEqual(live["live_label"],
+                         "Recorded footage \u2022 live inference", live)
+        self.assertFalse(live["notice_visible"],
+                         "the recorded notice is still visible after the playback")
+        self.assertTrue(live["live_screen_visible"],
+                        "the live screen did not return when the playback was left")
+        self.assertIs(live["control_npu_enabled"], True,
+                      "the live device control stayed disabled after the playback")
+        self.assertEqual(live["emissions_after_click"], [["A", "NPU"]],
+                         "the live control did not emit a request after the playback")
+        self.assertEqual(live["device_control_after_click"], "NPU")
+
+    def test_a_playback_cannot_be_entered_while_live_work_is_running(self):
+        self.assertFalse(self.report["refused"],
+                         "a playback was entered over live work")
+        self.assertIn("live work is running", self.report["refusal"])
+        after = self.report["after_refusal"]
+        self.assertFalse(after["recorded_mode"])
+        self.assertFalse(after["notice_visible"],
+                         "a refused playback left its notice on the live screen")
+        self.assertTrue(after["live_label_visible"],
+                        "a refused playback removed the live label")
+        self.assertTrue(after["live_screen_visible"])
+
+
+class RecordedNoticeLegibility(unittest.TestCase):
+    """**The recorded notice meets the same angular target as the body text.**
+
+    The notice is read from the *rendered* scene (`font_pixels`), not from a token: a QML
+    file that drew it at 18 px would pass a token check and fail this one. On the attached
+    monitor 44 px is 16.80' of cap height at 2 m and 11.20' at 3 m; on the 55-inch booth
+    requirement it is 22.9' of cap and 16.6' of x-height at 3 m. The same numbers M4's
+    review records, computed from the same font ratios.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = _recorded_report()
+        from app import theme
+
+        cls.theme = theme
+
+    def _arcmin(self, height_mm: float, distance_m: float) -> float:
+        return math.degrees(2.0 * math.atan(height_mm / (2.0 * distance_m * 1000.0))) * 60.0
+
+    def test_the_notice_is_drawn_at_the_body_size(self):
+        px = self.report["recorded"]["notice_font_px"]
+        self.assertEqual(px, self.theme.TYPE_BOOTH_DETAIL,
+                         f"the recorded notice renders at {px} px, not the body size "
+                         f"{self.theme.TYPE_BOOTH_DETAIL}")
+
+    def test_the_notice_clears_the_cap_target_at_two_metres_on_the_attached_monitor(self):
+        px = self.report["recorded"]["notice_font_px"]
+        cap_px = px * self.theme.ARIAL_CAP_HEIGHT_EM
+        mm = cap_px * self.theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX
+        angle = self._arcmin(mm, 2.0)
+        self.assertGreaterEqual(angle, self.theme.READING_MIN_ARCMIN,
+                                f"the recorded notice subtends {angle:.2f}' of cap height "
+                                f"at 2 m, below {self.theme.READING_MIN_ARCMIN}'")
+
+    def test_the_notice_fails_at_three_metres_on_the_attached_monitor_and_that_is_pinned(self):
+        # The M4 verdict, restated for the notice: the delivered screen passes at 2 m and
+        # fails at 3 m on the monitor actually attached. A test that quietly claimed 3 m
+        # would be the M4 mistake again.
+        px = self.report["recorded"]["notice_font_px"]
+        cap_px = px * self.theme.ARIAL_CAP_HEIGHT_EM
+        mm = cap_px * self.theme.ACTUAL_MONITOR_MM_PER_LOGICAL_PX
+        self.assertAlmostEqual(self._arcmin(mm, 3.0), 11.20, delta=0.05)
+        self.assertLess(self._arcmin(mm, 3.0), self.theme.READING_MIN_ARCMIN)
+
+    def test_the_notice_clears_both_measures_on_the_fifty_five_inch_requirement(self):
+        px = self.report["recorded"]["notice_font_px"]
+        cap = self._arcmin(px * self.theme.ARIAL_CAP_HEIGHT_EM
+                           * self.theme.MM_PER_LOGICAL_PX,
+                           self.theme.BOOTH_VIEWING_DISTANCE_M)
+        xheight = self._arcmin(px * self.theme.ARIAL_X_HEIGHT_EM
+                               * self.theme.MM_PER_LOGICAL_PX,
+                               self.theme.BOOTH_VIEWING_DISTANCE_M)
+        self.assertGreaterEqual(cap, self.theme.READING_MIN_ARCMIN)
+        self.assertGreaterEqual(xheight, self.theme.READING_MIN_ARCMIN)
+        self.assertAlmostEqual(cap, 22.9, delta=0.05)
+        self.assertAlmostEqual(xheight, 16.6, delta=0.05)
 
 
 class TestSuiteHygiene(unittest.TestCase):
