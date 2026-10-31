@@ -5,7 +5,7 @@ A booth failure is diagnosed away from the booth, so the bundle has to be safe t
 That means two things, and both are tested by `tests/test_diagnostic_export.py`:
 
 1. **The gates travel as they are, including failing ones.** The three open gates this
-   project reports are content (3 of 12 clips, 0 rights-cleared), legibility (fails at 3 m
+   project reports are content (9 of 12 clips, 0 rights-cleared), legibility (fails at 3 m
    on the attached monitor) and the 2 s warm transition (p50 2.238 s in M2's session; the
    committed 2 s-gate file's p50 is 2.628 s, with 37 of 50 over). A diagnosis that leaves
    out a failing gate is worse than none, so `gates.json` carries a `status` per gate and

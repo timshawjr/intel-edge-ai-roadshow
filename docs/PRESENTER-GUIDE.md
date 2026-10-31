@@ -110,11 +110,14 @@ A playback is refused while live work is running, and it is refused with `--head
 These are **not** closed. They belong in what you say to a customer, not only in the
 qualification report.
 
-**Failed — content: 3 of 12 clips, 0 rights-cleared.** The specification asks for four
+**Failed — content: 9 of 12 clips, 0 rights-cleared.** The specification asks for four
 scenario packs of three 45–90 s clips each, twelve in all, with a recorded redistribution
-position. What is provisioned is one pack and three clips, only one of them inside the
-45–90 s band, and none rights-cleared: no licence text is embedded and no licence file sits
-beside any clip. The shelf-to-basket scenario is **not provisioned**. Do not describe the
+position. What is provisioned is one pack and nine clips, four of them inside the 45–90 s
+band. Six Intel sample-videos clips were added on 2026-10-31 under CC BY 4.0, each with a
+per-clip licence sidecar; a sidecar records provenance, not clearance, so the gate still
+records **0 rights-cleared**. Three of the new clips (`bottle-detection.mp4`,
+`car-detection.mp4`, `classroom.mp4`) measure under 45 s — a recorded deviation, not an
+in-band result. The shelf-to-basket scenario is **not provisioned**. Do not describe the
 demo as a shelf-to-basket demonstration.
 
 **Failed at 3 m — legibility on the monitor actually attached.** On the actual DELL

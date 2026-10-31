@@ -11,7 +11,7 @@ guide as prose and nod at it:
 3. **The guide repeats the code's own refusal.** `--streams` is refused in `--headless`
    with a stated reason; the test invokes the CLI and reads that refusal, and asserts the
    guide says the same thing.
-4. **The three open gates are in the guide with their numbers** - content (3 of 12 clips,
+4. **The three open gates are in the guide with their numbers** - content (9 of 12 clips,
    0 rights-cleared), legibility (passes at 2 m, fails at 3 m on the measured monitor) and
    the 2 s warm transition (p50 2.238 s, 37 of 50 over the target). A presenter who does
    not say these will be contradicted by the room.
@@ -158,8 +158,8 @@ class CommandsTheGuidePrintsExistInTheCli(unittest.TestCase):
 
 
 class TheThreeOpenGatesAreInTheGuide(unittest.TestCase):
-    def test_the_content_gate_is_three_of_twelve_and_zero_rights_cleared(self):
-        paragraph = _paragraph_with(_guide(), "3 of 12")
+    def test_the_content_gate_is_nine_of_twelve_and_zero_rights_cleared(self):
+        paragraph = _paragraph_with(_guide(), "9 of 12")
         self.assertIn("0 rights-cleared", paragraph)
         self.assertIn("shelf-to-basket", paragraph)
         self.assertIn("not provisioned", paragraph)

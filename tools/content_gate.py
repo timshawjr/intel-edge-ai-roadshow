@@ -20,14 +20,25 @@ fit a band, or invent a clip that is not on disk: it measures every file with
   carry a grant, and scanning for the word "license" in a container would produce a claim
   with nothing behind it. So each clip is recorded as **unverified** unless a licence file
   sits beside it, and even then the status is "licence file present, clearance not
-  established". This is the honest measurement, and it is why rights is an unmet gate
-  rather than a checkbox.
+  established". A sidecar records provenance; it is not a clearance, and this module never
+  reports one as cleared. This is the honest measurement, and it is why rights is an unmet
+  gate rather than a checkbox.
+- **A licence sidecar is clip-scoped.** It is named `<clip>.<suffix>` (for example
+  `people-detection.mp4.LICENSE`) or `<stem>.<suffix>`. A bare `LICENSE` in the folder is
+  not used: one file cannot be attributed to every clip beside it, and treating it that way
+  is exactly the assumption this gate exists to refuse.
 
 ## The shortfall this module exists to report
 
-Provisioned: **3 clips, 1 pack, 1 clip inside the 45-90 s band**. Required: **12 clips,
+Provisioned: **9 clips, 1 pack, 4 clips inside the 45-90 s band**. Required: **12 clips,
 4 packs, every clip inside the band**. The verdicts below carry those numbers; nothing in
 this module turns a shortfall into a pass.
+
+**The sub-45 s clips are a recorded deviation, not an in-band result.** The operator chose
+to provision six Intel sample-videos clips, three of which measure under 45 s
+(`bottle-detection.mp4`, `car-detection.mp4`, `classroom.mp4`). They are inventoried like
+every other clip and the duration verdict counts them as **outside the band**. A product
+decision to use a shorter clip does not move the specification's boundary.
 """
 
 from __future__ import annotations
@@ -150,8 +161,15 @@ class ContentInventory:
 
     @property
     def clips_with_unverified_rights(self) -> tuple[ContentClip, ...]:
+        """Every clip whose rights are *not* recorded as cleared.
+
+        A licence sidecar does **not** clear a clip: its status reads "licence file
+        present; clearance not established". Counting only `"not cleared"` here would
+        silently reclassify every sidecarred clip as cleared, which would upgrade a
+        provenance record into a clearance. Only a literal `cleared` status counts.
+        """
         return tuple(clip for clip in self.clips
-                     if clip.rights_status.startswith("not cleared"))
+                     if not clip.rights_status.startswith("cleared"))
 
     def verdicts(self) -> tuple[GateVerdict, ...]:
         """One verdict per requirement. **Nothing here is rounded in the requirement's
@@ -159,6 +177,10 @@ class ContentInventory:
         clip_count = len(self.clips)
         in_band = len(self.clips_in_band)
         cleared = clip_count - len(self.clips_with_unverified_rights)
+        with_sidecar = sum(1 for clip in self.clips
+                           if clip.rights_status.startswith("licence file present"))
+        without_sidecar = sum(1 for clip in self.clips
+                              if clip.rights_status.startswith("not cleared"))
         return (
             GateVerdict(
                 requirement="three 45-90 s clips per pack",
@@ -198,9 +220,11 @@ class ContentInventory:
                 required=f"{clip_count} cleared clip(s)",
                 provisioned=f"{cleared} cleared clip(s)",
                 met=cleared == clip_count and clip_count > 0,
-                gap=("no licence text is embedded in any clip and no licence file sits "
-                     "beside one; clearance is an operator dependency, not an engineering "
-                     "step"),
+                gap=(f"{len(self.clips_with_unverified_rights)} clip(s) are not cleared: "
+                     f"{with_sidecar} carry a licence sidecar (status 'licence file "
+                     f"present; clearance not established'), {without_sidecar} have no "
+                     f"licence file beside them. A sidecar records provenance, not "
+                     f"clearance; clearance is an operator/legal dependency"),
             ),
         )
 
@@ -283,15 +307,30 @@ def _usage(path: Path) -> tuple[bool, tuple[str, ...]]:
     return bool(used_in), tuple(used_in)
 
 
+def _sidecar(path: Path) -> Path | None:
+    """The clip-scoped licence sidecar beside `path`, or `None`.
+
+    Accepted names are `<clip>.<suffix>` (`people-detection.mp4.LICENSE`) and
+    `<stem>.<suffix>` (`people-detection.LICENSE`). A bare `LICENSE` in the directory is
+    **not** accepted: it cannot be attributed to one clip, and treating it as covering
+    every clip in the folder is the unearned assumption this gate refuses.
+    """
+    for name in LICENCE_SIDECARS:
+        for candidate in (path.with_name(f"{path.name}.{name}"),
+                          path.with_name(f"{path.stem}.{name}")):
+            if candidate.exists():
+                return candidate
+    return None
+
+
 def _rights(path: Path) -> tuple[str, str]:
     """`(licence, rights_status)` from what is **beside the file**, never assumed."""
-    for name in LICENCE_SIDECARS:
-        sidecar = path.with_name(name)
-        if sidecar.exists():
-            text = sidecar.read_text(encoding="utf-8", errors="replace").strip()
-            first = text.splitlines()[0] if text else ""
-            return (first or "licence file present but empty",
-                    "licence file present; clearance not established")
+    sidecar = _sidecar(path)
+    if sidecar is not None:
+        text = sidecar.read_text(encoding="utf-8", errors="replace").strip()
+        first = text.splitlines()[0] if text else ""
+        return (first or "licence file present but empty",
+                "licence file present; clearance not established")
     return ("unverified - no licence text is embedded in the file",
             "not cleared - no licence file sits beside the clip")
 
@@ -352,12 +391,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"provisioned: {len(inventory.clips)} clip(s), "
           f"{inventory.packs_provisioned} pack(s)")
     print()
-    header = (f"{'clip':44s} {'resolution':11s} {'fps':>7s} {'frames':>6s} "
+    header = (f"{'clip':52s} {'resolution':11s} {'fps':>7s} {'frames':>6s} "
               f"{'duration s':>10s} {'band':>5s} {'app':>4s}")
     print(header)
     print("-" * len(header))
     for clip in inventory.clips:
-        print(f"{clip.path:44s} {clip.width}x{clip.height:<6d} {clip.fps:7.3f} "
+        print(f"{clip.path:52s} {clip.width}x{clip.height:<6d} {clip.fps:7.3f} "
               f"{clip.frames:6d} {clip.duration_s:10.5f} "
               f"{'yes' if clip.inside_duration_band else 'NO':>5s} "
               f"{'yes' if clip.used_by_app else 'no':>4s}")

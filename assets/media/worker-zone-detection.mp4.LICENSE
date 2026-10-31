@@ -1,0 +1,24 @@
+Licence: Creative Commons Attribution 4.0 International (CC BY 4.0)
+Licence text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Source repository: https://github.com/intel-iot-devkit/sample-videos
+File in repository: worker-zone-detection.mp4 (repository root, branch master; the repository was archived
+  by its owner on 2024-09-30 and is read-only)
+Retrieved: 2026-10-31
+SHA-256 of the file as provisioned: b8b58b8100a81600bc42ee7ee082ced777b12a32a3619139ef289d27cbdcd284
+Bytes as provisioned: 12596893
+Measured as provisioned: 1920x1080, 59.94006 fps, 4548 frames,
+  75.87580 s (cv2.VideoCapture; duration = frames / fps)
+
+Attribution to display:
+  "worker-zone-detection.mp4" - Intel IoT DevKit sample-videos, licensed under CC BY 4.0.
+  https://github.com/intel-iot-devkit/sample-videos
+
+Rights caveat:
+  CC BY 4.0 section 2(b)(1) does not license publicity, privacy or other similar
+  personality rights. The licence grants copyright permissions only; footage showing
+  identifiable people carries a rights question this licence does not answer.
+
+Clearance status:
+  This sidecar records provenance, not clearance. tools/content_gate.py reports
+  "licence file present; clearance not established" and never "cleared".
