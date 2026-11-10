@@ -8,7 +8,8 @@ clips**. The repository does not have that, and this suite's job is to make the 
    `DECLARED` table below is what those measurements are, and the test fails if a clip is
    added, removed or re-encoded without the table being updated.
 2. Every gate verdict carries the requirement, the provisioned number and the **gap**.
-   `met` is false for the clip count, the duration band, the pack count and rights.
+   `met` is false for the clip count, the duration band and rights; the four pack
+   manifests now exist, so the pack count is the one row that is met.
 3. Rights are **not** inferred from a filename: three clips have no licence sidecar and are
    recorded `not cleared`; six have a CC BY 4.0 sidecar and are recorded `licence file
    present; clearance not established`. A sidecar is never upgraded to `cleared`, and the
@@ -257,11 +258,15 @@ class TheGateReportsTheShortfall(unittest.TestCase):
                           self.inventory.max_duration_s), (45.0, 90.0))
 
     def test_the_gate_is_not_met_and_does_not_round_the_count_up(self):
+        # **M5 clip wiring: the pack count is now met.** The four manifests exist, so the
+        # gate reports four packs; the clip count, the duration band and rights are still
+        # unmet, and the overall verdict is still NOT MET. The pack verdict being met is
+        # not a rounding-up of the other three.
         self.assertFalse(self.inventory.met,
                          "the content gate reports itself met; 9 clips is not 12")
         self.assertEqual(len(self.inventory.clips), 9)
         self.assertEqual(len(self.inventory.clips_in_band), 4)
-        self.assertEqual(self.inventory.packs_provisioned, 1)
+        self.assertEqual(self.inventory.packs_provisioned, 4)
 
     def test_the_clip_count_verdict_names_the_three_missing_clips(self):
         verdict = self.verdicts["three 45-90 s clips per pack"]
@@ -299,11 +304,13 @@ class TheGateReportsTheShortfall(unittest.TestCase):
                              f"{path} was counted inside a band it does not meet")
             self.assertAlmostEqual(clip.duration_shortfall_s, 45.0 - duration)
 
-    def test_the_pack_verdict_names_the_three_missing_packs(self):
+    def test_the_pack_verdict_records_the_four_manifests_that_exist(self):
+        # The four spec packs now have committed manifests. The clip count and the band
+        # remain unmet; this row is about packs only.
         verdict = self.verdicts["four scenario packs"]
-        self.assertFalse(verdict.met)
-        self.assertEqual(verdict.provisioned, "1 pack(s)")
-        self.assertIn("missing 3 pack(s)", verdict.gap)
+        self.assertTrue(verdict.met)
+        self.assertEqual(verdict.provisioned, "4 pack(s)")
+        self.assertIn("missing 0 pack(s)", verdict.gap)
 
     def test_rights_record_a_sidecar_as_provenance_and_never_as_clearance(self):
         verdict = self.verdicts["rights-cleared footage"]
@@ -324,14 +331,17 @@ class TheGateReportsTheShortfall(unittest.TestCase):
             self.assertTrue(clip.rights_status.startswith("not cleared"), path)
             self.assertIn("unverified", clip.licence, path)
 
-    def test_usage_is_read_from_the_application_not_from_a_manifest(self):
+    def test_usage_is_read_from_the_application_and_the_catalogue(self):
+        # **M5 clip wiring:** every catalogue clip is selectable, so every one is used.
+        # `app/engine/retail_config.py` still names the retail path directly; the other
+        # eight are used through `config/clips.json`, which `app.engine.clips` reads.
         used = {clip.path for clip in self.inventory.clips_used_by_app}
-        self.assertEqual(used, {"assets/media/retail-checkout.mp4"},
-                         "the clips the application actually opens changed; the inventory "
-                         "must say which files the code names, not which a manifest lists")
+        self.assertEqual(used, {clip.path for clip in self.inventory.clips},
+                         "a catalogued clip the application can select was reported unused")
         retail = next(clip for clip in self.inventory.clips
                       if clip.path == "assets/media/retail-checkout.mp4")
         self.assertIn("app/engine/retail_config.py", retail.used_in)
+        self.assertIn("config/clips.json", retail.used_in)
 
     def test_the_json_the_gate_serialises_carries_the_gap(self):
         payload = self.inventory.to_json()

@@ -2141,3 +2141,41 @@ single SKU; and a bundle that carries its own signing document and presenter gui
 
 Below those: **signing** (a procurement rule may reject the package), **no observed fallback** (a loud path is
 demonstrated, a silent one is not), and the **stale per-boot LUID map** (a WARN, not a device fault).
+
+
+## M5 clip wiring — every provisioned clip selectable
+
+**2026-11-10.** The application no longer names one clip in code. `config/clips.json` is the
+measured catalogue of all nine provisioned files; `--clip <id>` selects any of them,
+`--pack <id>` selects one of the four manifests and its default clip, and the default
+invocation is unchanged at `retail-checkout` under `retail_sanity`. The packs are
+`retail_sanity` (4 clips), `smart_city` (2), `medical_ops` (2) and `depot_logistics` (1) -
+**4 / 2 / 2 / 1 against the spec's 3 per pack**, stated rather than rounded up. The engine
+still has no line-crossing and no dwell-event kind; each pack uses `zone_occupancy`, and
+each manifest names the specification rule it cannot express.
+
+`tools/preflight.py` at this change:
+
+| row | level |
+|---|---|
+| Assets: pinned content verification | PASS |
+| Assets: sanity fixture | PASS |
+| Assets: model IR pin | PASS |
+| Runtime: OpenVINO and Python | PASS |
+| Budget: free disk on the repo volume | PASS |
+| Budget: free physical memory | PASS |
+| Device available: CPU / GPU / NPU | PASS (3 rows) |
+| Device discovery cost | PASS |
+| Recorded qualification run | WARN |
+| Recorded per-device compile, latency and placement | PASS |
+| Sanity fixture on CPU | PASS |
+| Recorded sanity fixture, per device | PASS |
+| Telemetry: per-process GPU/NPU utilisation | PASS |
+| Telemetry: recorded LUID-to-device map | PASS |
+| Telemetry: LUID-to-device attribution and hardware identity | WARN |
+| Startup: this gate's import to the first inference | PASS |
+
+**Summary: 16 PASS, 2 WARN, 0 FAIL - 18 total rows. Status: Limited.** The two WARNs are
+the recorded-run age (40 days, past the 30-day bound) and the stale per-boot LUID map; the
+runtime no longer depends on the map for attribution. `tools/verify_sources.py` reports
+**15 PASS, 0 FAIL** (6 model/media rows and 9 catalogue rows).

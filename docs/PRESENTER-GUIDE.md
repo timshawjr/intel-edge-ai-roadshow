@@ -26,6 +26,17 @@ The booth screen, with the release gate on (the default; `--release` makes it ex
 .venv\Scripts\python.exe -m app.main --windowed --release
 ```
 
+Every provisioned clip is selectable, by catalogue id, and every pack has a manifest with
+its own zones and event rule. With no flag the screen still runs `retail-checkout` under
+`retail_sanity`, exactly as before. The header names the running pack and clip, and the
+presenter drawer states what the pack actually measures and what it does not.
+
+```powershell
+.venv\Scripts\python.exe -m app.main --windowed --pack smart_city
+.venv\Scripts\python.exe -m app.main --windowed --clip car-detection
+.venv\Scripts\python.exe -m app.main --headless --seconds 10 --clip worker-zone-detection --json logs\depot.json
+```
+
 The three-camera layout — one camera per available device, each with its own clip, decode
 thread, tracker and event machine — names the first camera's device with `--device`:
 
@@ -112,8 +123,7 @@ qualification report.
 
 **Failed — content: 9 of 12 clips, 0 rights-cleared.** The specification asks for four
 scenario packs of three 45–90 s clips each, twelve in all, with a recorded redistribution
-position. What is provisioned is one pack and nine clips, four of them inside the 45–90 s
-band. Six Intel sample-videos clips were added on 2026-10-31 under CC BY 4.0, each with a
+position. What is provisioned is **four pack manifests but only nine clips**: `retail_sanity` has four, `smart_city` two, `medical_ops` two and `depot_logistics` one, so three of the four packs are short of the three clips the specification asks for. Four of the nine clips are inside the 45-90 s band. Six Intel sample-videos clips were added on 2026-10-31 under CC BY 4.0, each with a
 per-clip licence sidecar; a sidecar records provenance, not clearance, so the gate still
 records **0 rights-cleared**. Three of the new clips (`bottle-detection.mp4`,
 `car-detection.mp4`, `classroom.mp4`) measure under 45 s — a recorded deviation, not an

@@ -128,8 +128,11 @@ Rectangle {
         Text {
             objectName: "drawerScopeReduction"
             width: parent.width
-            text: "Delivered event: people-in-zone presence, 2 events per clip. "
-                  + "NOT a people count. NOT a dwell measurement."
+            // **The running pack's own sentence.** The retail pack's text is unchanged
+            // word for word, so the M4 render still reads the reduction it was pinned to;
+            // another pack replaces it with what *that* pack actually delivers. A
+            // `notified` property, not a Slot call.
+            text: bridge.delivered_event
             color: Theme.TEXT_ON_PANEL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_DETAIL
@@ -474,11 +477,17 @@ Rectangle {
             objectName: "drawerStatusText"
             width: parent.width
             visible: !bridge.recorded_mode
+            // **The running pack and clip, on the presenter's own surface.** The header
+            // has 291 px between the title and the explanation button at 44 px; a clip id
+            // does not fit there without shrinking the type, so the selection lives here,
+            // where a presenter reads at arm's length. A notified property, not a Slot.
             text: "status: " + (bridge.status_message.length > 0
                                   ? bridge.status_message : "running")
+                  + "  \u00b7  " + bridge.selection_label
             color: Theme.COLOR_NEUTRAL
             font.family: Theme.FONT_FAMILY
             font.pixelSize: Theme.TYPE_DETAIL
+            elide: Text.ElideRight
         }
 
         // The telemetry sampler's freshness. `bridge.staleness` is a **notified property**,

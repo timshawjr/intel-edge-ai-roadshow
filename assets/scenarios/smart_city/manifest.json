@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "smart_city",
+  "version": 1,
+  "title": "Smart city - roadway presence (content assignment)",
+  "built_on": "2026-11-10",
+  "business_line": "People, cars and bicycles present in the roadway",
+  "business_metric": "Counted sustained presences in the road area, one per track and class",
+  "explanation": "Measured: zone_occupancy - each tracked person, car or bicycle whose box centre stays inside road_area (x 0.02-0.98, y 0.05-0.95) for at least 0.2 s. This is presence in the roadway. It is NOT direction, NOT speed, and NOT a line crossing. The specification's directional line-crossing rule is NOT computed: the event machine has no line-crossing kind. Stopped-object dwell is also NOT computed: zone_occupancy carries no duration. The two clips are a content assignment, not a proven scene fit.",
+  "scope_note": "REDUCED SCOPE. Directional line crossing is NOT delivered by this pack: the engine emits zone_occupancy and candidate_transfer only, and on the provisioned clips no object satisfies the full-containment test at both ends of a transfer route. Stopped-object dwell is NOT delivered either: zone_occupancy records a presence, not a duration. What is measured is sustained presence of person/car/bicycle in the road area. Clip-to-pack assignment is by content, not a proven scene fit.",
+  "content_assignment": "Clip-to-pack assignment is by content, not a proven scene fit: both clips show road traffic, but neither was independently annotated for a line-crossing ground truth.",
+  "unexpressible_rules": [
+    "directional_line_crossing",
+    "stopped_object_dwell"
+  ],
+  "clips": [
+    "person-bicycle-car-detection",
+    "car-detection"
+  ],
+  "clip_ids": [
+    "person-bicycle-car-detection",
+    "car-detection"
+  ],
+  "class_allowlist": [
+    "person",
+    "car",
+    "bicycle"
+  ],
+  "zones": [
+    {
+      "name": "road_area",
+      "kind": "area",
+      "roi": [
+        0.02,
+        0.05,
+        0.98,
+        0.95
+      ],
+      "measured": "Measured with yolo11n-fp16 at 5 fps (conf 0.25, iou 0.45) over all provisioned smart_city clips: person centroid x 0.018..0.986, y 0.034..0.932 (72 observations); car x 0.019..0.276, y 0.241..0.887 (41 observations); bicycle x 0.769..0.962, y 0.134..0.203 (17 observations). The zone covers x 0.02..0.98, y 0.05..0.95; the few centroids below those edges are boxes clipped by the frame border and are deliberately not counted as roadway presence.",
+      "source": "detected-centroid histogram, this repository, 2026-11-10"
+    }
+  ],
+  "event_rules": {
+    "presence_zone": "road_area",
+    "min_presence_seconds": 0.2,
+    "tracked_classes": [
+      "person",
+      "car",
+      "bicycle"
+    ],
+    "road_area": [
+      0.02,
+      0.05,
+      0.98,
+      0.95
+    ]
+  },
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "delivered_event": "Delivered event: zone_occupancy - sustained presence in the road area. NOT a line crossing. NOT a direction. NOT a dwell measurement."
+}

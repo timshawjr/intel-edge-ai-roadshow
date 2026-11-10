@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "medical_ops",
+  "version": 1,
+  "title": "Medical operations - waiting-area presence (content assignment)",
+  "built_on": "2026-11-10",
+  "business_line": "People present in the waiting area",
+  "business_metric": "Counted sustained presences in the waiting area, one per person track",
+  "explanation": "Measured: zone_occupancy - each tracked person whose box centre stays inside waiting_area (x 0.08-0.95, y 0.25-0.90) for at least 1.0 s. This is presence. It is NOT a waiting time and NOT a dwell measurement: the event carries no duration. The specification's waiting-zone dwell rule is NOT computed: the engine has no dwell-event kind. The two clips are a content assignment, not a proven scene fit.",
+  "scope_note": "REDUCED SCOPE. Waiting-zone dwell is NOT delivered by this pack: zone_occupancy records that a person stayed in the waiting area for at least the minimum, and carries no duration, so no waiting time is measured. What is measured is sustained presence of a person in the waiting area. Clip-to-pack assignment is by content, not a proven scene fit.",
+  "content_assignment": "Clip-to-pack assignment is by content, not a proven scene fit: people-detection is a room with people walking through and classroom is a teaching room with people seated and standing. Neither is a clinical waiting room.",
+  "unexpressible_rules": [
+    "waiting_zone_dwell"
+  ],
+  "clips": [
+    "people-detection",
+    "classroom"
+  ],
+  "clip_ids": [
+    "people-detection",
+    "classroom"
+  ],
+  "class_allowlist": [
+    "person"
+  ],
+  "zones": [
+    {
+      "name": "waiting_area",
+      "kind": "area",
+      "roi": [
+        0.08,
+        0.25,
+        0.95,
+        0.9
+      ],
+      "measured": "Measured with yolo11n-fp16 at 5 fps (conf 0.25, iou 0.45): people-detection person centroid x 0.015..0.950, y 0.356..0.885 (187 observations); classroom person x 0.167..0.739, y 0.468..0.692 (659 observations). The zone brackets both measured ranges with a margin that excludes the frame border.",
+      "source": "detected-centroid histogram, this repository, 2026-11-10"
+    }
+  ],
+  "event_rules": {
+    "presence_zone": "waiting_area",
+    "min_presence_seconds": 1.0,
+    "tracked_classes": [
+      "person"
+    ],
+    "waiting_area": [
+      0.08,
+      0.25,
+      0.95,
+      0.9
+    ]
+  },
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "delivered_event": "Delivered event: zone_occupancy - sustained presence in the waiting area. NOT a waiting time. NOT a dwell measurement."
+}

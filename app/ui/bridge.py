@@ -122,6 +122,7 @@ __all__ = [
     "ATTRACT_TITLE",
     "CPU_UNAVAILABLE_TEXT",
     "DEFAULT_ROUTE_STREAM",
+    "DELIVERED_EVENT_LABEL",
     "EXPLANATIONS",
     "FrameImageProvider",
     "RECORDED_CONTROL_NOTE",
@@ -236,25 +237,31 @@ SLOT_CALLS_SAFE_IN_A_QML_BINDING: frozenset[str] = frozenset({
     "bridgeUi.explain",
 })
 
-def _shipped_scope_note() -> str:
-    """The retail pack's own `scope_note`, read from the pack.
+def _shipped_pack():
+    """The default pack, read from its committed manifest.
 
     **Taken from the pack rather than restated here.** An earlier revision carried a
-    hand-written summary in this module - "No product-transfer event is detectable on
-    this footage; this is people-in-zone presence" - and it was *not* the pack's wording:
-    the shipped `scope_note` says "on **retail_checkout**: the clip contains no shelf",
-    names the counter-surface measurement, and ends by pointing at `retail_config.py`.
-    Two sentences about one reduction, and a presenter reading the screen would be
-    quoting wording that exists nowhere in the data. Reading the pack makes that
-    impossible: there is one string and the screen shows it.
+    hand-written summary of the retail reduction in this module, and it was *not* the
+    pack's wording. The screen must quote the data structure the run actually loaded, so
+    there is one string and the screen shows it.
     """
-    from app.engine.retail_config import retail_sanity_manifest
+    from app.engine.packs import load_pack
 
-    return retail_sanity_manifest().scope_note
+    return load_pack("retail_sanity")
 
 
-#: The reduction, in the shipped pack's own words. See `_shipped_scope_note`.
-SCOPE_NOTE_LABEL = _shipped_scope_note()
+_SHIPPED_PACK = _shipped_pack()
+
+#: The default pack's reduction, in its own words. `scope_note` below is the **notified**
+#: property: this constant is only the cold-start value, used until `set_selection` says
+#: which pack is running.
+SCOPE_NOTE_LABEL = _SHIPPED_PACK.manifest.scope_note
+
+#: The default pack's one-sentence statement of what event it actually delivers.
+DELIVERED_EVENT_LABEL = _SHIPPED_PACK.delivered_event
+
+#: The default clip, for a bridge that has not been told which clip is running.
+DEFAULT_CLIP_LABEL = f"{_SHIPPED_PACK.id} · {_SHIPPED_PACK.default_clip.id}"
 
 
 # --------------------------------------------------------------------------------------
@@ -943,6 +950,12 @@ class UiBridge(QObject):
     recordedModeChanged = Signal()
     #: The accepted live device request changed. See `deviceControl`.
     deviceControlChanged = Signal()
+    #: **The pack or clip being demonstrated changed, or the bridge was told who it is.**
+    #: One signal for both because they are one fact: a pack and the clip it runs. Every
+    #: string that names them - `selection_label`, `scope_note`, `delivered_event`,
+    #: `pack_explanation` - is notified by this one signal, so the drawer cannot show one
+    #: pack's explanation over another pack's clip.
+    selectionChanged = Signal()
     #: A live device control asked to move a camera. `(stream, device)`.
     #:
     #: **Never emitted while recorded mode is active.** The windowed run connects this to
@@ -1039,6 +1052,19 @@ class UiBridge(QObject):
         #: was accepted (not what was clicked) is what keeps a disabled control from
         #: appearing to have done something.
         self._device_control = ""
+        #: **Which pack and clip this screen is running.** The default is the M1 pack and
+        #: clip, so a bridge constructed and never told otherwise renders exactly the
+        #: screen earlier milestones rendered. `run_windowed` calls `set_selection` before
+        #: `engine.load`, and every string below is notified by `selectionChanged`.
+        self._pack_id = _SHIPPED_PACK.id
+        self._clip_id = _SHIPPED_PACK.default_clip.id
+        self._pack_title = _SHIPPED_PACK.manifest.title
+        self._business_metric = _SHIPPED_PACK.business_metric
+        self._pack_explanation = _SHIPPED_PACK.explanation
+        self._delivered_event = _SHIPPED_PACK.delivered_event
+        self._scope_note = _SHIPPED_PACK.manifest.scope_note
+        self._clip_duration_s = _SHIPPED_PACK.default_clip.measured_duration_s
+        self._clip_license = _SHIPPED_PACK.default_clip.license
 
         # Utilisation availability is **derived from the sample**, not asserted here: the
         # provider (`app.telemetry.accelerator`) measures this application's own engine
@@ -1566,10 +1592,49 @@ class UiBridge(QObject):
         """What a GPU or NPU card says when it has no figure. Never a digit."""
         return UTILISATION_UNAVAILABLE_TEXT
 
-    @Property(str, constant=True)
+    @Property(str, notify=selectionChanged)
     def scope_note(self) -> str:
-        """The reduction, verbatim from `app/engine/retail_config.py`."""
-        return SCOPE_NOTE_LABEL
+        """The running pack's reduction, verbatim from its manifest."""
+        return self._scope_note
+
+    @Property(str, notify=selectionChanged)
+    def delivered_event(self) -> str:
+        """What event this pack actually delivers, in the pack's own words."""
+        return self._delivered_event
+
+    @Property(str, notify=selectionChanged)
+    def pack_id(self) -> str:
+        return self._pack_id
+
+    @Property(str, notify=selectionChanged)
+    def clip_id(self) -> str:
+        return self._clip_id
+
+    @Property(str, notify=selectionChanged)
+    def selection_label(self) -> str:
+        """`pack · clip`: the one string the header shows for what is running."""
+        return f"{self._pack_id} · {self._clip_id}"
+
+    @Property(str, notify=selectionChanged)
+    def pack_title(self) -> str:
+        return self._pack_title
+
+    @Property(str, notify=selectionChanged)
+    def business_metric(self) -> str:
+        return self._business_metric
+
+    @Property(str, notify=selectionChanged)
+    def pack_explanation(self) -> str:
+        """What the running pack measures, and what it explicitly does not."""
+        return self._pack_explanation
+
+    @Property(float, notify=selectionChanged)
+    def clip_duration_s(self) -> float:
+        return self._clip_duration_s
+
+    @Property(str, notify=selectionChanged)
+    def clip_license(self) -> str:
+        return self._clip_license
 
     @Property(str, constant=True)
     def gpu_reason(self) -> str:
@@ -1639,6 +1704,44 @@ class UiBridge(QObject):
         trade show. `tests/test_ui_contract.py` pins the six required keys separately.
         """
         return EXPLANATIONS.get(str(key), "")
+
+    def set_selection(self, *, pack: Any, clip: Any) -> None:
+        """Tell the screen which pack and clip it is running.
+
+        Takes the validated `Pack` and `ClipRecord` objects rather than four strings, so
+        the header cannot name a clip the pack does not contain and the drawer cannot show
+        one pack's explanation over another pack's clip. The default is already the
+        shipped retail pack, so a caller that never calls this still renders honestly.
+        """
+        if str(clip.id) not in {record.id for record in pack.clips}:
+            raise ValueError(
+                f"clip {clip.id!r} is not in pack {pack.id!r}; a selection that names a "
+                f"clip its pack does not contain is exactly the mismatch this method "
+                f"exists to refuse"
+            )
+        changed = (
+            self._pack_id != str(pack.id)
+            or self._clip_id != str(clip.id)
+            or self._pack_title != str(pack.manifest.title)
+            or self._business_metric != str(pack.business_metric)
+            or self._pack_explanation != str(pack.explanation)
+            or self._delivered_event != str(pack.delivered_event)
+            or self._scope_note != str(pack.manifest.scope_note)
+            or self._clip_duration_s != float(clip.measured_duration_s)
+            or self._clip_license != str(clip.license)
+        )
+        if not changed:
+            return
+        self._pack_id = str(pack.id)
+        self._clip_id = str(clip.id)
+        self._pack_title = str(pack.manifest.title)
+        self._business_metric = str(pack.business_metric)
+        self._pack_explanation = str(pack.explanation)
+        self._delivered_event = str(pack.delivered_event)
+        self._scope_note = str(pack.manifest.scope_note)
+        self._clip_duration_s = float(clip.measured_duration_s)
+        self._clip_license = str(clip.license)
+        self.selectionChanged.emit()
 
     def set_route(self, requested: str | None = None, confirmed: Iterable[str] | None = None,
                   state: str = "pending", fell_back: bool | None = None) -> None:

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "depot_logistics",
+  "version": 1,
+  "title": "Depot logistics - loading-zone presence (content assignment)",
+  "built_on": "2026-11-10",
+  "business_line": "Workers present in the loading zone",
+  "business_metric": "Counted sustained presences in the loading zone, one per worker track",
+  "explanation": "Measured: zone_occupancy - each tracked person whose box centre stays inside loading_zone (x 0.15-1.00, y 0.30-0.90) for at least 1.0 s. This is presence. It is NOT an entry count, NOT an exit count and NOT a dwell measurement: the event carries no duration and no direction. The specification's loading-zone entry and dwell rules are NOT computed: the engine has no entry-event kind and no dwell-event kind. The clip is a content assignment, not a proven scene fit.",
+  "scope_note": "REDUCED SCOPE. Loading-zone entry and dwell are NOT delivered by this pack: zone_occupancy records a sustained presence and carries no duration and no direction, so neither an entry nor a dwell time is measured. What is measured is sustained presence of a worker in the loading zone. Clip-to-pack assignment is by content, not a proven scene fit.",
+  "content_assignment": "Clip-to-pack assignment is by content, not a proven scene fit: worker-zone-detection shows workers walking through a marked industrial floor, not a dock door with vehicles loading.",
+  "unexpressible_rules": [
+    "loading_zone_entry",
+    "loading_zone_dwell"
+  ],
+  "clips": [
+    "worker-zone-detection"
+  ],
+  "clip_ids": [
+    "worker-zone-detection"
+  ],
+  "class_allowlist": [
+    "person"
+  ],
+  "zones": [
+    {
+      "name": "loading_zone",
+      "kind": "area",
+      "roi": [
+        0.15,
+        0.3,
+        1.0,
+        0.9
+      ],
+      "measured": "Measured with yolo11n-fp16 at 5 fps (conf 0.25, iou 0.45) over worker-zone-detection: person centroid x 0.204..0.977, y 0.345..0.792 (295 observations). The zone brackets that range; the left margin excludes the frame border and the upper margin excludes the ceiling/columns.",
+      "source": "detected-centroid histogram, this repository, 2026-11-10"
+    }
+  ],
+  "event_rules": {
+    "presence_zone": "loading_zone",
+    "min_presence_seconds": 1.0,
+    "tracked_classes": [
+      "person"
+    ],
+    "loading_zone": [
+      0.15,
+      0.3,
+      1.0,
+      0.9
+    ]
+  },
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "delivered_event": "Delivered event: zone_occupancy - sustained presence in the loading zone. NOT an entry count. NOT a dwell measurement."
+}

@@ -246,34 +246,16 @@ def retail_sanity_manifest() -> ScenarioManifest:
     a transfer route it does not use would be a claim about the footage that the
     footage does not support - the thing this configuration exists to stop doing.
 
+    **The manifest is read from `assets/scenarios/retail_sanity/manifest.json`**, the
+    same file the other three packs load from, so there is one description of the pack
+    rather than a function and a JSON file that can drift. The constants above remain
+    the measured record and `tests/test_packs.py` fails if the JSON disagrees with them:
+    `COUNTER_BAND` must equal the `counter_band` ROI and `MIN_PRESENCE_SECONDS` must
+    equal `min_presence_seconds`.
+
     `scope_note` travels with the data so the reduction is exported with the pack
     rather than living in a presenter script that can drift.
     """
-    return ScenarioManifest(
-        id="retail_sanity",
-        version=1,
-        title="Retail - checkout counter (people in zone)",
-        business_line="People present at the checkout counter",
-        class_allowlist=TRACKED_CLASSES,
-        zones=(),
-        event_rules={
-            "presence_zone": "counter_band",
-            "min_presence_seconds": MIN_PRESENCE_SECONDS,
-            "tracked_classes": TRACKED_CLASSES,
-            "counter_band": COUNTER_BAND,
-        },
-        source_ids=(RETAIL_CHECKOUT_ID,),
-        # The pin's own operating point - the same pair the M0 fixture was annotated
-        # at, fixed before the model was run. Not tuned here.
-        conf_threshold=0.25,
-        iou_threshold=0.45,
-        scope_note=(
-            "REDUCED SCOPE. No product-transfer event is detectable on "
-            "retail_checkout: the clip contains no shelf, and the only sustained "
-            "movement is a person at the counter. Shelf-to-basket is NOT delivered. "
-            "The counter surface is labelled 17 different ways and its label changes "
-            "on 12.7% of adjacent frame pairs; it is excluded from tracked_classes. "
-            "COUNTER_BAND captures 65% of person detections, not all of them. See "
-            "app/engine/retail_config.py."
-        ),
-    )
+    from app.engine.packs import load_pack
+
+    return load_pack("retail_sanity").manifest

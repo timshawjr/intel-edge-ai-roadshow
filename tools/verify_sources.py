@@ -34,6 +34,12 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "models.json"
+#: **The clip catalogue is verified too.** `config/clips.json` names nine files with their
+#: measured SHA-256; a catalogue whose hashes were never checked would be a table of
+#: confident numbers with nothing behind it. It is a separate file from `models.json`, so
+#: it is read by its own collector rather than folded into `collect_sources`, whose
+#: row-count is pinned by a test.
+CLIPS_PATH = ROOT / "config" / "clips.json"
 
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/"
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -224,6 +230,19 @@ def collect_sources(config: dict[str, Any]) -> list[tuple[Source, str | None, in
     return rows
 
 
+def collect_clip_sources(config: dict[str, Any]) -> list[tuple[Source, str | None, int | None]]:
+    """Every clip in `config/clips.json`, as a verifiable MP4 source.
+
+    The catalogue's `sha256` is the gate, exactly as `models.json`'s is: a clip whose bytes
+    do not hash to the recorded value is not the clip the measurement describes.
+    """
+    rows: list[tuple[Source, str | None, int | None]] = []
+    for clip in config.get("clips", []):
+        rows.append((Source(str(clip["id"]), "mp4", Path(clip["path"])),
+                     clip.get("sha256"), None))
+    return rows
+
+
 def print_table(results: Iterable[Result]) -> None:
     results = list(results)
     width = max((len(r.source.id) for r in results), default=8)
@@ -244,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=CONFIG_PATH, help="path to config/models.json"
     )
+    parser.add_argument(
+        "--clips", type=Path, default=CLIPS_PATH,
+        help="path to config/clips.json; every catalogued clip is hash-verified too"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -255,7 +278,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"config unreadable: {args.config} (invalid JSON: {exc})", file=sys.stderr)
         return 1
 
-    results = [verify(source, sha, lines) for source, sha, lines in collect_sources(config)]
+    rows = collect_sources(config)
+    try:
+        clips_config = json.loads(args.clips.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"clip catalogue unreadable: {args.clips} ({exc.strerror or exc})",
+              file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"clip catalogue unreadable: {args.clips} (invalid JSON: {exc})",
+              file=sys.stderr)
+        return 1
+    rows += collect_clip_sources(clips_config)
+
+    results = [verify(source, sha, lines) for source, sha, lines in rows]
     print_table(results)
     failures = sum(not result.ok for result in results)
     print(f"\nSource verification: {len(results) - failures} PASS, {failures} FAIL")

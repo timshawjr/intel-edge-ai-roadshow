@@ -13,9 +13,11 @@ fit a band, or invent a clip that is not on disk: it measures every file with
   decoder will actually play.
 - **The SHA-256 and byte count** are read from the file, so a re-encoded clip with the same
   name is a different clip and the inventory says so.
-- **Whether the application uses it** is read from the application's own source: a clip is
-  "used" when its relative path or file name appears in `app/**/*.py`. That is a fact about
-  the code that will run, not about a manifest's wish list.
+- **Whether the application uses it** is read from the application's own sources and its
+  clip catalogue: a clip is "used" when its relative path or file name appears in
+  `app/**/*.py`, **or** when `config/clips.json` lists it and `app.engine.clips` is what
+  `--clip`/`--pack` resolve against. That is a fact about what the booth can select, not
+  about a pack manifest's wish list.
 - **Licence and rights status are NOT properties of the bytes.** A video file does not
   carry a grant, and scanning for the word "license" in a container would produce a claim
   with nothing behind it. So each clip is recorded as **unverified** unless a licence file
@@ -30,9 +32,9 @@ fit a band, or invent a clip that is not on disk: it measures every file with
 
 ## The shortfall this module exists to report
 
-Provisioned: **9 clips, 1 pack, 4 clips inside the 45-90 s band**. Required: **12 clips,
-4 packs, every clip inside the band**. The verdicts below carry those numbers; nothing in
-this module turns a shortfall into a pass.
+Provisioned: **9 clips, 4 packs, 4 clips inside the 45-90 s band**. Required: **12
+clips, 4 packs, every clip inside the band**. The verdicts below carry those numbers;
+nothing in this module turns a shortfall into a pass.
 
 **The sub-45 s clips are a recorded deviation, not an in-band result.** The operator chose
 to provision six Intel sample-videos clips, three of which measure under 45 s
@@ -286,25 +288,43 @@ def _measured(path: Path) -> tuple[int, int, float, int, float]:
 
 
 def _usage(path: Path) -> tuple[bool, tuple[str, ...]]:
-    """Which application sources name this clip.
+    """Which application sources and catalogues name this clip.
 
-    Read from `app/`, because the question is "will the booth run it", not "does a pack
-    manifest mention it". A clip that only a manifest names is provisioned, not used.
+    Read from `app/`, because the question is "will the booth be able to run it", not
+    "does a pack manifest mention it". A clip that only a manifest names is provisioned,
+    not used.
+
+    **The catalogue counts, and that is the M5 clip-wiring change.** Every clip in
+    `config/clips.json` is selectable with `--clip` or `--pack`, so it *is* used by the
+    application even though its file name appears nowhere in `app/*.py`: the path lives in
+    the catalogue, which `app.engine.clips` reads. Before the catalogue existed, "used"
+    meant "a Python file contains the path string", which would now report eight of the
+    nine wired clips as unused.
     """
     if not APP_DIR.exists():
-        return False, ()
-    needles = {path.name, _relative(path)}
-    used_in = []
-    for source in sorted(APP_DIR.rglob("*")):
-        if source.suffix not in (".py", ".qml", ".json"):
-            continue
-        try:
-            text = source.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if any(needle in text for needle in needles):
-            used_in.append(source.resolve().relative_to(REPO_ROOT).as_posix())
-    return bool(used_in), tuple(used_in)
+        used_in = []
+    else:
+        needles = {path.name, _relative(path)}
+        used_in = []
+        for source in sorted(APP_DIR.rglob("*")):
+            if source.suffix not in (".py", ".qml", ".json"):
+                continue
+            try:
+                text = source.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(needle in text for needle in needles):
+                used_in.append(source.resolve().relative_to(REPO_ROOT).as_posix())
+    catalogue = REPO_ROOT / "config" / "clips.json"
+    try:
+        payload = json.loads(catalogue.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    for entry in payload.get("clips", []) or ():
+        if str(entry.get("path") or "").replace("\\", "/") == _relative(path):
+            used_in.append("config/clips.json")
+            break
+    return bool(used_in), tuple(sorted(set(used_in)))
 
 
 def _sidecar(path: Path) -> Path | None:

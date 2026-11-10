@@ -87,5 +87,53 @@
     ],
     "status": "unmet M5 content gate",
     "note": "Clip count for this pack is met at three; the duration band is not. Only store_aisle_alt (65.41535 s) lies inside 45-90 s. retail_checkout (113.0129 s) and queue_alt (139.4 s) are longer than the band. Durations are cv2.VideoCapture measurements of the copied files, not rounded or trimmed. Carried to Task 9 as a declared unmet gate."
-  }
+  },
+  "version": 1,
+  "business_line": "People present at the checkout counter",
+  "business_metric": "Counted sustained presences at the checkout counter, one per person track",
+  "explanation": "Measured: zone_occupancy - each tracked person whose box centre stays inside counter_band (x 0.00-1.00, y 0.20-0.60) for at least 2.0 s. The event is a presence, one per continuous stay and one per track; it carries no duration, so it is NOT a dwell measurement and NOT a people count. The specification's product-transfer rule is NOT computed: no product-transfer event is detectable on retail_checkout. The other three clips are a content assignment, not a proven scene fit; bottle-detection may legitimately produce zero events because the tracked class is person.",
+  "scope_note": "REDUCED SCOPE. No product-transfer event is detectable on retail_checkout: the clip contains no shelf, and the only sustained movement is a person at the counter. Shelf-to-basket is NOT delivered. The counter surface is labelled 17 different ways and its label changes on 12.7% of adjacent frame pairs; it is excluded from tracked_classes. COUNTER_BAND captures 65% of person detections, not all of them. See app/engine/retail_config.py.",
+  "class_allowlist": [
+    "person"
+  ],
+  "clip_ids": [
+    "retail-checkout",
+    "store-aisle-detection",
+    "bottle-detection",
+    "one-by-one-person-detection"
+  ],
+  "content_assignment": "Clip-to-pack assignment is by content, not a proven scene fit: all four clips show retail-like people or products, but only retail-checkout was measured for the counter_band geometry.",
+  "unexpressible_rules": [
+    "product_transfer"
+  ],
+  "zones": [
+    {
+      "name": "counter_band",
+      "kind": "area",
+      "roi": [
+        0.0,
+        0.2,
+        1.0,
+        0.6
+      ],
+      "measured": "Derived from a measured person-centroid histogram on retail_checkout: 3512 of 5393 person detections (65.1%) have their centre inside; the two dominant person tracks are 100% inside (470 and 2920 observations, centroid y 0.237..0.500). Full containment is never true for a person in this clip, which is why the rule tests the centre.",
+      "source": "app/engine/retail_config.py COUNTER_BAND; M1 qualification measurement"
+    }
+  ],
+  "event_rules": {
+    "presence_zone": "counter_band",
+    "min_presence_seconds": 2.0,
+    "tracked_classes": [
+      "person"
+    ],
+    "counter_band": [
+      0.0,
+      0.2,
+      1.0,
+      0.6
+    ]
+  },
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "delivered_event": "Delivered event: people-in-zone presence, 2 events per clip. NOT a people count. NOT a dwell measurement."
 }

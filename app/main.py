@@ -247,7 +247,8 @@ def _stage(name: str, fn, *, needs: Sequence[str] = ()) -> dict[str, Any]:
     return {"stage": str(name), "verdict": "ran", "reason": "", "detail": str(detail)}
 
 
-def _missing_provisions(needs: Sequence[str]) -> str:
+def _missing_provisions(needs: Sequence[str], *,
+                        selection: Any | None = None) -> str:
     """A stated reason for each unmet provision, or `""` when all are met."""
     missing: list[str] = []
     for need in needs:
@@ -259,10 +260,19 @@ def _missing_provisions(needs: Sequence[str]) -> str:
             except Exception as exc:  # noqa: BLE001 - a provision check, not a stage
                 missing.append(f"the pinned IR is unusable: {exc}")
         elif need == "clip":
-            from app.engine.retail_config import RETAIL_CHECKOUT_CLIP
+            # **The catalogue decides which file is needed.** This used to import
+            # `RETAIL_CHECKOUT_CLIP`, which made the self-test's existence check a second
+            # hardcoded clip name beside the one the run used. It now asks the same
+            # selection the run will ask for, or the catalogue's default when the
+            # self-test was not given one.
+            from app.engine.clips import default_selection
 
-            if not Path(RETAIL_CHECKOUT_CLIP).exists():
-                missing.append(f"{RETAIL_CHECKOUT_CLIP} is not provisioned")
+            chosen = selection or default_selection()
+            if not chosen.clip.exists():
+                missing.append(
+                    f"{chosen.clip.path} is not provisioned (clip "
+                    f"{chosen.clip.id!r})"
+                )
         elif need == "cpu":
             try:
                 import openvino as ov
@@ -463,6 +473,7 @@ def build_run_summary(
     feed_elapsed_s: float | None = None,
     drain_elapsed_s: float | None = None,
     frame_attempts: int | None = None,
+    selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The headless run's summary, as a pure function of what was measured.
 
@@ -539,6 +550,7 @@ def build_run_summary(
             for event in events
         ],
         "event_counts": _count_events(events),
+        "selection": dict(selection) if selection is not None else None,
         "errors": [str(text) for text in extra_errors],
     }
 
@@ -592,8 +604,9 @@ def _count_events(events: Sequence[Any]) -> dict[str, int]:
 
 def run_headless(*, device: str = "CPU", seconds: float = 5.0,
                  source: str = "loop", scenario: str = "retail",
-                 scenario_id: str = "selftest-headless",
-                 session_id: str = "headless") -> dict[str, Any]:
+                 scenario_id: str | None = None,
+                 session_id: str = "headless",
+                 clip: str | None = None, pack: str | None = None) -> dict[str, Any]:
     """Run the whole pipeline offscreen and return the summary.
 
     Frames come from `ClipSource` at its own analysis rate; inference runs in the spawned
@@ -604,30 +617,41 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
     A loop reset calls `Tracker.reset()` **and** `RetailEventMachine.reset(loop_id)`, per
     spec section 9: the tracker's ids deliberately do not rewind, so a rewind of the clip
     cannot complete a pending presence belonging to the previous pass.
+
+    **The clip and the pack come from the catalogue and the pack manifest.** `--clip`
+    selects any of the nine provisioned files; `--pack` selects a pack and its default
+    clip. There is no `RETAIL_CHECKOUT_CLIP` on this path: the `ClipSource` is built from
+    the resolved record's `path`.
     """
     from app.contracts.frame import FramePacket
     from app.engine.events import RetailEventMachine
-    from app.engine.retail_config import RETAIL_CHECKOUT_CLIP, retail_sanity_manifest
+    from app.engine.packs import selection_for
     from app.engine.source import ClipSource
     from app.engine.tracker import Tracker
     from app.inference.pinned import class_names
     from app.supervisor.runner import Supervisor
 
-    missing = _missing_provisions(("clip", "ir", "cpu"))
+    selection, selected_pack = selection_for(clip=clip, pack=pack, scenario=scenario,
+                                             require_files=True)
+    print(f"[startup] pack {selected_pack.id} \u00b7 clip {selection.clip.id} "
+          f"({selection.clip.path})", file=sys.stderr, flush=True)
+    missing = _missing_provisions(("clip", "ir", "cpu"), selection=selection)
     if missing:
         raise RuntimeError(f"cannot run the real pipeline headless: {missing}")
 
-    manifest = retail_sanity_manifest()
+    manifest = selected_pack.manifest
     tracker = Tracker(iou_threshold=manifest.iou_threshold)
     machine = RetailEventMachine(manifest, class_names=class_names())
 
+    run_scenario_id = scenario_id or manifest.id
     supervisor = Supervisor(device_id=device, stream_id="A", session_id=session_id,
-                            scenario_id=scenario_id,
+                            scenario_id=run_scenario_id,
                             conf_threshold=manifest.conf_threshold,
                             iou_threshold=manifest.iou_threshold,
                             accelerator_factory=accelerator_factory)
-    clip = ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id="A",
-                      session_id=session_id, scenario_id=scenario_id, target_fps=15.0)
+    clip_source = ClipSource(selection.clip.absolute_path, stream_id="A",
+                             session_id=session_id, scenario_id=run_scenario_id,
+                             target_fps=15.0)
     # Started before the clock starts. A `Supervisor` that was never started refuses
     # every `submit` **without counting a drop** (see `submit`), so a run that forgot
     # this line would report zero submitted, zero drops and `state == "pending"` - a
@@ -650,16 +674,16 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
     supervisor.samples()
     try:
         while time.perf_counter() - started < float(seconds):
-            frame = clip.read()
+            frame = clip_source.read()
             if frame is None:
-                if source == "once" or not clip.restart():
+                if source == "once" or not clip_source.restart():
                     break
-                loop_id = clip.loop_id
+                loop_id = clip_source.loop_id
                 if loop_id not in seen_loops:
                     seen_loops.add(loop_id)
                     tracker.reset()
                     machine.reset(loop_id)
-                frame = clip.read()
+                frame = clip_source.read()
                 if frame is None:
                     break
             supervisor.submit(frame)
@@ -680,7 +704,7 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
         _take_reporting_sample(supervisor)
     finally:
         plan = supervisor.route_plan()
-        clip.close()
+        clip_source.close()
         supervisor.stop()
 
     elapsed = time.perf_counter() - started
@@ -701,6 +725,21 @@ def run_headless(*, device: str = "CPU", seconds: float = 5.0,
         feed_elapsed_s=feed_elapsed,
         drain_elapsed_s=drain_elapsed,
         frame_attempts=supervisor.frame_attempts,
+        selection={
+            "pack": selected_pack.id,
+            "pack_title": selected_pack.manifest.title,
+            "clip": selection.clip.id,
+            "path": selection.clip.path,
+            "measured_duration_s": selection.clip.measured_duration_s,
+            "measured_width": selection.clip.measured_width,
+            "measured_height": selection.clip.measured_height,
+            "measured_fps": selection.clip.measured_fps,
+            "license": selection.clip.license,
+            "distribution_status": selection.clip.distribution_status,
+            "business_metric": selected_pack.business_metric,
+            "delivered_event": selected_pack.delivered_event,
+            "unexpressible_rules": list(selected_pack.unexpressible_rules),
+        },
     )
 
 
@@ -772,7 +811,8 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                  select: Mapping[str, str] | None = None,
                  fail_stream: str | None = None,
                  streams: int = 1,
-                 release: bool = RELEASE_BY_DEFAULT) -> int:
+                 release: bool = RELEASE_BY_DEFAULT,
+                 clip: str | None = None, pack: str | None = None) -> int:
     """The live booth. Returns the process exit code.
 
     **Device discovery happens here, before the window opens**, and it is announced:
@@ -827,7 +867,7 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     from PySide6.QtQml import QQmlApplicationEngine
 
     from app.engine.events import RetailEventMachine
-    from app.engine.retail_config import RETAIL_CHECKOUT_CLIP, retail_sanity_manifest
+    from app.engine.packs import selection_for
     from app.engine.source import ClipSource
     from app.engine.tracker import Tracker
     from app.inference.pinned import class_names
@@ -835,6 +875,11 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     from app.supervisor.runner import DEFAULT_STREAM_IDS, Supervisor
     from app.ui.bridge import ThemeTokens, UiBridge
     from app.ui.provider import FrameImageProvider
+
+    selection, selected_pack = selection_for(clip=clip, pack=pack, scenario=scenario,
+                                             require_files=True)
+    print(f"[startup] pack {selected_pack.id} \u00b7 clip {selection.clip.id} "
+          f"({selection.clip.path})", flush=True)
 
     print(f"[startup] discovering devices (~3.8 s cold on this machine); "
           f"this runs once", flush=True)
@@ -845,7 +890,7 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
     # `offscreen`, so the family is registered explicitly rather than relied on.
     _register_font(QFontDatabase)
 
-    manifest = retail_sanity_manifest()
+    manifest = selected_pack.manifest
     # **M2: one tracker and one event machine PER STREAM.** With three cameras sharing
     # one tracker, track ids carry across cameras and one camera's zone rule fires on the
     # other's picture - a plausible rectangle over the wrong object. See `_on_result`.
@@ -878,6 +923,11 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                for sid in stream_ids}
 
     bridge = UiBridge(application)
+    # **Which pack and clip this window is running, before `engine.load`.** The header and
+    # the drawer read notified properties, so the first rendered frame already names the
+    # real selection; a bridge told after load would show the default pack for the first
+    # frames and then swap, which is a screen that briefly misnames its own footage.
+    bridge.set_selection(pack=selected_pack, clip=selection.clip)
     theme = ThemeTokens(application)
     if len(stream_devices) == 1:
         supervisor = Supervisor(device_id=stream_devices[0], stream_id=stream_ids[0],
@@ -894,7 +944,7 @@ def run_windowed(*, device: str = "CPU", scenario: str = "retail",
                                 iou_threshold=manifest.iou_threshold,
                                 compile_failure=([fail_stream] if fail_stream else False),
                                 accelerator_factory=accelerator_factory)
-    clips = [ClipSource(Path(RETAIL_CHECKOUT_CLIP), stream_id=sid,
+    clips = [ClipSource(selection.clip.absolute_path, stream_id=sid,
                         session_id=session_id, scenario_id=manifest.id, target_fps=15.0)
              for sid in stream_ids]
     print(f"[startup] {len(stream_ids)} camera(s): "
@@ -1706,7 +1756,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--scenario", default="retail",
                         choices=("retail",),
-                        help="the scenario pack to run. Only `retail` ships in M1.")
+                        help="the legacy name for the default pack. `retail` means "
+                             "retail_sanity; use --pack to select any of the four packs.")
+    from app.engine.clips import clip_ids
+    from app.engine.packs import pack_ids
+
+    parser.add_argument("--clip", dest="clip", default=None,
+                        choices=clip_ids(),
+                        help="which provisioned clip to run, by catalogue id. The "
+                             "default is the catalogue's default, retail-checkout. Every "
+                             "id here is a file under assets/media/ and carries its "
+                             "measured duration, resolution and fps in config/clips.json.")
+    parser.add_argument("--pack", dest="pack", default=None,
+                        choices=pack_ids(),
+                        help="which scenario pack to run. Selects the pack's manifest "
+                             "(zones, event rule, business metric) and its default clip; "
+                             "combine with --clip to choose another clip assigned to that "
+                             f"pack. Pack ids are {', '.join(pack_ids())}.")
     parser.add_argument("--device", default="CPU",
                         choices=("CPU", "GPU", "NPU"),
                         help="the explicitly requested compile target. No AUTO, no "
@@ -1850,7 +1916,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"the recorded run, not a live camera layout.", file=sys.stderr,
                   flush=True)
             return 2
+        if args.clip or args.pack:
+            print("--play-record cannot be combined with --clip or --pack: a playback "
+                  "shows the recorded run, and has no live clip to select.", file=sys.stderr,
+                  flush=True)
+            return 2
         return run_recorded(args.play_record)
+
+    # **One resolution, before dispatch.** The same `Selection` decides the headless run's
+    # `ClipSource`, the windowed run's `ClipSource` and the pack whose manifest supplies
+    # the zones and event rule. Resolving twice would let the summary name a different
+    # clip from the one that ran.
+    from app.engine.clips import SelectionError
+    from app.engine.packs import selection_for
+
+    try:
+        selection, selected_pack = selection_for(clip=args.clip, pack=args.pack,
+                                                 scenario=args.scenario,
+                                                 require_files=True)
+    except SelectionError as exc:
+        print(f"selection refused: {exc}", file=sys.stderr, flush=True)
+        return 2
 
     if args.headless:
         # **`--streams` is refused in headless, not silently ignored.** The flag used to be
@@ -1869,7 +1955,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         try:
             summary = run_headless(device=args.device, seconds=args.seconds,
-                                   source=args.source, scenario_id=args.scenario)
+                                   source=args.source, scenario_id=selected_pack.id,
+                                   clip=selection.clip.id, pack=selected_pack.id)
         except RuntimeError as exc:
             print(f"headless run refused: {exc}", file=sys.stderr, flush=True)
             return 2
@@ -1892,16 +1979,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.windowed or not (args.selftest or args.headless):
-        selection = _parse_selection(args.select)
-        if args.select and selection is None:
+        presenter_selection = _parse_selection(args.select)
+        if args.select and presenter_selection is None:
             print(f"--select wants STREAM=DEVICE; got {args.select!r}",
                   file=sys.stderr, flush=True)
             return 2
         return run_windowed(device=args.device, scenario=args.scenario,
-                            source=args.source, select=selection,
+                            source=args.source, select=presenter_selection,
                             fail_stream=args.fail_stream,
                             streams=max(1, int(args.streams or 1)),
-                            release=bool(args.release))
+                            release=bool(args.release),
+                            clip=selection.clip.id, pack=selected_pack.id)
 
     return 0
 
